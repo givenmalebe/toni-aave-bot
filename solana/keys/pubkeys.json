@@ -1,0 +1,15 @@
+{
+  "funder": "4BHGQ9CXhajxDq5b3jvKfimsXEsFHoHUi2qg21qYVnGy",
+  "sponsor": "4cTjTSuJ8KSyxwJvwyyBUyxKsDUSfY2prNTC6a8VM4LV",
+  "bot": "AaapcACCaUPqYLN9HXyGYyKoUV9rBdUTXAVrLoZSRXyK",
+  "sponsor_role": "Jito tip + priority-fee payer",
+  "bot_role": "swap CU fees + small inventory",
+  "sponsor_target_sol": 0.08,
+  "bot_target_sol": 0.25,
+  "fund_from": "funder",
+  "keypair_paths": {
+    "sponsor": "solana/keys/sponsor.json",
+    "bot": "solana/keys/bot.json"
+  },
+  "note": "private keys are 600 JSON files \u2014 never commit or print them"
+}

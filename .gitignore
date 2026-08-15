@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.env
+solana/.env
+solana/keys/*.json
+!solana/keys/pubkeys.json
+solana/keys/*.tmp
+intel_data/
+profit_performance.json
+profit_brain_state.json
+near_miss_learning.json
+contracts.json
+solana/target/
+*.log
