@@ -1,16 +1,22 @@
 # TONI Solana programs (`liq` + `arb`)
 
-Anchor workspace scaffolding for the SOL side of the TONI dashboard.
-**Not deployed to mainnet.** Placeholder program IDs in `Anchor.toml` are
-compile-time stubs only.
+Anchor workspace scaffolding. **Placeholder program IDs are stubs — never
+send to `Arb1111…` / `Liq1111…`.** The dashboard live path is Python:
+
+| Path | What actually lands |
+|------|---------------------|
+| **Arb** | Fresh Jupiter `/quote` → `/swap` serialized tx (mainnet Jupiter v6) + Jito tip transfer, `sendBundle` |
+| **Liq** | Solend `LiquidateObligationAndRedeemReserveCollateral` (ix 17) + refresh + Jito tip, same bundle API |
+
+`execute_roundtrip` / `execute_plan` in these programs still `msg!(… stub)`.
+CPI is not required for LIVE.
 
 | Program | Path | Role |
 |---------|------|------|
-| `liq` | `programs/liq` | Solend liquidation plan executor (CPI stub) |
-| `arb` | `programs/arb` | Jupiter multi-hop round-trip arb executor (CPI stub) |
+| `liq` | `programs/liq` | Solend liquidation executor (CPI stub; unused when Python path is live) |
+| `arb` | `programs/arb` | Jupiter CPI stub; unused — Python talks to Jupiter directly |
 
-Primary lending target for the dashboard: **Solend (Save)** — labeled honestly
-in the UI as “Liquidatable Opportunities (Solend)”.
+Primary lending target: **Solend (Save)**.
 
 ## Practical MEV stack (dashboard)
 
@@ -18,10 +24,10 @@ in the UI as “Liquidatable Opportunities (Solend)”.
 |-------|----------------|-----------------|
 | Priority fees | `getRecentPrioritizationFees` → mempool twin + histogram | — |
 | Solend watch | Reserves util / APY (public API) | — |
-| Obligation HF | `getProgramAccounts` + `/v1/obligation?ids=` hydrate | GPA-capable `SOLANA_RPC` |
+| Obligation HF | `getProgramAccounts` + on-chain hydrate | GPA-capable `SOLANA_RPC` |
 | Competitors | Recent Solend sigs + log decode for `Liquidate*` | — |
-| Arb | Jupiter lite multi-pair size grid, priority-fee net, near-miss | — |
-| Broadcast | Dry-run plans + Jito tip **metadata** only | Deployed programs + `SOL_KEYPAIR` |
+| Arb | Jupiter lite multi-pair size grid, net after CU + Jito + slip | — |
+| Broadcast | **sim_only default.** LIVE = Jupiter/Solend txs + Jito bundle | arm + funded wallets + bot keypair + `solders` |
 
 Borrower HF is **not** a free public Solend list. The sweep documents that and
 still ships a real GPA probe path (often rate-limited on public RPCs).
@@ -86,16 +92,17 @@ Post-deploy (liq):
 ## Dashboard env wiring
 
 ```bash
-export SOL_LIQ_PROGRAM=<liq program pubkey>
-export SOL_ARB_PROGRAM=<arb program pubkey>
-export SOL_KEYPAIR=/home/kali/Downloads/bugbounty/x/aave-v4-dashboard/solana/keys/bot.json
+# SOL_LIQ_PROGRAM / SOL_ARB_PROGRAM: optional; stub IDs are ignored
+export SOL_KEYPAIR=/path/to/toni-aave-bot/solana/keys/bot.json
 export SOL_FUNDER=4BHGQ9CXhajxDq5b3jvKfimsXEsFHoHUi2qg21qYVnGy
 export SOL_SPONSOR=...   # auto-generated pubkey — see solana/keys/pubkeys.json
 export SOL_BOT=...
 export SOLANA_RPC=https://api.mainnet-beta.solana.com   # GPA-capable preferred
-export SOL_JITO_TIP_SOL=0.00001   # plan metadata only
+export SOL_JITO_TIP_SOL=0.00001        # floor; LIVE tip is a share of expected net
+export SOL_JITO_TIP_SHARE=0.15
 export MIN_SOL_ARB_USD=0.05
-export SOL_SIM_ONLY=1
+export SOL_SIM_ONLY=1                  # keep default; LIVE only after arm
+# JITO_UUID=                           # optional rate-limit auth
 ```
 
 Runtime keypairs (`sponsor.json`, `bot.json`) are created on dashboard start under
@@ -116,13 +123,18 @@ curl -s -X POST http://127.0.0.1:8081/api/control \
   -d '{"chain":"sol","armed":true,"sim_only":false,"arm_minutes":15}'
 ```
 
-Broadcast remains **blocked** until programs are deployed and `SOL_KEYPAIR` exists.
-Sim-only history records Jupiter / liq dry-run plans (with optional Jito tip field).
+Broadcast remains **simulated** while `SOL_SIM_ONLY=1` (default). Arm LIVE from
+the dashboard (`sim_only: false`, `armed: true`) **and** fund wallets: sponsor
+≥ 0.01 SOL, bot ≥ 0.05 SOL. Then +EV arb lands as a Jupiter+Jito bundle; +EV
+liq lands when Solend accounts + repay inventory are present.
 
 ## Status honesty
 
-- Programs are **scaffolds**: `execute_*` emits events / bumps counters; Solend +
-  Jupiter CPIs are TODO.
-- Do not report mainnet deploy unless `solana program show <id>` succeeds with
-  your keypair.
-- Never spam Jito bundles without an auth key — tip is plan metadata only.
+- On-chain programs are **scaffolds**. LIVE does **not** call them.
+- Arb LIVE: Jupiter `/swap` (fresh quote used immediately) + Jito `sendBundle`.
+- Liq LIVE: Python Solend ix 17. Remaining gaps: flash-loan repay (bot must
+  already hold the debt token), optional liquidator whitelist, ALT if the tx
+  exceeds packet size.
+- Dynamic Jito tip is a share of expected net (`SOL_JITO_TIP_SHARE`, default
+  15%) with a floor from `SOL_JITO_TIP_SOL`, capped so net stays > 0 and ≥ floor.
+- Never spam Jito without intent: sim_only is default; LIVE requires arm.

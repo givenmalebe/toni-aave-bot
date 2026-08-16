@@ -2,3 +2,5 @@ aiohttp
 requests
 pynacl
 base58
+numpy
+solders

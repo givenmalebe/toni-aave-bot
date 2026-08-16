@@ -1,7 +1,7 @@
 {
   "funder": "4BHGQ9CXhajxDq5b3jvKfimsXEsFHoHUi2qg21qYVnGy",
-  "sponsor": "4cTjTSuJ8KSyxwJvwyyBUyxKsDUSfY2prNTC6a8VM4LV",
-  "bot": "AaapcACCaUPqYLN9HXyGYyKoUV9rBdUTXAVrLoZSRXyK",
+  "sponsor": "HgxWXyiMWbyaSBTFE2JiPyRHEDpRUTjVw1hHYXSxRFE7",
+  "bot": "B3nQ7TA4XemyoUvkCbRH9W5Grn1B3VpXfM6LeX8zLgNV",
   "sponsor_role": "Jito tip + priority-fee payer",
   "bot_role": "swap CU fees + small inventory",
   "sponsor_target_sol": 0.08,

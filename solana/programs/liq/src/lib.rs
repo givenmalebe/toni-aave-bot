@@ -1,10 +1,11 @@
 //! TONI `liq` — Solana liquidation plan executor (scaffold).
 //!
-//! Target protocol: Solend (Save). Instructions are compile-ready stubs:
-//! full Solend CPI + flash repay/seize needs the live Solend SDK accounts
-//! wired in a follow-up. Do not treat placeholder program IDs as deployed.
+//! Live TONI liq send is Python: Solend `LiquidateObligationAndRedeemReserveCollateral`
+//! (ix 17) + refresh ixs + Jito bundle, built in `sol_scanner._live_send_liq`.
+//! This program's `execute_plan` is still a stub (no Solend CPI). Do not send
+//! to placeholder `Liq1111…`.
 //!
-//! Account layout for future CPI (remaining_accounts order):
+//! Account layout for the Python builder (and a future CPI):
 //!   0 obligation, 1 repay_reserve, 2 withdraw_reserve,
 //!   3 repay_source_liquidity, 4 withdraw_destination_collateral,
 //!   5 lending_market, 6 lending_market_authority, 7 solend_program
@@ -119,7 +120,7 @@ pub mod liq {
             profit_usd_micros: plan.expected_profit_usd_micros,
             jito_tip_lamports: plan.jito_tip_lamports,
         });
-        msg!("liq:execute stub — wire Solend CPI before mainnet arm");
+        msg!("liq:execute stub — dashboard live path is Python Solend+Jito, not this CPI");
         Ok(())
     }
 

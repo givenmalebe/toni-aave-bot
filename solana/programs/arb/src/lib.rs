@@ -1,11 +1,13 @@
 //! TONI `arb` — DEX round-trip executor (Jupiter CPI placeholder).
 //!
-//! Instructions are compile-ready stubs. Live Jupiter swap CPI requires the
-//! Jupiter aggregator program accounts + route plan from the quote API.
+//! Live TONI send path is Python: Jupiter `/swap` serialized tx + Jito bundle
+//! (`sol_scanner.submit_sol_plan`). This on-chain program is a compile-ready
+//! stub only — `execute_roundtrip` does **not** CPI into Jupiter. Never deploy
+//! or send to the placeholder `Arb1111…` id (no-op would burn CU).
 //!
-//! Remaining accounts for future CPI (execute_roundtrip):
+//! Remaining accounts if CPI is wired later:
 //!   Jupiter route account metas from `/swap` serialized transaction,
-//!   plus optional Jito tip account (not transferred in stub).
+//!   plus optional Jito tip account.
 
 use anchor_lang::prelude::*;
 
@@ -98,7 +100,7 @@ pub mod arb {
             jito_tip_lamports: plan.jito_tip_lamports,
             priority_fee_ul: plan.priority_fee_ul,
         });
-        msg!("arb:execute stub — wire Jupiter CPI before mainnet arm");
+        msg!("arb:execute stub — dashboard live path is Python Jupiter+Jito, not this CPI");
         Ok(())
     }
 

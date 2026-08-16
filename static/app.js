@@ -341,6 +341,53 @@
   const solIntelTrendHist = [];
   let solMpFilter = "all", solOpFilter = "all", solArFilter = "all", solBcFilter = "all", solCpFilter = "all";
   let solMpLiveCache = [], solOpCache = [], solArCache = [], solBcRowsCache = [], solCpCache = [];
+  let solOpLastMeta = {}, solCpLastMeta = {};
+  const solHfUrgency = (hf) => {
+    if (hf == null || hf >= 100) return { cls: "ok", label: "—" };
+    if (hf < 1.0) return { cls: "crit", label: "liq" };
+    if (hf < 1.05) return { cls: "hot", label: "hot" };
+    if (hf < 1.1) return { cls: "warm", label: "warm" };
+    if (hf < 1.25) return { cls: "ok", label: "ok" };
+    return { cls: "ok", label: "safe" };
+  };
+  const solHfClass = (hf) => {
+    if (hf == null) return "op-hf-ok";
+    if (hf < 1.0) return "op-hf-crit";
+    if (hf < 1.05) return "op-hf-hot";
+    if (hf < 1.1) return "op-hf-warm";
+    return "op-hf-ok";
+  };
+  const solShortPk = (pk) => {
+    const s = pk || "";
+    if (!s) return "--";
+    return s.length > 12 ? `${s.slice(0, 6)}…${s.slice(-4)}` : s;
+  };
+  const solLiqFlagBits = (o) => {
+    const bits = [];
+    if (o.actionable && o.submit === "live") bits.push(`<span class="pill ok">LIVE</span>`);
+    else if (o.actionable) bits.push(`<span class="pill warn">+EV sim</span>`);
+    if (o.submit === "blocked")
+      bits.push(`<span class="pill blocked" title="${o.submit_reason || "blocked"}">blocked</span>`);
+    else if (o.submit === "sim")
+      bits.push(`<span class="pill" title="${o.submit_reason || "sim-only"}">sim</span>`);
+    if (o.flash || o.use_flash)
+      bits.push(`<span class="pill accent" title="Solend flash ${o.flash_fee_bps != null ? o.flash_fee_bps + " bps" : ""}">flash</span>`);
+    if (o.flash_fee_bps != null && Number(o.flash_fee_bps) > 0)
+      bits.push(`<span class="pill" title="flash fee ${fmt.usd(o.flash_fee_usd)}">${fmt.num(o.flash_fee_bps, 0)} bps</span>`);
+    const left = [].concat(o.leftover || o.account_gaps || (o.plan && o.plan.account_gaps) || []).filter(Boolean);
+    if (left.length)
+      bits.push(`<span class="pill blocked" title="${left.join(", ")}">leftover</span>`);
+    if (o.race || o.contested)
+      bits.push(`<span class="pill warn">race</span>`);
+    if (o.edge) bits.push(`<span class="pill accent">edge</span>`);
+    if (o.source) bits.push(`<span class="pill">${o.source}</span>`);
+    const user = o.obligation || o.user || "";
+    if (user) {
+      bits.push(`<a class="op-link" href="https://solscan.io/account/${user}" target="_blank" rel="noopener">↗</a>`);
+      bits.push(`<span class="mono copy op-link" data-addr="${user}" title="${user}">copy</span>`);
+    }
+    return bits.join(" ") || `<span class="dim">—</span>`;
+  };
   let solAlFilter = "all", solAlCat = "all", solAlSearch = "", solAlAutoscroll = true;
   let solLogLines = [];
 
@@ -371,22 +418,34 @@
   };
 
   const updateSolBots = (sol) => {
-    const el = $("sol-bots-list");
-    if (!el) return;
-    const labels = {
-      mempool: "Priority Fee Watcher", prices: "Slot / SOL Price", funds: "SOL Funds",
-      sweep: "Solend Opportunity Sweep", competitors: "Solend Program Watch",
-      arb: "Jupiter Arb Scanner", intel: "SOL Learning / Intel", broadcast: "SOL Broadcast",
-    };
-    el.innerHTML = Object.entries(labels).map(([k, name]) => {
-      const b = (sol.bots || {})[k] || {};
-      const age = b.last ? fmt.age(b.last) + " ago" : "never";
-      return `<div class="bot">
-        <span class="st ${b.status || "idle"}"></span>
-        <div><div class="b-name">${name}</div>
-          <div class="b-last">${age}</div>
-          <div class="b-msg">${b.msg || ""}</div></div></div>`;
-    }).join("");
+    const funds = sol.funds || {};
+    renderBotsFleet({
+      listId: "sol-bots-list",
+      tagId: "sol-bots-tag",
+      pressureId: "sol-bots-pressure",
+      modeId: "sol-bots-mode",
+      walletsId: "sol-bots-wallets",
+      counts: { ok: "sol-bots-n-ok", run: "sol-bots-n-run", err: "sol-bots-n-err", idle: "sol-bots-n-idle" },
+      bots: (sol || {}).bots,
+      labels: {
+        mempool: "Priority Fee Watcher", prices: "Slot / SOL Price", funds: "SOL Funds",
+        sweep: "Solend Opportunity Sweep", competitors: "Solend Program Watch",
+        arb: "Jupiter Arb Scanner", intel: "SOL Learning / Intel", broadcast: "SOL Broadcast",
+      },
+      roles: {
+        mempool: "landing", prices: "oracle", funds: "wallets", sweep: "HF",
+        competitors: "liq", arb: "Jup", intel: "learn", broadcast: "submit",
+      },
+      funds,
+      wallets: (sol || {}).wallets || {
+        funder: (funds.funder || {}).pubkey,
+        sponsor: (funds.sponsor || {}).pubkey,
+        bot: (funds.bot || {}).pubkey,
+      },
+      bc: (sol || {}).broadcast,
+      unit: "SOL",
+      balKey: "sol",
+    });
   };
 
   const updateSolFunds = (sol) => {
@@ -434,14 +493,14 @@
           return `<tr><td>${n} <span class="tag sol-tag">${tags[n] || f.role || ""}</span></td><td>${amt}</td><td>${tgt}</td><td>${addr}</td></tr>`;
         }).join("") + `</tbody></table>`;
     }
+    const g = sol.fund_guide || {};
+    const sp = (funds.sponsor || {}).pubkey || g.sponsor || wallets.sponsor || "";
+    const bt = (funds.bot || {}).pubkey || g.bot || wallets.bot || "";
+    const fd = (funds.funder || {}).pubkey || g.from_pubkey || wallets.funder || "";
+    const ts = g.sponsor_target_sol != null ? g.sponsor_target_sol : 0.08;
+    const tb = g.bot_target_sol != null ? g.bot_target_sol : 0.25;
     const check = $("sol-fund-checklist");
     if (check) {
-      const g = sol.fund_guide || {};
-      const sp = (funds.sponsor || {}).pubkey || g.sponsor || wallets.sponsor || "";
-      const bt = (funds.bot || {}).pubkey || g.bot || wallets.bot || "";
-      const fd = (funds.funder || {}).pubkey || g.from_pubkey || wallets.funder || "";
-      const ts = g.sponsor_target_sol != null ? g.sponsor_target_sol : 0.08;
-      const tb = g.bot_target_sol != null ? g.bot_target_sol : 0.25;
       const row = (label, amt, pk, note) => {
         const short = pk ? `${pk.slice(0, 4)}…${pk.slice(-4)}` : "unset";
         return `<div class="sol-fund-row"><span class="dim">${label}</span><b>${amt}</b>` +
@@ -454,6 +513,19 @@
         `<div class="sol-fund-h">send from funder <span class="mono copy" data-addr="${fd}">${fd ? fd.slice(0,4)+"…"+fd.slice(-4) : "—"}</span></div>` +
         row("sponsor", ts + " SOL", sp, "Jito + prio") +
         row("bot", tb + " SOL", bt, "CU + inventory");
+    }
+    const amtEl = $("sol-fund-amt");
+    if (amtEl && amtEl.dataset.dirty !== "1") {
+      const tgt = Number(ts);
+      if (tgt > 0) amtEl.value = String(tgt);
+    }
+    const hint = $("sol-fund-hint");
+    if (hint) {
+      const sf = Number((funds.sponsor || {}).shortfall_sol || 0);
+      hint.textContent = sf > 0
+        ? `sponsor shortfall ${fmt.num(sf, 4)} SOL`
+        : (sp ? `sponsor ${sp.slice(0, 4)}…${sp.slice(-4)}` : "sponsor pubkey unset");
+      hint.className = sf > 0 ? "amber" : "dim";
     }
   };
 
@@ -475,20 +547,33 @@
     const empty = $("sol-mp-mev-empty");
     const note = $("sol-mp-mev-note");
     if (!body) return;
+    const kindOf = (t) => (t.kind || t.flags || t.cls || "").toLowerCase();
     const live = solMpFilter === "all" ? solMpLiveCache
-      : solMpLiveCache.filter((t) => t.cls === solMpFilter);
-    if (note) note.textContent = `${live.length}/${solMpLiveCache.length} · fee-sorted`;
+      : solMpLiveCache.filter((t) => {
+          const k = kindOf(t);
+          if (solMpFilter === "mev") return k === "jito" || k === "backrun" || k === "mev";
+          if (solMpFilter === "hot") return t.cls === "hot" || k === "liq";
+          return k === solMpFilter || t.cls === solMpFilter;
+        });
+    if (note) note.textContent = `${live.length}/${solMpLiveCache.length} · landing`;
     if (empty) empty.style.display = live.length ? "none" : "block";
     body.innerHTML = live.slice(0, 50).map((t) => {
       const slot = t.slot != null ? String(t.slot) : "--";
-      const link = t.solscan
-        ? `<a href="${t.solscan}" target="_blank" rel="noopener" style="color:var(--violet)">${slot.slice(-8)}</a>`
+      const kind = t.kind || t.flags || t.cls || "?";
+                    const link = t.solscan
+        ? `<a href="${t.solscan}" target="_blank" rel="noopener" style="color:var(--violet)">${(t.sig || t.tx || slot).toString().slice(0, 10)}</a>` +
+          (t.sig || t.tx ? ` <span class="mono copy op-link" data-addr="${t.sig || t.tx}" title="${t.sig || t.tx}">copy</span>` : "")
         : `<span class="mono dim">${slot.slice(-8)}</span>`;
+      const pair = t.pair || t.searcher || "";
+      const hf = t.hf != null ? fmt.num(t.hf, 3) : (t.fee != null ? fmtUl(t.fee) : "—");
+      const net = t.profit_usd != null ? fmt.usd(t.profit_usd, 3)
+        : (t.vs_med != null ? fmt.num(t.vs_med, 1) + "×" : "—");
       return `<tr>
-        <td><span class="mp-cls sol-fee ${t.cls || ""}">${t.cls || "?"}</span></td>
+        <td><span class="sol-kind ${kind}">${kind}</span></td>
         <td class="mono" title="${slot}">${slot}</td>
-        <td><b>${fmtUl(t.fee)}</b></td>
-        <td class="dim">${t.vs_med != null ? fmt.num(t.vs_med, 1) + "×" : "—"}</td>
+        <td>${pair}</td>
+        <td>${hf}</td>
+        <td class="${Number(t.profit_usd) > 0 ? "green" : "dim"}">${net}</td>
         <td>${link}</td>
       </tr>`;
     }).join("");
@@ -502,8 +587,8 @@
       e.textContent = v;
       if (cls) e.className = "big " + cls;
     };
-    set("sol-mp-count", fmt.num(m.count, 0));
-    set("sol-mp-queued", fmt.num(meta.slots != null ? meta.slots : m.queued, 0), "dim");
+    set("sol-mp-count", fmt.num(meta.liq_hits != null ? meta.liq_hits : 0));
+    set("sol-mp-queued", fmt.num(meta.mev_hits != null ? meta.mev_hits : (meta.jito_bundles || 0)), "dim");
     set("sol-mp-mev-live-n", meta.median_fee != null ? fmtUl(meta.median_fee) : "--", "amber");
     set("sol-mp-mev-share", meta.p90_fee != null ? fmtUl(meta.p90_fee) : "--", "dim");
     const badge = $("sol-mp-pressure");
@@ -514,16 +599,14 @@
     const metaEl = $("sol-mp-meta");
     if (metaEl) {
       const tps = meta.tps != null ? fmt.num(meta.tps, 0) : "--";
-      const nv = meta.nv_tps != null ? fmt.num(meta.nv_tps, 0) : "--";
       metaEl.innerHTML =
         `<span>p99 <b>${fmtUl(meta.p99_fee)}</b></span>` +
-        `<span>max <b>${fmtUl(meta.max_fee)}</b></span>` +
-        `<span>avg <b>${fmtUl(meta.avg_fee)}</b></span>` +
-        `<span>zero <b>${fmt.num(meta.zero_pct, 0)}%</b></span>` +
-        `<span>hot <b>${fmt.num(meta.hot_share_pct, 0)}%</b></span>` +
+        `<span>decoded <b>${fmt.num(meta.decoded, 0)}</b></span>` +
+        `<span>refresh <b>${fmt.num(meta.refresh_n, 0)}</b></span>` +
+        `<span>jito <b>${fmt.num(meta.jito_bundles, 0)}</b></span>` +
+        `<span>race <b>${fmt.num(meta.contested, 0)}</b></span>` +
         `<span>TPS <b>${tps}</b></span>` +
-        `<span>non-vote <b>${nv}</b></span>` +
-        `<span class="dim">µl / CU</span>`;
+        `<span class="dim">${meta.landing_note || "landing + µl/CU"}</span>`;
     }
     const track = $("sol-mp-mix-track");
     const keys = $("sol-mp-mev");
@@ -542,7 +625,7 @@
         `<span><i style="display:inline-block;width:7px;height:7px;border-radius:2px;background:${SOL_FEE_COLORS[k] || "#64748b"};margin-right:4px"></i>${k} <b>${mev[k]}</b></span>`
       ).join("") || `<span class="dim">scanning priority fees…</span>`;
     }
-    solMpLiveCache = m.mev_txs || [];
+    solMpLiveCache = (m.hits && m.hits.length) ? m.hits : (m.mev_txs || []);
     renderSolMpLive();
     const topBody = $("sol-mp-top-table") && $("sol-mp-top-table").querySelector("tbody");
     if (topBody) {
@@ -605,80 +688,152 @@
     if (!body) return;
     let rows = solOpCache;
     if (solOpFilter === "edge") rows = rows.filter((o) => o.edge);
-    else if (solOpFilter === "profit") rows = rows.filter((o) => Number(o.profit_usd) > 0);
-    else if (solOpFilter === "hot") rows = rows.filter((o) => o.urgency === "hot");
-    else if (solOpFilter === "elev") rows = rows.filter((o) => o.urgency === "elevated" || o.urgency === "hot");
-    if (empty) empty.style.display = rows.length ? "none" : "block";
-    body.innerHTML = rows.slice(0, 40).map((o) =>
-      `<tr><td class="mono">${o.user || o.symbol || ""}</td>
-        <td>${o.hf != null ? fmt.num(o.hf, 3) : "--"}</td>
-        <td>${o.collateral_sym || "?"} → ${o.debt_sym || "?"}</td>
-        <td>${o.profit_usd != null ? fmt.usd(o.profit_usd) : "—"}</td>
-        <td>${o.util_pct != null ? fmt.num(o.util_pct, 1) + "%" : (o.edge ? "edge" : "—")}</td>
-        <td>${o.urgency || ""}</td></tr>`
-    ).join("");
+    else if (solOpFilter === "profit") rows = rows.filter((o) => Number(o.net_usd != null ? o.net_usd : o.profit_usd) > 0);
+    else if (solOpFilter === "race") rows = rows.filter((o) => o.race || o.contested);
+    else if (solOpFilter === "hf1") rows = rows.filter((o) => o.hf != null && o.hf < 1);
+    const note = $("sol-op-feed-note");
+    if (note) note.textContent = `${rows.length}/${solOpCache.length} · HF<1 · skip dust`;
+    if (empty) {
+      if (rows.length) {
+        empty.style.display = "none";
+        empty.classList.remove("err");
+      } else {
+        empty.style.display = "block";
+        const m = solOpLastMeta || {};
+        if (m.status && String(m.status).startsWith("err")) {
+          empty.classList.add("err");
+          empty.textContent = "sweep error: " + m.status;
+        } else if (m.last_scan || m.last_slot) {
+          empty.classList.remove("err");
+          empty.textContent = `no HF<1 +EV this scan · ${fmt.num(m.scanned || m.obligation_hydrated || 0, 0)} hydrates`
+            + (m.obligation_probed != null ? ` · ${fmt.num(m.obligation_probed, 0)} GPA` : "")
+            + (m.last_slot ? ` · slot ${m.last_slot}` : "")
+            + (m.last_scan ? ` · ${fmt.age(m.last_scan)} ago` : "");
+        } else {
+          empty.classList.remove("err");
+          empty.textContent = "scanning Solend obligations for HF<1…";
+        }
+      }
+    }
+    body.innerHTML = rows.slice(0, 60).map((o) => {
+      const user = o.obligation || o.user || "";
+      const short = solShortPk(user);
+      const hf = o.hf;
+      const hfCell = hf == null ? "--" : (hf >= 100 ? "∞" : Number(hf).toFixed(3));
+      const pair = `${o.coll_sym || o.collateral_sym || "?"} → ${o.debt_sym || "?"}`;
+      const sizes = (o.coll_usd != null || o.debt_usd != null)
+        ? `<div class="dim">${fmt.usd(o.coll_usd)} / ${fmt.usd(o.debt_usd)}</div>` : "";
+      const net = o.net_usd != null ? o.net_usd : o.profit_usd;
+      const netColor = net == null ? "var(--dim)" : net > 0 ? "var(--green)" : "var(--red)";
+      return `<tr>
+        <td class="mono copy" data-addr="${user}" title="${user}">${short}</td>
+        <td class="${solHfClass(hf)}">${hfCell}</td>
+        <td><b>${pair}</b>${sizes}</td>
+        <td style="color:var(--amber)">${o.liq_bonus_pct != null ? o.liq_bonus_pct + "%" : (o.bonus_usd != null ? fmt.usd(o.bonus_usd) : "--")}</td>
+        <td style="color:${netColor}"><b>${net != null ? fmt.usd(net) : "--"}</b></td>
+        <td>${solLiqFlagBits(o)}</td>
+      </tr>`;
+    }).join("");
   };
 
   const updateSolOpps = (sol) => {
     const meta = sol.opportunities_meta || {};
+    solOpLastMeta = meta;
+    const opps = (sol.opportunities || []).filter((o) => !o.proxy && o.hf != null && o.hf < 1);
+    const wl = (sol.watchlist || []).filter((w) => !w.proxy && w.hf != null);
     const set = (id, v, cls) => {
       const e = $(id); if (!e) return;
       e.textContent = v;
       if (cls) e.className = "big " + cls;
     };
-    set("sol-op-count", fmt.num(meta.count, 0));
+    const count = meta.count != null ? meta.count : opps.length;
+    set("sol-op-count", fmt.num(count, 0));
     set("sol-op-best", meta.best_profit ? fmt.usd(meta.best_profit) : "--", "green");
     set("sol-op-edge-n", fmt.num(meta.edge_n, 0), "amber");
-    set("sol-op-sweep", `${fmt.num(meta.sweep_total, 0)} / ${fmt.num(meta.watch_n, 0)}`, "dim");
+    set("sol-op-sweep", fmt.num(meta.scanned != null ? meta.scanned : (meta.obligation_hydrated || 0), 0), "dim");
     const badge = $("sol-op-pressure");
     if (badge) {
       badge.textContent = meta.pressure || "idle";
       badge.className = "op-pressure-badge " + (meta.pressure || "idle");
     }
+    const closest = wl[0];
+    const closestEl = $("sol-op-closest-hf");
+    const closestHf = closest && closest.hf != null ? Number(closest.hf) : null;
+    if (closestEl) {
+      closestEl.textContent = closestHf == null ? "--" : (closestHf >= 100 ? "∞" : closestHf.toFixed(4));
+      closestEl.className = "big " + (closestHf != null && closestHf < 1.05 ? "red" : closestHf != null && closestHf < 1.1 ? "amber" : "dim");
+    }
+    const cu = $("sol-op-closest-user");
+    if (cu) {
+      const pk = closest ? (closest.user || closest.obligation || "") : "";
+      cu.textContent = pk ? solShortPk(pk) : "--";
+      cu.className = "dim mono copy";
+      if (pk) { cu.dataset.addr = pk; cu.title = pk; }
+    }
+    const urg = $("sol-op-urgency");
+    if (urg) {
+      const buckets = [
+        { label: "<1.00", n: wl.filter((w) => Number(w.hf) < 1).length },
+        { label: "1–1.05", n: wl.filter((w) => { const h = Number(w.hf); return h >= 1 && h < 1.05; }).length },
+        { label: "1.05–1.1", n: wl.filter((w) => { const h = Number(w.hf); return h >= 1.05 && h < 1.1; }).length },
+        { label: "1.1+", n: wl.filter((w) => Number(w.hf) >= 1.1).length },
+      ];
+      const maxN = Math.max(1, ...buckets.map((b) => b.n));
+      urg.innerHTML = buckets.map((b) =>
+        `<div class="op-urg-row"><span>${b.label}</span>` +
+        `<div class="op-urg-bar"><i style="width:${Math.round(100 * b.n / maxN)}%"></i></div>` +
+        `<span>${b.n}</span></div>`).join("");
+    }
     const metaEl = $("sol-op-meta");
     if (metaEl) {
+      const sweepBot = (sol.bots || {}).sweep || {};
+      const gate = meta.submit_gate || "blocked";
       metaEl.innerHTML =
-        `<span>status <b>${meta.status || "—"}</b></span>` +
-        `<span>scan <b>${meta.scan_ms != null ? meta.scan_ms + "ms" : "--"}</b></span>` +
-        `<span>gpa <b>${meta.obligation_probed != null ? meta.obligation_probed : "—"}</b></span>` +
-        `<span>${meta.note || "watchlist = reserve util"}</span>`;
+        `<span>Σ net <b style="color:var(--green)">${fmt.usd(meta.sum_profit)}</b></span>` +
+        `<span>watch <b>${fmt.num(wl.length, 0)}</b></span>` +
+        (meta.scanned != null ? `<span>scanned <b>${fmt.num(meta.scanned, 0)}</b></span>` : "") +
+        (meta.obligation_hydrated != null ? `<span>hyd <b>${fmt.num(meta.obligation_hydrated, 0)}</b></span>` : "") +
+        (sweepBot.status ? `<span>sweep <b>${sweepBot.status}</b></span>` : "") +
+        `<span>gate <b>${gate}</b></span>` +
+        (meta.last_slot ? `<span>slot <b>${meta.last_slot}</b></span>` : "") +
+        (meta.last_scan ? `<span>${fmt.age(meta.last_scan)} ago</span>` : "") +
+        (meta.avg_hf != null ? `<span>avg HF <b>${Number(meta.avg_hf).toFixed(3)}</b></span>` : "");
     }
-    const wl = sol.watchlist || [];
-    const closest = wl[0];
-    set("sol-op-closest-hf", closest && closest.hf != null ? fmt.num(closest.hf, 3) : "--");
-    const cu = $("sol-op-closest-user");
-    if (cu) cu.textContent = closest ? (closest.symbol || closest.user || "") : "--";
-    const urg = $("sol-op-urgency");
-    if (urg) urg.textContent = closest ? (closest.urgency || "") + (closest.util_pct != null ? ` · ${closest.util_pct}% util` : "") : "";
-    const mix = meta.pair_mix || [];
+    const mix = (meta.pair_mix && meta.pair_mix.length) ? meta.pair_mix : [];
     const track = $("sol-op-mix-track");
     const keys = $("sol-op-mix-keys");
     const tot = mix.reduce((a, m) => a + (m.n || 0), 0) || 1;
     if (track) {
-      track.innerHTML = mix.map((m, i) =>
-        `<i style="width:${Math.max(4, 100 * (m.n || 0) / tot)}%;background:${palette[i % palette.length]}"></i>`
-      ).join("");
+      track.innerHTML = mix.length
+        ? mix.map((m, i) =>
+            `<span style="width:${Math.max(4, m.pct || (100 * (m.n || 0) / tot))}%;background:${palette[i % palette.length]}" title="${m.pair}"></span>`
+          ).join("")
+        : `<span style="width:100%;background:#334155"></span>`;
     }
     if (keys) {
-      keys.innerHTML = mix.map((m) => `<span>${m.pair} <b>${m.n}</b></span>`).join("")
-        || `<span class="dim">scanning Solend…</span>`;
+      keys.innerHTML = mix.length
+        ? mix.map((m) => `<span>${m.pair} <b>${m.n}</b></span>`).join("")
+        : `<span class="dim">no liquidatable pairs</span>`;
     }
-    // opportunities empty; watchlist shown in both feed (as util rows) + watch table
-    solOpCache = (sol.opportunities || []).length
-      ? sol.opportunities
-      : wl.map((w) => ({ ...w, profit_usd: null, edge: false }));
+    solOpCache = opps.slice(0, 80);
     renderSolOpps();
-    const wbody = $("sol-watch-table") && $("sol-watch-table").querySelector("tbody");
     const wnote = $("sol-watch-note");
-    if (wnote) wnote.textContent = String(wl.length);
+    if (wnote) wnote.textContent = `${Math.min(wl.length, 10)} tracked · lowest HF`;
+    const wbody = $("sol-watch-table") && $("sol-watch-table").querySelector("tbody");
     if (wbody) {
-      wbody.innerHTML = wl.slice(0, 30).map((w) =>
-        `<tr><td>${w.symbol || w.user || ""}</td>
-          <td>${w.hf != null ? fmt.num(w.hf, 3) : "--"}</td>
-          <td>${w.supply_apy != null ? w.supply_apy + "%" : (w.collateral_sym || "")}</td>
-          <td>${w.borrow_apy != null ? w.borrow_apy + "%" : (w.debt_sym || "")}</td>
-          <td>${w.urgency || (w.util_pct != null ? w.util_pct + "%" : "")}</td></tr>`
-      ).join("");
+      wbody.innerHTML = wl.slice(0, 10).map((w) => {
+        const hf = Number(w.hf);
+        const hfCell = hf >= 100 ? "∞" : hf.toFixed(3);
+        const urg = solHfUrgency(hf);
+        const user = w.user || w.obligation || "";
+        return `<tr>
+          <td class="mono copy" data-addr="${user}" title="click to copy">${solShortPk(user)}</td>
+          <td class="${solHfClass(hf)}">${hfCell}</td>
+          <td>${fmt.usd(w.coll_usd)}</td>
+          <td>${fmt.usd(w.debt_usd)}</td>
+          <td><span class="op-urg ${urg.cls}">${urg.label}</span></td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="5" class="dim">waiting for Solend obligation hydrates…</td></tr>`;
     }
   };
 
@@ -687,22 +842,66 @@
     const empty = $("sol-comp-empty");
     if (!body) return;
     let rows = solCpCache;
-    if (solCpFilter === "miss") rows = rows.filter((r) => r.missed);
+    if (solCpFilter === "miss") rows = rows.filter((r) => r.missed || r.missed_by_us);
     else if (solCpFilter === "edge") rows = rows.filter((r) => r.edge);
-    else if (solCpFilter === "profit") rows = rows.filter((r) => Number(r.est) > 0);
+    else if (solCpFilter === "profit") rows = rows.filter((r) => Number(r.net != null ? r.net : r.est) > 0);
     else if (solCpFilter === "revert") rows = rows.filter((r) => /revert/i.test(r.flags || ""));
-    if (empty) empty.style.display = rows.length ? "none" : "block";
-    body.innerHTML = rows.slice(0, 40).map((r) =>
-      `<tr><td>${r.slot || r.age || ""}</td><td>${r.pair || ""}</td><td>${r.searcher || ""}</td>
-        <td>${r.user || ""}</td><td>${r.gas_usd != null ? fmt.usd(r.gas_usd) : "—"}</td>
-        <td>${r.est != null ? fmt.usd(r.est) : "—"}</td>
-        <td>${r.net != null ? fmt.usd(r.net) : "—"}</td>
-        <td>${r.flags || ""}</td><td class="mono">${r.tx || ""}</td></tr>`
-    ).join("");
+    const note = $("sol-cp-feed-note");
+    if (note) note.textContent = `${rows.length}/${solCpCache.length} · newest first`;
+    if (empty) {
+      if (rows.length) {
+        empty.style.display = "none";
+        empty.classList.remove("err");
+      } else {
+        empty.style.display = "block";
+        const m = solCpLastMeta || {};
+        if (m.status && String(m.status).startsWith("err")) {
+          empty.classList.add("err");
+          empty.textContent = "scan error: " + m.status;
+        } else if (m.last_scan || m.last_slot) {
+          empty.classList.remove("err");
+          empty.textContent = `no Solend liquidations this window`
+            + (m.scanned != null ? ` · ${fmt.num(m.scanned, 0)} sigs` : "")
+            + (m.last_slot ? ` · slot ${m.last_slot}` : "")
+            + (m.last_scan ? ` · ${fmt.age(m.last_scan)} ago` : "");
+        } else {
+          empty.classList.remove("err");
+          empty.textContent = "scanning Solend liquidate signatures…";
+        }
+      }
+    }
+    body.innerHTML = rows.slice(0, 50).map((c) => {
+      const searcher = c.searcher || "";
+      const user = c.user || "";
+      const sig = c.sig || c.tx || "";
+      const net = c.net != null ? c.net : c.net_est_usd;
+      const netColor = net == null ? "var(--dim)" : net >= 0 ? "var(--green)" : "var(--red)";
+      const flags = [];
+      if (c.missed || c.missed_by_us) flags.push(`<span class="cp-flag miss">miss</span>`);
+      if (c.edge) flags.push(`<span class="cp-flag edge">edge</span>`);
+      if (/revert/i.test(c.flags || "")) flags.push(`<span class="cp-flag revert">revert</span>`);
+      flags.push(`<span class="pill">solend</span>`);
+      const tx = sig
+        ? `<a href="${c.solscan || ("https://solscan.io/tx/" + sig)}" target="_blank" rel="noopener" style="color:var(--cyan)">${sig.slice(0, 8)}…</a>` +
+          ` <span class="mono copy op-link" data-addr="${sig}" title="${sig}">copy</span>`
+        : `<span class="dim">--</span>`;
+      return `<tr>
+        <td class="dim" title="slot ${c.slot || "?"}">${c.ts ? fmt.age(c.ts) : (c.slot || "--")}</td>
+        <td><b>${c.pair || "solend-liq"}</b></td>
+        <td class="mono copy" data-addr="${searcher}" title="${searcher}">${solShortPk(searcher)}</td>
+        <td class="mono copy dim" data-addr="${user}" title="${user}">${solShortPk(user)}</td>
+        <td>${c.gas_usd != null ? fmt.usd(c.gas_usd) : "--"}</td>
+        <td style="color:${c.est != null ? "var(--amber)" : "var(--dim)"}">${c.est != null ? fmt.usd(c.est) : "n/a"}</td>
+        <td style="color:${netColor}"><b>${net != null ? fmt.usd(net) : "--"}</b></td>
+        <td>${flags.join(" ")}</td>
+        <td>${tx}</td>
+      </tr>`;
+    }).join("");
   };
 
   const updateSolCompetitors = (sol, hist) => {
     const meta = sol.competitors_meta || {};
+    solCpLastMeta = meta;
     const set = (id, v, cls) => {
       const e = $(id); if (!e) return;
       e.textContent = v;
@@ -711,7 +910,10 @@
     set("sol-cp-count", fmt.num(meta.count_1h, 0));
     set("sol-cp-searchers", fmt.num(meta.unique_searchers, 0), "dim");
     set("sol-cp-sum-est", meta.sum_est_profit ? fmt.usd(meta.sum_est_profit) : "—", "amber");
-    set("sol-cp-missed", fmt.num(meta.missed_by_us, 0), "red");
+    set("sol-cp-missed",
+      meta.missed_by_us
+        ? `${fmt.num(meta.missed_by_us, 0)}${meta.miss_rate_pct ? ` · ${fmt.num(meta.miss_rate_pct, 0)}%` : ""}`
+        : "0", "red");
     const badge = $("sol-cp-pressure");
     if (badge) {
       badge.textContent = meta.pressure || "idle";
@@ -720,9 +922,14 @@
     const metaEl = $("sol-cp-meta");
     if (metaEl) {
       metaEl.innerHTML =
-        `<span>status <b>${meta.status || "—"}</b></span>` +
+        `<span>Σ miss <b>${fmt.num(meta.missed_by_us, 0)}</b></span>` +
+        `<span>edge <b>${fmt.num(meta.edge_n, 0)}</b></span>` +
         `<span>reverts <b>${fmt.num(meta.revert_n, 0)}</b></span>` +
-        `<span>${meta.note || ""}</span>`;
+        `<span>scanned <b>${fmt.num(meta.scanned, 0)}</b></span>` +
+        `<span>tracked <b>${fmt.num(meta.total, 0)}</b></span>` +
+        (meta.last_slot ? `<span>slot <b>${meta.last_slot}</b></span>` : "") +
+        (meta.last_scan ? `<span>${fmt.age(meta.last_scan)} ago</span>` : "") +
+        (meta.status && meta.status !== "ok" ? `<span style="color:var(--red)">${meta.status}</span>` : "");
     }
     solCpCache = sol.competitors || [];
     renderSolComps();
@@ -732,7 +939,10 @@
     if (sempty) sempty.style.display = tops.length ? "none" : "block";
     if (sbody) {
       sbody.innerHTML = tops.map((t, i) =>
-        `<tr><td>${i + 1}</td><td>${t.searcher}</td><td>${t.share ?? ""}</td><td>${t.n}</td><td>${t.sum_est ?? "—"}</td></tr>`
+        `<tr><td>${i + 1}</td>
+          <td class="mono copy" data-addr="${t.searcher || ""}" title="${t.searcher || ""}">${solShortPk(t.searcher)}</td>
+          <td>${t.share != null ? Math.round((t.share || 0) * 100) + "%" : ""}</td>
+          <td>${t.n}</td><td>${t.sum_est ? fmt.usd(t.sum_est) : "—"}</td></tr>`
       ).join("");
     }
     const pbody = $("sol-cp-pair-table") && $("sol-cp-pair-table").querySelector("tbody");
@@ -741,17 +951,23 @@
     if (pnote) pnote.textContent = String(mix.length);
     if (pbody) {
       pbody.innerHTML = mix.map((p) =>
-        `<tr><td>${p.pair}</td><td>${p.share ?? ""}</td><td>${p.n}</td><td>${p.pct ?? ""}%</td></tr>`
+        `<tr><td>${p.pair}</td>
+          <td><div class="cp-bar-track"><div class="cp-bar pair" style="width:${Math.min(100, p.pct || 0)}%"></div></div></td>
+          <td>${p.n}</td><td class="dim">${p.pct ?? ""}%</td></tr>`
       ).join("");
     }
     const track = $("sol-cp-mix-track");
     const keys = $("sol-cp-mix-keys");
     const tot = mix.reduce((a, m) => a + (m.n || 0), 0) || 1;
-    if (track) track.innerHTML = mix.map((m, i) =>
-      `<i style="width:${Math.max(4, 100 * (m.n || 0) / tot)}%;background:${palette[i % palette.length]}"></i>`
-    ).join("");
+    if (track) {
+      track.innerHTML = mix.length
+        ? mix.map((m, i) =>
+            `<span style="width:${Math.max(4, m.pct || (100 * (m.n || 0) / tot))}%;background:${palette[i % palette.length]}"></span>`
+          ).join("")
+        : `<span style="width:100%;background:#334155"></span>`;
+    }
     if (keys) keys.innerHTML = mix.map((m) => `<span>${m.pair} <b>${m.n}</b></span>`).join("")
-      || `<span class="dim">scanning…</span>`;
+      || `<span class="dim">no liquidations this window</span>`;
     const ch = (hist && hist.sol_comp_1h) || [];
     if (solChartComp && ch.length) {
       solChartComp.data.labels = ch.map((_, i) => i);
@@ -761,37 +977,130 @@
     }
   };
 
+  const SOL_VENUE_COLORS = {
+    jup: "#a78bfa", jupiter: "#a78bfa",
+    raydium: "#22d3ee", "raydium clmm": "#22d3ee",
+    orca: "#f472b6", whirlpool: "#f472b6",
+    meteora: "#f59e0b", "meteora dlmm": "#f59e0b",
+    phoenix: "#22c55e", lifinity: "#38bdf8",
+  };
+
+  const solVenueBadge = (o) => {
+    const raw = String(o.venue || o.hop_src?.[0] || o.dex || "jupiter");
+    const v = raw.toLowerCase();
+    const cls = o.cross_dex || v.includes("→") || v.includes("+") ? "cross"
+      : (v.includes("raydium") ? "raydium" : v.includes("orca") || v.includes("whirl") ? "orca"
+        : v.includes("meteora") ? "meteora" : v.includes("phoenix") ? "phoenix" : "jupiter");
+    const label = (o.cross_dex ? raw : (o.hop_src && o.hop_src[0]) || raw).slice(0, 28);
+    return `<span class="ar-venue ${cls}">${label}</span>`;
+  };
+
+  const solArbFlag = (o) => {
+    const bits = [];
+    if (o.actionable && o.submit === "live") bits.push(`<span class="pill ok">LIVE</span>`);
+    else if (o.actionable) bits.push(`<span class="pill warn">+EV sim</span>`);
+    if (o.submit === "blocked")
+      bits.push(`<span class="pill blocked" title="${o.submit_reason || "blocked"}">blocked</span>`);
+    else if (o.submit === "sim")
+      bits.push(`<span class="pill" title="${o.submit_reason || "sim-only"}">sim</span>`);
+    if (o.use_flash || o.flash)
+      bits.push(`<span class="pill accent">flash</span>`);
+    if (o.flash_fee_bps)
+      bits.push(`<span class="pill" title="Solend flash ${fmt.usd(o.flash_fee_usd)}">${fmt.num(o.flash_fee_bps, 0)} bps</span>`);
+    const left = [].concat(o.leftover || (o.plan && o.plan.leftover) || []).filter(Boolean);
+    if (left.length)
+      bits.push(`<span class="pill blocked" title="${left.join(", ")}">leftover</span>`);
+    if (o.cross_dex) bits.push(`<span class="pill accent">cross</span>`);
+    const src = String(o.quote_src || "").split("+")[0];
+    if (src && src !== "jupiter")
+      bits.push(`<span class="pill">${src}</span>`);
+    bits.push(`<span class="sol-kind mev">${o.kind || "mev"}</span>`);
+    return bits.join(" ");
+  };
+
   const renderSolArb = () => {
     const body = $("sol-arb-table") && $("sol-arb-table").querySelector("tbody");
     const empty = $("sol-arb-empty");
     if (!body) return;
-    let rows = solArCache;
-    if (solArFilter === "live") rows = rows.filter((o) => Number(o.net_usd) > 0);
+    let rows = solArCache.filter((o) => Number(o.net_usd) > 0 && !o.same_pool);
+    if (solArFilter === "live") rows = rows.filter((o) => Number(o.net_usd) > 0 && o.actionable);
     else if (solArFilter === "cross") rows = rows.filter((o) => o.cross_dex);
-    else if (solArFilter === "jup") rows = rows.filter((o) => /jup|jupiter/i.test(o.dex || o.venue || ""));
-    else if (solArFilter === "near") rows = rows.filter((o) => o.gap_usd != null);
-    if (empty) empty.style.display = rows.length ? "none" : "block";
-    body.innerHTML = rows.slice(0, 40).map((o) =>
-      `<tr><td>${o.venue || ""}</td><td>${o.path || ""}</td><td>${o.route || ""}</td>
-        <td>${o.hops ?? ""}</td><td>${o.borrow || ""}</td>
-        <td>${fmt.usd(o.gross_usd, 4)}</td><td>${fmt.usd(o.gas_usd, 4)}</td>
-        <td class="${(o.net_usd || 0) > 0 ? "green" : "dim"}">${fmt.usd(o.net_usd, 4)}</td>
-        <td>${o.flags || ""}</td></tr>`
-    ).join("");
+    else if (solArFilter === "local") rows = rows.filter((o) =>
+      /raydium-account|orca-account/i.test(o.quote_src || o.source || ""));
+    else if (solArFilter === "jup") rows = rows.filter((o) =>
+      /jup|jupiter/i.test(o.dex || o.quote_src || o.source || o.venue || ""));
+    const note = $("sol-ar-feed-note");
+    if (note) note.textContent = rows.length ? `${rows.length} +EV` : "+EV after costs";
+    const m = solArMeta || {};
+    const a = solArLastState || {};
+    if (empty) {
+      if (rows.length) {
+        empty.style.display = "none";
+        empty.classList.remove("err");
+      } else {
+        empty.style.display = "block";
+        if (solArError || a.error) {
+          empty.classList.add("err");
+          empty.textContent = "scan error: " + (solArError || a.error);
+        } else if (m.last_scan || a.last_scan) {
+          empty.classList.remove("err");
+          const n = m.pairs != null ? m.pairs : (m.pairs_tried || 0);
+          const q = m.quoted != null ? m.quoted : m.quotes;
+          const skip = m.skipped != null ? m.skipped : (a.near || []).length;
+          const floor = m.min_usd;
+          const mix = m.quote_src_mix || {};
+          const mixBits = Object.keys(mix).length
+            ? Object.entries(mix).map(([k, v]) => `${k}:${v}`).join(" ")
+            : (m.quote_src || "");
+          const loc = m.local_n != null ? m.local_n : 0;
+          const jn = m.jup_n != null ? m.jup_n : 0;
+          empty.textContent = `no +EV this scan · ${fmt.num(n, 0)} pairs`
+            + (q != null ? ` · ${fmt.num(q, 0)} quotes` : "")
+            + (skip != null ? ` · skip ${fmt.num(skip, 0)}` : "")
+            + (floor != null ? ` · floor ${fmt.usd(floor, 4)}` : "")
+            + ` · local ${fmt.num(loc, 0)} / jup ${fmt.num(jn, 0)}`
+            + (m.pools_decoded != null ? ` · pools ${fmt.num(m.pools_decoded, 0)}` : "")
+            + (mixBits ? ` · ${mixBits}` : "")
+            + (m.last_scan ? ` · last ${fmt.age(m.last_scan)}` : "");
+        } else {
+          empty.classList.remove("err");
+          empty.textContent = "waiting for first pool-account scan…";
+        }
+      }
+    }
+    body.innerHTML = rows.slice(0, 40).map((o) => {
+      const netColor = o.net_usd > 0 ? "var(--green)" : "var(--dim)";
+      const hopTip = (o.hop_src || o.labels || []).join(" → ");
+      return `<tr>
+        <td>${solVenueBadge(o)}</td>
+        <td><b>${o.mid || o.path || "?"}</b></td>
+        <td class="mono dim" title="${hopTip}">${o.route || hopTip || "--"}</td>
+        <td>${fmt.num(o.hops || 2, 0)}</td>
+        <td>${o.borrow || ""}</td>
+        <td style="color:var(--amber)">${fmt.usd(o.gross_usd, 4)}</td>
+        <td class="dim">${fmt.usd(o.gas_usd, 4)}</td>
+        <td style="color:${netColor}"><b>${fmt.usd(o.net_usd, 4)}</b></td>
+        <td>${solArbFlag(o)}</td>
+      </tr>`;
+    }).join("");
   };
 
+  let solArMeta = {};
+  let solArError = null;
+  let solArLastState = {};
+
   const updateSolArb = (sol, hist) => {
-    const a = sol.arb || {};
+    const a = sol.arb || sol.mev || {};
     const meta = a.meta || {};
-    const set = (id, v, cls) => {
-      const e = $(id); if (!e) return;
-      e.textContent = v;
-      if (cls) e.className = "big " + cls;
-    };
+    solArMeta = meta;
+    solArError = a.error || null;
+    solArLastState = a;
+    const set = (id, v) => { const e = $(id); if (e) e.textContent = v; };
     set("sol-ar-live", fmt.num(meta.live, 0));
-    set("sol-ar-actionable", fmt.num(meta.actionable, 0), "green");
-    set("sol-ar-best-net", meta.best_net_usd != null ? fmt.usd(meta.best_net_usd, 4) : "--", "amber");
-    set("sol-ar-near-n", fmt.num(meta.near, 0), "dim");
+    set("sol-ar-actionable", fmt.num(meta.actionable, 0));
+    set("sol-ar-best-net", meta.best_net_usd != null && meta.live ? fmt.usd(meta.best_net_usd, 4) : "--");
+    set("sol-ar-skip-n", fmt.num(meta.skipped != null ? meta.skipped : (meta.near || 0), 0));
+    set("sol-ar-skip-debug-n", fmt.num(meta.skipped != null ? meta.skipped : (a.near || []).length, 0));
     const badge = $("sol-ar-pressure");
     if (badge) {
       badge.textContent = meta.pressure || "idle";
@@ -799,46 +1108,115 @@
     }
     const metaEl = $("sol-arb-meta");
     if (metaEl) {
+      const uni = a.universe && !Array.isArray(a.universe) ? a.universe : {};
+      const dexes = (meta.dexes || uni.venues || ["raydium", "orca"]).join("+") || "local";
+      const gate = meta.submit_gate || "blocked";
+      const gateColor = gate === "live" ? "var(--green)" : gate === "sim" ? "var(--amber)" : "var(--red)";
+      const age = meta.last_scan ? fmt.age(meta.last_scan) : (a.last_scan ? fmt.age(a.last_scan) : null);
+      const sample = meta.sample_route || {};
+      const hopLabs = (sample.labels || []).join("→");
+      const qmix = meta.quote_src_mix || {};
+      const mixBits = Object.keys(qmix).length
+        ? Object.entries(qmix).map(([k, v]) => `${k}:${v}`).join(" ")
+        : (meta.quote_src || "—");
       metaEl.innerHTML =
-        `<span>mode <b>${meta.mode || "jup"}</b></span>` +
-        `<span>scan <b>${meta.scan_ms != null ? meta.scan_ms + "ms" : "--"}</b></span>` +
-        `<span>slot <b>${meta.scan_slot != null ? fmt.num(meta.scan_slot, 0) : "--"}</b></span>` +
-        `<span>prio tip <b>${meta.tip_usd != null ? fmt.usd(meta.tip_usd, 4) : "--"}</b></span>` +
-        `<span>quotes <b>${meta.quotes != null ? meta.quotes : "--"}</b></span>` +
-        (a.error ? `<span class="red">${a.error}</span>` : "");
+        `<span>pairs <b>${fmt.num(meta.pairs != null ? meta.pairs : uni.pairs, 0)}</b></span>` +
+        `<span>dexes <b>${dexes}</b></span>` +
+        `<span>submit <b style="color:${gateColor}">${gate}</b></span>` +
+        `<span>cross <b style="color:var(--violet)">${fmt.num(meta.cross_dex, 0)}</b></span>` +
+        `<span>quote_src <b>${mixBits}</b></span>` +
+        `<span>local <b>${fmt.num(meta.local_n, 0)}</b></span>` +
+        `<span>jup <b>${fmt.num(meta.jup_n, 0)}</b></span>` +
+        (meta.pools_decoded != null ? `<span>pools <b>${fmt.num(meta.pools_decoded, 0)}/${fmt.num(meta.pools_watch != null ? meta.pools_watch : 11, 0)}</b></span>` : "") +
+        (meta.geyser === false ? `<span>geyser <b>off</b></span>` : "") +
+        (meta.top_mid ? `<span>top <b>${meta.top_mid}</b></span>` : "") +
+        (meta.scan_ms != null ? `<span>scan <b>${fmt.num(meta.scan_ms, 0)}ms</b></span>` : "") +
+        (age ? `<span>last <b>${age}</b></span>` : "") +
+        (meta.scan_slot ? `<span>slot <b>${fmt.num(meta.scan_slot, 0)}</b></span>` : "") +
+        (meta.min_usd != null ? `<span>floor <b>${fmt.usd(meta.min_usd, 4)}</b></span>` : "") +
+        (hopLabs ? `<span>routePlan <b>${hopLabs}</b></span>` : "") +
+        (meta.mode ? `<span>mode <b>${meta.mode}</b></span>` : "") +
+        (a.error ? `<span style="color:var(--red)">${a.error}</span>` : "");
     }
     const mix = meta.venue_mix || [];
     const track = $("sol-ar-mix-track");
     const keys = $("sol-ar-mix-keys");
-    const tot = mix.reduce((x, m) => x + (m.n || 0), 0) || 1;
-    if (track) track.innerHTML = mix.map((m, i) =>
-      `<i style="width:${Math.max(4, 100 * (m.n || 0) / tot)}%;background:${palette[i % palette.length]}"></i>`
-    ).join("");
-    if (keys) keys.innerHTML = mix.map((m) => `<span>${m.venue} <b>${m.n}</b></span>`).join("")
-      || `<span class="dim">scanning Jupiter…</span>`;
-    solArCache = [].concat(a.opps || [], (a.near || []).map((n) => ({ ...n, flags: (n.flags || "") + " near" })));
+    if (track) {
+      track.innerHTML = mix.length
+        ? mix.map((p) => {
+            const c = SOL_VENUE_COLORS[(p.venue || "").toLowerCase()] || "#64748b";
+            return `<span style="width:${Math.max(2, p.pct || 0)}%;background:${c}" title="${p.venue} ${p.n}"></span>`;
+          }).join("")
+        : `<span style="width:100%;background:#1e293b"></span>`;
+    }
+    if (keys) {
+      keys.innerHTML = mix.slice(0, 5).map((p) => {
+        const c = SOL_VENUE_COLORS[(p.venue || "").toLowerCase()] || "#64748b";
+        return `<span><i style="display:inline-block;width:7px;height:7px;border-radius:2px;background:${c};margin-right:4px"></i>${p.venue} <b>${p.n}</b></span>`;
+      }).join("") || `<span class="dim">no +EV venues this cycle</span>`;
+    }
+    solArCache = (a.opps || []).filter((o) => Number(o.net_usd) > 0 && !o.same_pool);
     renderSolArb();
     const nbody = $("sol-arb-near-table") && $("sol-arb-near-table").querySelector("tbody");
     const nempty = $("sol-arb-near-empty");
     const near = a.near || [];
-    if (nempty) nempty.style.display = near.length ? "none" : "block";
-    if (nbody) {
-      nbody.innerHTML = near.slice(0, 20).map((o) =>
-        `<tr><td>${o.venue || ""}</td><td>${o.path || ""}</td>
-          <td>${fmt.usd(o.gross_usd, 4)}</td><td>${fmt.usd(o.gap_usd, 4)}</td>
-          <td>${o.roi != null ? fmt.num(o.roi, 4) : "--"}</td></tr>`
-      ).join("");
+    const skipDbg = $("sol-ar-skip-debug-n");
+    if (skipDbg) skipDbg.textContent = String(meta.skipped != null ? meta.skipped : near.length);
+    if (nempty) {
+      if (near.length) nempty.style.display = "none";
+      else {
+        nempty.style.display = "block";
+        nempty.textContent = (meta.last_scan || a.last_scan)
+          ? "no debug skips this scan"
+          : "waiting for first pool-account scan…";
+      }
     }
+    if (nbody) {
+      nbody.innerHTML = near.slice(0, 8).map((o) => {
+        const gap = o.gap_usd != null ? o.gap_usd : o.net_usd;
+        const why = o.skip_reason || (o.net_usd != null && o.net_usd <= 0 ? "neg_net" : "below_floor");
+        const hop = (o.hop_src || o.labels || []).join("→") || "jup";
+        return `<tr class="arb-near-row" title="${hop}">
+          <td>${solVenueBadge(o)}</td>
+          <td><b>${o.mid || o.path || "?"}</b></td>
+          <td class="dim">${fmt.usd(o.net_usd, 4)}</td>
+          <td style="color:var(--red)">${fmt.usd(gap, 4)}</td>
+          <td class="dim">${why}</td>
+        </tr>`;
+      }).join("");
+    }
+    const st = a.stats || {};
     const cov = $("sol-arb-stats");
+    const covNote = $("sol-ar-cov-note");
+    if (covNote) covNote.textContent = (meta.quote_src || (meta.dexes || ["local"]).slice(0, 3).join("+")) || "local";
     if (cov) {
-      const st = a.stats || {};
-      cov.innerHTML =
-        `<span>quotes <b>${st.quotes ?? 0}</b></span>` +
-        `<span>pairs <b>${st.pairs_tried ?? "—"}</b></span>` +
-        `<span>mids <b>${(st.mids || []).join(", ") || "—"}</b></span>` +
-        `<span>tip <b>${st.tip_usd != null ? fmt.usd(st.tip_usd, 4) : "—"}</b></span>` +
-        `<span>venues <b>${(st.venues || []).slice(0, 4).join(", ") || "—"}</b></span>` +
-        `<span>dex <b>${(st.dexes || []).slice(0, 6).join(", ") || "—"}</b></span>`;
+      const byDex = meta.by_dex || st.by_dex || {};
+      const dexBits = Object.entries(byDex).slice(0, 8).map(([k, v]) => `${k}:${v}`).join(" ");
+      const toks = (meta.tokens || (a.universe && a.universe.tokens) || []).slice(0, 8).join(" ");
+      const sample = meta.sample_route || {};
+      const hopLabs = (sample.labels || []).join(" → ");
+      const qmix = meta.quote_src_mix || {};
+      const mixBits = Object.entries(qmix).map(([k, v]) => `${k}:${v}`).join(" ");
+      cov.innerHTML = [
+        `<span>net <b>solana mainnet</b></span>`,
+        `<span>pairs <b>${fmt.num(meta.pairs != null ? meta.pairs : st.pairs, 0)}</b></span>`,
+        `<span>jobs local/jup <b>${fmt.num(meta.local_jobs != null ? meta.local_jobs : 0, 0)}/${fmt.num(meta.jup_jobs != null ? meta.jup_jobs : 0, 0)}</b></span>`,
+        `<span>quoted <b>${fmt.num(meta.quoted != null ? meta.quoted : (st.quoted != null ? st.quoted : meta.quotes), 0)}</b></span>`,
+        `<span>quote_src <b>${mixBits || meta.quote_src || "—"}</b></span>`,
+        `<span>local vs jup <b>${fmt.num(meta.local_n, 0)}/${fmt.num(meta.jup_n, 0)}</b></span>`,
+        (meta.pools_decoded != null ? `<span>pools decoded <b>${fmt.num(meta.pools_decoded, 0)}/${fmt.num(meta.pools_watch != null ? meta.pools_watch : 11, 0)}</b></span>` : ""),
+        (meta.geyser === false ? `<span>geyser <b>off (account poll)</b></span>` : ""),
+        (dexBits ? `<span>graph <b>${dexBits}</b></span>` : ""),
+        (toks ? `<span>mids <b>${toks}</b></span>` : ""),
+        `<span>skipped <b>${fmt.num(meta.skipped != null ? meta.skipped : st.skipped, 0)}</b></span>`,
+        (meta.skipped_same_pool != null ? `<span>same-pool <b>${fmt.num(meta.skipped_same_pool, 0)}</b></span>` : ""),
+        (meta.quote_errors ? `<span style="color:var(--red)">quote fail <b>${meta.quote_errors}</b></span>` : ""),
+        (meta.min_usd != null ? `<span>floor <b>${fmt.usd(meta.min_usd, 4)}</b></span>` : ""),
+        (meta.tip_usd != null ? `<span>tip <b>${fmt.usd(meta.tip_usd, 4)}</b></span>` : ""),
+        (hopLabs ? `<span>sample routePlan <b>${hopLabs}</b></span>` : ""),
+        (meta.last_scan ? `<span>last scan <b>${fmt.age(meta.last_scan)}</b></span>` : ""),
+        `<span>submit <b>${meta.submit_gate || "blocked"}</b></span>`,
+      ].filter(Boolean).join("");
     }
     const bn = (hist && hist.sol_arb_best_net) || [];
     const ac = (hist && hist.sol_arb_actionable) || [];
@@ -877,6 +1255,8 @@
       st.innerHTML =
         `<span>sim <b>${bc.sim_only ? "ON" : "off"}</b></span>` +
         `<span>armed <b>${bc.armed ? "LIVE" : "no"}</b></span>` +
+        `<span>liq hist <b>${fmt.num(sum.n_liq, 0)}</b></span>` +
+        `<span>MEV hist <b>${fmt.num(sum.n_mev, 0)}</b></span>` +
         (bc.liq_contract ? `<span>liq <b>${String(bc.liq_contract).slice(0, 10)}…</b></span>` : `<span>liq <b>unset</b></span>`) +
         (bc.arb_contract ? `<span>arb <b>${String(bc.arb_contract).slice(0, 10)}…</b></span>` : `<span>arb <b>unset</b></span>`);
     }
@@ -886,7 +1266,8 @@
         `<span class="bc-pill ${bc.sim_only ? "on" : ""}">sim ${bc.sim_only ? "ON" : "off"}</span>` +
         `<span class="bc-pill ${bc.armed ? "live" : ""}">armed ${bc.armed ? "LIVE" : "no"}</span>` +
         `<span class="bc-pill ${bc.edge_bias ? "on" : ""}">edge ${bc.edge_bias ? "on" : "off"}</span>` +
-        `<span class="bc-pill warn">gates blocked</span>`;
+        `<span class="bc-pill ${ready.liq ? "on" : "warn"}">liq ${ready.liq ? "ready" : "blocked"}</span>` +
+        `<span class="bc-pill ${ready.arb ? "on" : "warn"}">MEV ${ready.arb ? "ready" : "blocked"}</span>`;
     }
     const btnSim = $("sol-btn-sim");
     const btnArm = $("sol-btn-arm");
@@ -938,7 +1319,9 @@
     if (hempty) hempty.style.display = rows.length ? "none" : "block";
     if (body) {
       body.innerHTML = rows.slice(0, 40).map((h) =>
-        `<tr><td>${fmt.ts(h.ts)}</td><td>${h.kind || ""}</td><td>${h.stage || ""}</td>
+        `<tr><td>${fmt.ts(h.ts)}</td>
+          <td><span class="sol-kind ${h.kind || ""}">${h.kind || ""}</span></td>
+          <td>${h.stage || ""}</td>
           <td class="args">${h.detail || h.why || ""}</td></tr>`
       ).join("");
     }
@@ -1115,6 +1498,14 @@
     }
   };
 
+  const setSolFundStatus = (msg, cls) => {
+    const st = $("sol-fund-status");
+    if (!st) return;
+    st.className = cls || "";
+    if (msg && /<a /.test(String(msg))) st.innerHTML = msg;
+    else st.textContent = msg || "";
+  };
+
   const bindSolFilters = () => {
     const bind = (id, cls, setter, redraw) => {
       const root = $(id);
@@ -1135,10 +1526,10 @@
     bind("sol-bc-filters", "bc-f", (v) => { solBcFilter = v; }, () => {
       if (window.__lastState) updateSolBroadcast(window.__lastState.sol || {});
     });
-    const fund = $("sol-btn-fund");
-    if (fund && !fund.__bound) {
-      fund.__bound = true;
-      fund.addEventListener("click", () => {
+    const copyFund = $("sol-btn-copy-fund");
+    if (copyFund && !copyFund.__bound) {
+      copyFund.__bound = true;
+      copyFund.addEventListener("click", () => {
         const st = $("sol-fund-status");
         const s = (window.__lastState && window.__lastState.sol) || {};
         const funds = s.funds || {};
@@ -1152,13 +1543,13 @@
         const text =
           `From funder ${fd}\n${ts} SOL → sponsor ${sp}\n${tb} SOL → bot ${bt}`;
         if (!sp || !bt) {
-          if (st) st.textContent = "sponsor/bot pubkeys missing — restart dashboard";
+          setSolFundStatus("sponsor/bot pubkeys missing — restart dashboard", "err");
           return;
         }
         navigator.clipboard.writeText(text).then(() => {
-          if (st) st.textContent = "copied: funder → sponsor + bot amounts and addresses";
+          setSolFundStatus("copied: funder → sponsor + bot amounts and addresses");
         }).catch(() => {
-          if (st) st.textContent = text.replace(/\n/g, " · ");
+          setSolFundStatus(text.replace(/\n/g, " · "));
         });
       });
     }
@@ -1195,20 +1586,164 @@
     $("sys-info").textContent = "uptime " + fmt.age(s.started) + " | ws " + (s.now ? "live" : "--");
   };
 
-  const updateBots = (s) => {
-    const el = $("bots-list");
-    const labels = { mempool: "Mempool Watcher", prices: "Oracle / Prices", funds: "Funds Balances",
-                     sweep: "HF Opportunity Sweep", competitors: "Competitor Watch", arb: "DEX Arb Scanner",
-                     intel: "Learning / Intel", broadcast: "Broadcast Submit" };
-    el.innerHTML = Object.entries(labels).map(([k, name]) => {
-      const b = s.bots[k] || {};
-      const age = b.last ? fmt.age(b.last) + " ago" : "never";
-      return `<div class="bot">
-        <span class="st ${b.status || "idle"}"></span>
-        <div><div class="b-name">${name}</div>
-          <div class="b-last">${age}</div>
-          <div class="b-msg">${b.msg || b.status || ""}</div></div></div>`;
+  const BOT_GROUPS = [
+    { id: "sense", label: "sense", keys: ["mempool", "prices"] },
+    { id: "hunt", label: "hunt", keys: ["sweep", "competitors", "arb"] },
+    { id: "act", label: "act", keys: ["broadcast", "funds", "intel"] },
+  ];
+
+  function renderBotsFleet(opts) {
+    const el = $(opts.listId);
+    if (!el) return;
+    const hx = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => (
+      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]
+    ));
+    const bots = opts.bots || {};
+    const labels = opts.labels || {};
+    const roles = opts.roles || {};
+    const funds = opts.funds || {};
+    const wallets = opts.wallets || {};
+    const bc = opts.bc || {};
+    const ready = bc.ready || {};
+    const sim = !!bc.sim_only;
+    const armed = !!bc.armed;
+    const gates = !!(ready.liq || ready.arb);
+
+    const unit = opts.unit || "ETH";
+    const balKey = opts.balKey || "eth";
+    const walletLow = opts.walletLow || ((n, f) => {
+      const bal = f[balKey];
+      if (n === "funder") return false;
+      if (bal == null) return false;
+      if (n === "sponsor") {
+        const tgt = Number(bc.sponsor_target_eth || bc.sponsor_target_sol) || (balKey === "sol" ? 0.08 : 0.03);
+        return bal < tgt * 0.5;
+      }
+      return balKey === "sol" ? bal < 0.02 : bal < 0.001;
+    });
+    const unfunded = ["sponsor", "bot"].some((n) => walletLow(n, funds[n] || {}));
+
+    const toneOf = (key, raw) => {
+      const st = String(raw || "idle").toLowerCase();
+      if (key === "funds" && unfunded) return { label: "unfunded", cls: "unfunded", st: "error" };
+      if (key === "broadcast") {
+        if (st === "error") return { label: "blocked", cls: "blocked", st: "error" };
+        if (armed && !sim) return { label: "live", cls: "live", st: st === "running" ? "running" : "ok" };
+        if (sim) return { label: "sim", cls: "sim", st: st === "running" ? "running" : (st === "ok" ? "ok" : st) };
+        if (!gates) return { label: "blocked", cls: "blocked", st: st === "error" ? "error" : "idle" };
+      }
+      if (st === "ok") return { label: "ready", cls: "ready", st: "ok" };
+      if (st === "running") return { label: "live", cls: "running", st: "running" };
+      if (st === "error") return { label: "blocked", cls: "blocked", st: "error" };
+      return { label: "idle", cls: "idle", st: "idle" };
+    };
+
+    let nOk = 0, nRun = 0, nErr = 0, nIdle = 0;
+    Object.keys(labels).forEach((k) => {
+      const t = toneOf(k, (bots[k] || {}).status);
+      if (t.cls === "ready" || t.cls === "sim") nOk += 1;
+      else if (t.cls === "running" || t.cls === "live") nRun += 1;
+      else if (t.cls === "blocked" || t.cls === "unfunded") nErr += 1;
+      else nIdle += 1;
+    });
+    const total = Object.keys(labels).length || 8;
+    const setTxt = (id, v) => { const n = $(id); if (n) n.textContent = v; };
+    if (opts.counts) {
+      setTxt(opts.counts.ok, String(nOk));
+      setTxt(opts.counts.run, String(nRun));
+      setTxt(opts.counts.err, String(nErr));
+      setTxt(opts.counts.idle, String(nIdle));
+    }
+    const tag = $(opts.tagId);
+    if (tag) tag.textContent = nErr ? `${nErr} blocked` : `${nOk}/${total} ready`;
+
+    let pressure = "idle", pLabel = "idle";
+    if (nErr) { pressure = "hot"; pLabel = "blocked"; }
+    else if (nRun) { pressure = "busy"; pLabel = "running"; }
+    else if (nOk === total) { pressure = "quiet"; pLabel = "ready"; }
+    const pr = $(opts.pressureId);
+    if (pr) {
+      pr.textContent = pLabel;
+      pr.className = "bt-pressure-badge " + pressure;
+    }
+
+    const mode = $(opts.modeId);
+    if (mode) {
+      mode.innerHTML =
+        `<span class="bt-pill ${sim ? "sim" : "idle"}">sim ${sim ? "ON" : "off"}</span>` +
+        `<span class="bt-pill ${armed ? "live" : "idle"}">armed ${armed ? "LIVE" : "no"}</span>` +
+        `<span class="bt-pill ${gates ? "ready" : "blocked"}">${gates ? "gates clear" : "gates blocked"}</span>`;
+    }
+
+    const wal = $(opts.walletsId);
+    if (wal) {
+      const tags = { funder: "capital", sponsor: "tips", bot: "fee payer" };
+      wal.innerHTML = ["funder", "sponsor", "bot"].map((n) => {
+        const f = funds[n] || {};
+        const pk = wallets[n] || f.pubkey || "";
+        const raw = f[balKey];
+        const bal = raw != null ? fmt.num(raw, 4) + " " + unit : "--";
+        const low = walletLow(n, f);
+        const short = pk ? `${pk.slice(0, 4)}…${pk.slice(-4)}` : "unset";
+        const addr = pk
+          ? `<span class="mono copy" data-addr="${hx(pk)}" title="click to copy">${hx(short)}</span>`
+          : `<span class="mono dim">unset</span>`;
+        return `<div class="bt-wal${low ? " low" : ""}">
+          <div class="bt-wal-h"><span class="bt-wal-name">${n}</span><span class="bt-role">${tags[n]}</span></div>
+          <div class="bt-wal-addr">${addr}</div>
+          <div class="bt-wal-bal">${hx(bal)}${low ? `<span class="bt-pill unfunded">unfunded</span>` : ""}</div>
+        </div>`;
+      }).join("");
+    }
+
+    el.innerHTML = BOT_GROUPS.map((g) => {
+      const tiles = g.keys.map((k) => {
+        const b = bots[k] || {};
+        const t = toneOf(k, b.status);
+        const age = b.last ? fmt.age(b.last) + " ago" : "never";
+        const msg = String(b.msg || "").trim();
+        return `<div class="bot tone-${t.cls}">
+          <div class="bt-head">
+            <span class="st ${t.st}"></span>
+            <div class="bt-id">
+              <div class="b-name">${hx(labels[k] || k)}</div>
+              <span class="bt-role">${hx(roles[k] || k)}</span>
+            </div>
+            <span class="bt-pill ${t.cls}">${t.label}</span>
+          </div>
+          <div class="bt-fields"><span class="b-last"><i>seen</i><b>${hx(age)}</b></span></div>
+          <div class="b-msg${msg ? "" : " is-empty"}" title="${hx(msg)}">${msg ? hx(msg) : "—"}</div>
+        </div>`;
+      }).join("");
+      return `<div class="bt-group">
+        <div class="bt-group-h">${g.label}</div>
+        <div class="bt-group-grid">${tiles}</div>
+      </div>`;
     }).join("");
+  }
+
+  const updateBots = (s) => {
+    renderBotsFleet({
+      listId: "bots-list",
+      tagId: "bots-tag",
+      pressureId: "bots-pressure",
+      modeId: "bots-mode",
+      walletsId: "bots-wallets",
+      counts: { ok: "bots-n-ok", run: "bots-n-run", err: "bots-n-err", idle: "bots-n-idle" },
+      bots: (s || {}).bots,
+      labels: {
+        mempool: "Mempool Watcher", prices: "Oracle / Prices", funds: "Funds Balances",
+        sweep: "HF Opportunity Sweep", competitors: "Competitor Watch", arb: "DEX Arb Scanner",
+        intel: "Learning / Intel", broadcast: "Broadcast Submit",
+      },
+      roles: {
+        mempool: "watch", prices: "oracle", funds: "wallets", sweep: "HF",
+        competitors: "liq", arb: "DEX", intel: "learn", broadcast: "submit",
+      },
+      funds: (s || {}).funds,
+      wallets: (s || {}).wallets,
+      bc: (s || {}).broadcast,
+    });
   };
 
   const usd = (v, signed) => {
@@ -1461,11 +1996,94 @@
 
   let opFilter = "all";
   let opCache = [];
+  let opLastMeta = {};
   const OP_PAIR_COLORS = ["#22c55e", "#22d3ee", "#f59e0b", "#a78bfa", "#ef4444", "#3b82f6", "#ec4899", "#14b8a6"];
 
   const oppHf = (o) => {
     const n = Number(o && o.hf);
-    return isNaN(n) ? null : n / 1e18;
+    if (isNaN(n)) return null;
+    return n > 1e9 ? n / 1e18 : n;
+  };
+
+  const liqFlagBits = (o) => {
+    const bits = [];
+    if (o.actionable && o.submit === "live") bits.push(`<span class="pill ok">LIVE</span>`);
+    else if (o.actionable) bits.push(`<span class="pill warn">+EV sim</span>`);
+    if (o.submit === "blocked")
+      bits.push(`<span class="pill blocked" title="${o.submit_reason || "blocked"}">blocked</span>`);
+    else if (o.submit === "sim")
+      bits.push(`<span class="pill" title="${o.submit_reason || "sim-only"}">sim</span>`);
+    if (o.race || o.contested)
+      bits.push(`<span class="pill warn" title="mempool or recent competitor">race</span>`);
+    if (o.recent_competitor) bits.push(`<span class="pill">comp</span>`);
+    if (o.edge) bits.push(`<span class="pill accent">${o.edge}</span>`);
+    if (o.protocol) bits.push(`<span class="pill">${o.protocol}</span>`);
+    const user = o.user || "";
+    if (user) {
+      bits.push(`<a class="op-link" href="https://etherscan.io/address/${user}" target="_blank" rel="noopener">↗</a>`);
+      bits.push(`<span class="mono copy op-link" data-addr="${user}" title="${user}">copy</span>`);
+    }
+    return bits.join(" ") || `<span class="dim">—</span>`;
+  };
+
+  const renderOppsFeed = () => {
+    const rows = opFilter === "all" ? opCache : opCache.filter((o) => {
+      const hf = oppHf(o);
+      if (opFilter === "edge") return !!o.edge;
+      if (opFilter === "profit") return Number(o.net_usd != null ? o.net_usd : o.profit_usd) > 0;
+      if (opFilter === "race") return !!(o.race || o.contested || o.recent_competitor);
+      if (opFilter === "hf095") return hf != null && hf < 0.95;
+      if (opFilter === "hf1") return hf != null && hf < 1.0;
+      return true;
+    });
+    const note = $("op-feed-note");
+    if (note) note.textContent = `${rows.length}/${opCache.length} · HF<1 · skip dust`;
+    const empty = $("opps-empty");
+    const body = $("opps-table") && $("opps-table").querySelector("tbody");
+    if (!body) return;
+    if (empty) {
+      if (rows.length) {
+        empty.style.display = "none";
+        empty.classList.remove("err");
+      } else {
+        empty.style.display = "block";
+        const m = opLastMeta || {};
+        if (m.errors && m.errors.length) {
+          empty.classList.add("err");
+          empty.textContent = "sweep error: " + m.errors[0];
+        } else if (m.last_scan) {
+          empty.classList.remove("err");
+          const skipped = m.skipped_n != null ? m.skipped_n : "";
+          empty.textContent = `no HF<1 +EV this scan · ${fmt.num(m.scanned || 0, 0)} users`
+            + (m.n_logs != null ? ` · ${fmt.num(m.n_logs, 0)} logs` : "")
+            + (skipped !== "" ? ` · skip ${fmt.num(skipped, 0)}` : "")
+            + (m.last_block ? ` · blk ${m.last_block}` : "")
+            + (m.last_scan ? ` · ${fmt.age(m.last_scan)} ago` : "");
+        } else {
+          empty.classList.remove("err");
+          empty.textContent = "scanning Aave V3 Pool / V4 spoke for HF<1…";
+        }
+      }
+    }
+    body.innerHTML = rows.slice(0, 60).map((o) => {
+      const user = o.user || "";
+      const short = user ? `${user.slice(0, 6)}…${user.slice(-4)}` : "--";
+      const hf = oppHf(o);
+      const hfCell = hf == null ? "--" : (hf >= 100 ? "∞" : hf.toFixed(3));
+      const pair = `${o.coll_sym || "?"} → ${o.debt_sym || "?"}`;
+      const sizes = (o.coll_usd != null || o.debt_usd != null)
+        ? `<div class="dim">${fmt.usd(o.coll_usd)} / ${fmt.usd(o.debt_usd)}</div>` : "";
+      const net = o.net_usd != null ? o.net_usd : o.profit_usd;
+      const netColor = net == null ? "var(--dim)" : net > 0 ? "var(--green)" : "var(--red)";
+      return `<tr>
+        <td class="mono copy" data-addr="${user}" title="${user}">${short}</td>
+        <td class="${hfClass(hf)}">${hfCell}</td>
+        <td><b>${pair}</b>${sizes}</td>
+        <td style="color:var(--amber)">${o.bonus_usd != null ? fmt.usd(o.bonus_usd) : "--"}</td>
+        <td style="color:${netColor}"><b>${net != null ? fmt.usd(net) : "--"}</b></td>
+        <td>${liqFlagBits(o)}</td>
+      </tr>`;
+    }).join("");
   };
 
   const hfUrgency = (hf) => {
@@ -1485,45 +2103,6 @@
     return "op-hf-ok";
   };
 
-  const renderOppsFeed = () => {
-    const rows = opFilter === "all" ? opCache : opCache.filter((o) => {
-      const hf = oppHf(o);
-      if (opFilter === "edge") return !!o.edge;
-      if (opFilter === "profit") return Number(o.profit_usd) > 0;
-      if (opFilter === "hf095") return hf != null && hf < 0.95;
-      if (opFilter === "hf1") return hf != null && hf < 1.0;
-      return true;
-    });
-    const note = $("op-feed-note");
-    if (note) note.textContent = `${rows.length}/${opCache.length} · profit-sorted`;
-    const empty = $("opps-empty");
-    if (empty) empty.style.display = rows.length ? "none" : "block";
-    const body = $("opps-table") && $("opps-table").querySelector("tbody");
-    if (!body) return;
-    body.innerHTML = rows.slice(0, 60).map((o) => {
-      const user = o.user || "";
-      const short = user ? `${user.slice(0, 10)}…` : "--";
-      const hf = oppHf(o);
-      const hfCell = hf == null ? "--" : (hf >= 100 ? "∞" : hf.toFixed(3));
-      const pair = `${o.coll_sym || "?"} → ${o.debt_sym || "?"}`;
-      const flags = [];
-      if (o.edge) flags.push(`<span class="op-flag edge">${o.edge}</span>`);
-      if (Number(o.profit_usd) > 0) flags.push(`<span class="op-flag profit">+$</span>`);
-      const links = user
-        ? `<a class="op-link" href="https://etherscan.io/address/${user}" target="_blank" rel="noopener">↗</a>` +
-          `<span class="mono copy op-link" data-addr="${user}" title="copy">copy</span>`
-        : "";
-      return `<tr>
-        <td class="mono" title="${user}">${short}</td>
-        <td class="${hfClass(hf)}">${hfCell}</td>
-        <td><b>${pair}</b></td>
-        <td style="color:var(--green)"><b>${fmt.usd(o.profit_usd)}</b></td>
-        <td>${flags.join(" ") || `<span class="dim">—</span>`}</td>
-        <td>${links}</td>
-      </tr>`;
-    }).join("");
-  };
-
   const opFilters = $("op-filters");
   if (opFilters) {
     opFilters.addEventListener("click", (e) => {
@@ -1539,6 +2118,7 @@
     const opps = s.opportunities || [];
     const wl = (s.watchlist || []).filter((w) => Number(w.hf) < 1e38);
     const m = s.opportunities_meta || {};
+    opLastMeta = m;
     const sweep = s.sweep_total != null ? s.sweep_total : m.sweep_total;
     opCache = opps.slice(0, 80);
 
@@ -1558,7 +2138,7 @@
     setTxt("op-count", fmt.num(count, 0));
     setTxt("op-best", best != null && best > 0 ? fmt.usd(best) : (count ? fmt.usd(0) : "--"));
     setTxt("op-edge-n", fmt.num(edgeN, 0));
-    setTxt("op-sweep", `${sweep != null ? fmt.num(sweep, 0) : "--"} / ${fmt.num(wl.length, 0)}`);
+    setTxt("op-sweep", `${fmt.num(m.scanned != null ? m.scanned : (sweep != null ? sweep : 0), 0)}`);
 
     const closest = wl[0];
     const closestHf = closest ? Number(closest.hf) / 1e18 : null;
@@ -1589,11 +2169,16 @@
     const meta = $("op-meta");
     if (meta) {
       const sweepBot = (s.bots || {}).sweep || {};
+      const gate = m.submit_gate || "blocked";
       meta.innerHTML =
-        `<span>Σ profit <b style="color:var(--green)">${fmt.usd(m.sum_profit != null ? m.sum_profit : opps.reduce((a, o) => a + (Number(o.profit_usd) || 0), 0))}</b></span>` +
+        `<span>Σ net <b style="color:var(--green)">${fmt.usd(m.sum_profit != null ? m.sum_profit : opps.reduce((a, o) => a + (Number(o.net_usd || o.profit_usd) || 0), 0))}</b></span>` +
         `<span>watch <b>${fmt.num(wl.length, 0)}</b></span>` +
-        (sweep != null ? `<span>tracked <b>${fmt.num(sweep, 0)}</b></span>` : "") +
+        (m.scanned != null ? `<span>scanned <b>${fmt.num(m.scanned, 0)}</b></span>` : "") +
+        (m.n_logs != null ? `<span>logs <b>${fmt.num(m.n_logs, 0)}</b></span>` : "") +
         (sweepBot.status ? `<span>sweep <b>${sweepBot.status}</b></span>` : "") +
+        `<span>gate <b>${gate}</b></span>` +
+        (m.last_block ? `<span>blk <b>${m.last_block}</b></span>` : "") +
+        (m.last_scan ? `<span>${fmt.age(m.last_scan)} ago</span>` : "") +
         (m.avg_hf != null ? `<span>avg HF <b>${Number(m.avg_hf).toFixed(3)}</b></span>` : "");
     }
 
@@ -1640,8 +2225,8 @@
     if (wbody) {
       wbody.innerHTML = wl.map((w) => {
         const hf = Number(w.hf) / 1e18;
-        const collUsd = Number(w.coll) / 1e26;
-        const debtUsd = Number(w.debt) / 1e26;
+          const collUsd = w.coll_usd != null ? Number(w.coll_usd) : Number(w.coll) / 1e26;
+          const debtUsd = w.debt_usd != null ? Number(w.debt_usd) : Number(w.debt) / 1e26;
         const hfCell = hf >= 100 ? "∞" : hf.toFixed(3);
         const urg = hfUrgency(hf);
         const user = w.user || "";
@@ -1659,6 +2244,7 @@
 
   let cpFilter = "all";
   let cpCache = [];
+  let cpLastMeta = {};
 
   const renderCompFeed = () => {
     const rows = cpFilter === "all" ? cpCache : cpCache.filter((c) => {
@@ -1671,27 +2257,54 @@
     const note = $("cp-feed-note");
     if (note) note.textContent = `${rows.length}/${cpCache.length} · newest first`;
     const empty = $("comp-empty");
-    if (empty) empty.style.display = rows.length ? "none" : "block";
     const body = $("comp-table") && $("comp-table").querySelector("tbody");
     if (!body) return;
+    if (empty) {
+      if (rows.length) {
+        empty.style.display = "none";
+        empty.classList.remove("err");
+      } else {
+        empty.style.display = "block";
+        const m = cpLastMeta || {};
+        if (m.status && String(m.status).startsWith("err")) {
+          empty.classList.add("err");
+          empty.textContent = "scan error: " + m.status;
+        } else if (m.last_scan || m.last_block) {
+          empty.classList.remove("err");
+          const from = m.from_block, to = m.to_block || m.last_block;
+          empty.textContent = `no Aave liquidations this window`
+            + (from && to ? ` · blk ${from}→${to}` : (m.last_block ? ` · blk ${m.last_block}` : ""))
+            + (m.window ? ` · ${fmt.num(m.window, 0)} blocks` : "")
+            + (m.n_logs != null ? ` · ${fmt.num(m.n_logs, 0)} logs` : "")
+            + (m.last_scan ? ` · ${fmt.age(m.last_scan)} ago` : "");
+        } else {
+          empty.classList.remove("err");
+          empty.textContent = "scanning Aave V3 LiquidationCall logs…";
+        }
+      }
+    }
     body.innerHTML = rows.slice(0, 50).map((c) => {
       const pair = `${c.coll_sym || RESERVE_SYMS[+c.coll] || c.coll}→${c.debt_sym || RESERVE_SYMS[+c.debt] || c.debt}`;
-      const searcher = c.searcher_short || (c.searcher ? c.searcher.slice(0, 10) : "--");
-      const user = c.user_short || (c.user ? c.user.slice(0, 10) : "--");
+      const searcher = c.searcher || "";
+      const user = c.user || "";
+      const sShort = searcher ? `${searcher.slice(0, 6)}…${searcher.slice(-4)}` : "--";
+      const uShort = user ? `${user.slice(0, 6)}…${user.slice(-4)}` : "--";
       const net = c.net_est_usd;
       const netColor = net == null ? "var(--dim)" : net >= 0 ? "var(--green)" : "var(--red)";
       const flags = [];
+      if (c.protocol) flags.push(`<span class="pill">${c.protocol}</span>`);
       if (c.missed_by_us) flags.push(`<span class="cp-flag miss">miss</span>`);
       if (c.edge) flags.push(`<span class="cp-flag edge">edge</span>`);
       if (c.status === 0) flags.push(`<span class="cp-flag revert">revert</span>`);
       const tx = c.tx
-        ? `<a href="https://etherscan.io/tx/${c.tx}" target="_blank" rel="noopener" style="color:var(--cyan)">${c.tx.slice(0, 8)}…</a>`
+        ? `<a href="https://etherscan.io/tx/${c.tx}" target="_blank" rel="noopener" style="color:var(--cyan)">${c.tx.slice(0, 8)}…</a>` +
+          ` <span class="mono copy op-link" data-addr="${c.tx}" title="${c.tx}">copy</span>`
         : `<span class="dim">--</span>`;
       return `<tr>
         <td class="dim" title="blk ${c.block || "?"}">${fmt.age(c.ts)}</td>
         <td><b>${pair}</b></td>
-        <td class="mono" title="${c.searcher || ""}">${searcher}…</td>
-        <td class="mono dim" title="${c.user || ""}">${user}…</td>
+        <td class="mono copy" data-addr="${searcher}" title="${searcher}">${sShort}</td>
+        <td class="mono copy dim" data-addr="${user}" title="${user}">${uShort}</td>
         <td>${c.gas_cost_usd != null ? fmt.usd(c.gas_cost_usd) : "--"}</td>
         <td style="color:${c.est_profit_usd != null ? "var(--amber)" : "var(--dim)"}">${c.est_profit_usd != null ? fmt.usd(c.est_profit_usd) : "n/a"}</td>
         <td style="color:${netColor}"><b>${net != null ? fmt.usd(net) : "--"}</b></td>
@@ -1718,6 +2331,7 @@
     const m = s.competitors_meta || {};
     const hist = s.hist || {};
     cpCache = (s.competitors || []).slice(0, 80);
+    cpLastMeta = m;
 
     const pressure = m.pressure || "idle";
     const badge = $("cp-pressure");
@@ -1744,6 +2358,9 @@
         `<span>spokes <b>${m.spokes || 0}</b></span>` +
         `<span>tracked <b>${fmt.num(m.total, 0)}</b></span>` +
         (m.last_block ? `<span>→ blk <b>${m.last_block}</b></span>` : "") +
+        (m.from_block && m.to_block ? `<span>scan <b>${m.from_block}→${m.to_block}</b></span>` : "") +
+        (m.last_scan ? `<span>${fmt.age(m.last_scan)} ago</span>` : "") +
+        (m.n_logs != null ? `<span>logs <b>${fmt.num(m.n_logs, 0)}</b></span>` : "") +
         (m.status && m.status !== "ok" ? `<span style="color:var(--red)">${m.status}</span>` : "");
     }
 
@@ -1772,7 +2389,7 @@
         const pct = t.pct || 0;
         return `<tr>
           <td class="dim">${i + 1}</td>
-          <td class="mono" title="${t.addr || ""}">${(t.short || (t.addr || "").slice(0, 10) || "--")}…</td>
+          <td class="mono copy" title="${t.addr || ""}" data-addr="${t.addr || ""}">${(t.short || (t.addr || "").slice(0, 6) || "--")}…${(t.addr || "").slice(-4)}</td>
           <td><div class="cp-bar-track"><div class="cp-bar" style="width:${Math.min(100, pct)}%"></div></div></td>
           <td>${fmt.num(t.n, 0)}</td>
           <td style="color:var(--amber)">${fmt.usd(t.est)}</td>
@@ -1810,15 +2427,24 @@
   let arFilter = "all";
   let arLiveCache = [];
   let arNearCache = [];
+  let arMetaCache = {};
+  let arLastState = {};
 
   const arbFlag = (o) => {
     const bits = [];
-    if (o.actionable) bits.push(`<span class="pill ok">LIVE</span>`);
+    if (o.actionable && o.submit === "live") bits.push(`<span class="pill ok">LIVE</span>`);
+    else if (o.actionable) bits.push(`<span class="pill warn">+EV sim</span>`);
     else if (o.net_usd != null && o.net_usd <= 0)
       bits.push(`<span class="pill warn">gas</span>`);
+    if (o.submit === "blocked")
+      bits.push(`<span class="pill blocked" title="${o.submit_reason || "blocked"}">blocked</span>`);
+    else if (o.submit === "sim")
+      bits.push(`<span class="pill" title="${o.submit_reason || "sim-only"}">sim</span>`);
     if (o.cross_dex) bits.push(`<span class="pill accent">cross</span>`);
     if (o.sized) bits.push(`<span class="pill">sized</span>`);
     if (o.learned) bits.push(`<span class="pill accent">learn</span>`);
+    if (o.mode === "backrun")
+      bits.push(`<span class="pill accent" title="${(o.victim_hash || o.bundle_mode || "backrun").replace(/"/g, "&quot;")}">backrun</span>`);
     if (o.etherscan)
       bits.push(`<a href="${o.etherscan}" target="_blank" rel="noopener">pool</a>`);
     return bits.join(" ") || "";
@@ -1831,9 +2457,8 @@
   };
 
   const renderArbFeed = () => {
-    const nearMode = arFilter === "near";
-    let rows = nearMode ? arNearCache : arLiveCache;
-    if (!nearMode && arFilter !== "all") {
+    let rows = arLiveCache.filter((o) => Number(o.net_usd) > 0 && !o.same_pool);
+    if (arFilter !== "all") {
       rows = rows.filter((o) => {
         if (arFilter === "live") return !!o.actionable;
         if (arFilter === "cross") return !!o.cross_dex;
@@ -1844,26 +2469,50 @@
     }
     const note = $("ar-feed-note");
     if (note) {
-      const base = nearMode ? arNearCache.length : arLiveCache.length;
-      note.textContent = `${rows.length}/${base} · ${nearMode ? "near-miss" : "net-sorted"}`;
+      note.textContent = rows.length ? `${rows.length} +EV` : "+EV after costs";
     }
     const empty = $("arb-empty");
-    if (empty) empty.style.display = rows.length ? "none" : "block";
+    if (empty) {
+      const m = arMetaCache || {};
+      const a = arLastState || {};
+      if (rows.length) {
+        empty.style.display = "none";
+        empty.classList.remove("err");
+      } else {
+        empty.style.display = "block";
+        if (a.error) {
+          empty.classList.add("err");
+          empty.textContent = "scan error: " + a.error;
+        } else if (m.last_scan) {
+          empty.classList.remove("err");
+          const n = m.pairs || 0;
+          const q = m.quoted != null ? m.quoted : m.quotes;
+          const skip = m.skipped != null ? m.skipped : arNearCache.length;
+          const floor = m.min_usd;
+          empty.textContent = `no +EV this scan · ${fmt.num(n, 0)} pairs`
+            + (q != null ? ` · ${fmt.num(q, 0)} quotes` : "")
+            + (skip != null ? ` · skip ${fmt.num(skip, 0)}` : "")
+            + (floor != null ? ` · floor ${fmt.usd(floor)}` : "");
+        } else {
+          empty.classList.remove("err");
+          empty.textContent = "backrun+lst · scoring LST/stables (Aave flash)…";
+        }
+      }
+    }
     const body = $("arb-table") && $("arb-table").querySelector("tbody");
     if (!body) return;
     body.innerHTML = rows.slice(0, 40).map((o) => {
-      const netColor = o.net_usd == null ? "var(--dim)"
-        : o.net_usd > 0 ? "var(--green)" : "var(--amber)";
-      const gap = o.gap_usd != null ? o.gap_usd : o.net_usd;
+      const netColor = o.net_usd > 0 ? "var(--green)" : "var(--dim)";
+      const planTip = o.plan ? JSON.stringify(o.plan).replace(/"/g, "&quot;") : (o.flash_full || "");
       return `<tr>
         <td>${venueBadge(o)}</td>
         <td><b>${o.mid || "?"}</b></td>
-        <td class="mono dim" title="${o.flash_full || ""}">${o.route || "--"}</td>
+        <td class="mono dim" title="${planTip}">${o.route || "--"}</td>
         <td>${fmt.num(o.hops || 2, 0)}</td>
         <td>${fmt.num(o.borrow_weth, 4)}</td>
         <td style="color:var(--amber)">${fmt.usd(o.profit_usd)}</td>
         <td class="dim">${fmt.usd(o.gas_usd)}</td>
-        <td style="color:${netColor}"><b>${nearMode ? fmt.usd(gap) : fmt.usd(o.net_usd)}</b></td>
+        <td style="color:${netColor}"><b>${fmt.usd(o.net_usd)}</b></td>
         <td>${arbFlag(o)}</td>
       </tr>`;
     }).join("");
@@ -1888,8 +2537,10 @@
     const a = s.arb || {};
     const m = a.meta || {};
     const hist = s.hist || {};
-    arLiveCache = a.opps || [];
+    arLiveCache = (a.opps || []).filter((o) => Number(o.net_usd) > 0 && !o.same_pool);
     arNearCache = a.near || [];
+    arMetaCache = m;
+    arLastState = a;
 
     const pressure = m.pressure || "idle";
     const badge = $("ar-pressure");
@@ -1900,19 +2551,32 @@
     const setTxt = (id, v) => { const el = $(id); if (el) el.textContent = v; };
     setTxt("ar-live", fmt.num(m.live, 0));
     setTxt("ar-actionable", fmt.num(m.actionable, 0));
-    setTxt("ar-best-net", m.best_net_usd != null ? fmt.usd(m.best_net_usd) : "--");
-    setTxt("ar-near-n", fmt.num(m.near, 0));
+    setTxt("ar-best-net", m.best_net_usd != null && m.live ? fmt.usd(m.best_net_usd) : "--");
+    setTxt("ar-skip-n", fmt.num(m.skipped != null ? m.skipped : (m.near || 0), 0));
+    setTxt("ar-skip-debug-n", fmt.num(m.skipped != null ? m.skipped : arNearCache.length, 0));
 
     const meta = $("arb-meta");
     if (meta) {
-      const dexes = (m.dexes || []).join("+") || "—";
+      const uni = a.universe || {};
+      const dexes = (m.dexes || uni.venues || []).join("+") || "—";
+      const gate = m.submit_gate || "blocked";
+      const gateColor = gate === "live" ? "var(--green)" : gate === "sim" ? "var(--amber)" : "var(--red)";
+      const age = m.last_scan ? fmt.age(m.last_scan) : (a.last_scan ? fmt.age(a.last_scan) : null);
       meta.innerHTML =
+        `<span>pairs <b>${fmt.num(m.pairs != null ? m.pairs : uni.pairs, 0)}</b></span>` +
         `<span>dexes <b>${dexes}</b></span>` +
+        `<span>submit <b style="color:${gateColor}">${gate}</b></span>` +
         `<span>cross <b style="color:var(--violet)">${fmt.num(m.cross_dex, 0)}</b></span>` +
         (m.top_mid ? `<span>top <b>${m.top_mid}</b></span>` : "") +
         (m.gas_gwei != null ? `<span>gas <b>${fmt.num(m.gas_gwei, 2)} gwei</b></span>` : "") +
         (m.scan_ms != null ? `<span>scan <b>${fmt.num(m.scan_ms, 0)}ms</b></span>` : "") +
+        (age ? `<span>last <b>${age}</b></span>` : "") +
         (m.mode ? `<span>mode <b>${m.mode}</b></span>` : "") +
+        (m.last_victim ? `<span>victim <b class="mono">${m.last_victim}</b></span>` : "") +
+        (m.quote_src ? `<span>quotes <b>${m.quote_src}</b></span>` : "") +
+        (m.live != null ? `<span>live <b>${fmt.num(m.live, 0)}</b></span>` : "") +
+        (m.skipped != null ? `<span>skipped <b>${fmt.num(m.skipped, 0)}</b></span>` : "") +
+        (m.flash_fee_bps != null ? `<span>flash <b>${fmt.num(m.flash_fee_bps, 0)} bps ${m.flash_fee_src || "aave"}</b></span>` : "") +
         (m.scan_block ? `<span>@ blk <b>${m.scan_block}</b></span>` : "") +
         ((m.preferred_mids || []).length
           ? `<span>learn <b>${m.preferred_mids.join(",")}</b></span>` : "") +
@@ -1939,16 +2603,26 @@
 
     const nearBody = $("arb-near-table") && $("arb-near-table").querySelector("tbody");
     const nearEmpty = $("arb-near-empty");
-    if (nearEmpty) nearEmpty.style.display = arNearCache.length ? "none" : "block";
+    if (nearEmpty) {
+      if (arNearCache.length) nearEmpty.style.display = "none";
+      else {
+        nearEmpty.style.display = "block";
+        nearEmpty.textContent = m.last_scan || a.last_scan
+          ? "no debug skips this scan"
+          : "waiting for first quote pass…";
+      }
+    }
     if (nearBody) {
-      nearBody.innerHTML = arNearCache.slice(0, 20).map((o) => {
+      nearBody.innerHTML = arNearCache.slice(0, 8).map((o) => {
         const gap = o.gap_usd != null ? o.gap_usd : o.net_usd;
-        return `<tr>
+        const why = o.skip_reason || (o.net_usd != null && o.net_usd <= 0 ? "neg_net" : "below_floor");
+        const tip = o.submit_reason ? String(o.submit_reason).replace(/"/g, "&quot;") : "";
+        return `<tr class="arb-near-row" title="${tip}">
           <td>${venueBadge(o)}</td>
           <td><b>${o.mid || "?"}</b></td>
-          <td style="color:var(--amber)">${fmt.usd(o.profit_usd)}</td>
+          <td class="dim">${fmt.usd(o.net_usd)}</td>
           <td style="color:var(--red)">${fmt.usd(gap)}</td>
-          <td class="dim">${fmt.num(o.roi_bps, 1)}</td>
+          <td class="dim">${why}</td>
         </tr>`;
       }).join("");
     }
@@ -1961,17 +2635,29 @@
     if (cov) {
       const byDex = m.by_dex || st.by_dex || {};
       const dexBits = Object.entries(byDex).map(([k, v]) => `${k}:${v}`).join(" ");
+      const kindBits = Object.entries(m.by_kind || st.by_kind || {}).map(([k, v]) => `${k}:${v}`).join(" ");
+      const toks = (m.tokens || (a.universe || {}).tokens || []).slice(0, 8).join(" ");
       cov.innerHTML = [
         `<span>net <b>ethereum mainnet</b></span>`,
+        `<span>pairs <b>${fmt.num(m.pairs != null ? m.pairs : st.pairs, 0)}</b></span>`,
         `<span>routes <b>${fmt.num(m.routes != null ? m.routes : st.routes, 0)}</b></span>`,
         `<span>flash pools <b>${fmt.num(m.flash_pools != null ? m.flash_pools : st.flash_pools, 0)}</b></span>`,
         `<span>jobs <b>${fmt.num(m.jobs != null ? m.jobs : st.jobs, 0)}</b></span>`,
         `<span>screened <b>${fmt.num(m.screened != null ? m.screened : st.screened, 0)}</b></span>`,
-        `<span>quoted <b>${fmt.num(m.quoted != null ? m.quoted : st.quoted, 0)}</b></span>`,
+        `<span>quoted <b>${fmt.num(m.quoted != null ? m.quoted : (st.quoted != null ? st.quoted : st.quotes), 0)}</b></span>`,
         (dexBits ? `<span>graph <b>${dexBits}</b></span>` : ""),
+        (kindBits ? `<span>kind <b>${kindBits}</b></span>` : ""),
+        (toks ? `<span>mids <b>${toks}</b></span>` : ""),
         (st.gas_gwei_live != null
           ? `<span>live gas <b>${fmt.num(st.gas_gwei_live, 3)} gwei</b></span>` : ""),
+        `<span>skipped <b>${fmt.num(m.skipped != null ? m.skipped : st.skipped, 0)}</b></span>`,
+        (m.quote_src ? `<span>quotes via <b>${m.quote_src}</b></span>` : ""),
+        (m.last_victim ? `<span>last victim <b>${m.last_victim}</b></span>` : ""),
+        (m.flash_fee_bps != null
+          ? `<span>flash fee <b>${fmt.num(m.flash_fee_bps, 0)} bps ${m.flash_fee_src || "aave-v3"}</b></span>` : ""),
+        (m.min_usd != null ? `<span>floor <b>${fmt.usd(m.min_usd)}</b></span>` : ""),
         `<span>best margin <b style="color:${best < 0 ? "var(--amber)" : "var(--green)"}">${fmt.num(best, 5)} WETH</b></span>`,
+        (m.last_scan ? `<span>last scan <b>${fmt.age(m.last_scan)}</b></span>` : ""),
       ].filter(Boolean).join("");
     }
 
@@ -2763,6 +3449,11 @@
 
   /* ------------------------------------------------ chain tabs ETH | SOL */
   const TAB_KEY = "toni-chain-tab";
+  const CHAIN_TABS = ["eth", "sol"];
+  const TAB_HINT = {
+    eth: "Ethereum workspace · Aave V4 + MEV",
+    sol: "Solana workspace · Solend liq + Jupiter arb",
+  };
   let activeTab = "eth";
   let solChart = null, solSeries = null;
   let solInterval = "1h";
@@ -2974,6 +3665,22 @@
         empty.hidden = !!d.ok;
         if (!d.ok) empty.textContent = "RPC unreachable — will retry quietly";
       }
+      if (d.arb) {
+        window.__lastState = window.__lastState || {};
+        window.__lastState.sol = window.__lastState.sol || {};
+        const prev = window.__lastState.sol.arb || {};
+        window.__lastState.sol.arb = {
+          ...prev,
+          opps: d.arb.opps != null ? d.arb.opps : prev.opps,
+          near: d.arb.near != null ? d.arb.near : prev.near,
+          stats: d.arb.stats || prev.stats,
+          error: d.arb.error,
+          last_scan: d.arb.last_scan,
+          universe: d.arb.universe || prev.universe,
+          meta: { ...(prev.meta || {}), ...(d.arb.meta || {}) },
+        };
+        if (activeTab === "sol") updateSolArb(window.__lastState.sol, window.__lastState.hist);
+      }
       if ($("sol-updated")) $("sol-updated").textContent = sastClock();
       pushSolAct(d.ok
         ? `RPC ok · slot ${slotTxt} · epoch ${d.epoch != null ? d.epoch : "--"}`
@@ -3025,39 +3732,31 @@
   };
 
   const setChainTab = (tab) => {
-    activeTab = tab === "sol" ? "sol" : "eth";
+    activeTab = CHAIN_TABS.includes(tab) ? tab : "eth";
     try { localStorage.setItem(TAB_KEY, activeTab); } catch (e) { /* ignore */ }
+    try {
+      const h = "#" + activeTab;
+      if (location.hash !== h) history.replaceState(null, "", h);
+    } catch (e) { /* ignore */ }
 
-    const ethPanel = $("tab-eth");
-    const solPanel = $("tab-sol");
-    const ethBtn = $("tab-btn-eth");
-    const solBtn = $("tab-btn-sol");
+    CHAIN_TABS.forEach((id) => {
+      const panel = $("tab-" + id);
+      const btn = $("tab-btn-" + id);
+      const on = activeTab === id;
+      if (panel) {
+        panel.classList.toggle("active", on);
+        panel.hidden = !on;
+      }
+      if (btn) {
+        btn.classList.toggle("on", on);
+        btn.setAttribute("aria-selected", on ? "true" : "false");
+      }
+    });
     const hint = $("chain-tabs-hint");
     const chainLabel = $("p-chain-label");
-
-    if (ethPanel) {
-      ethPanel.classList.toggle("active", activeTab === "eth");
-      ethPanel.hidden = activeTab !== "eth";
-    }
-    if (solPanel) {
-      solPanel.classList.toggle("active", activeTab === "sol");
-      solPanel.hidden = activeTab !== "sol";
-    }
-    if (ethBtn) {
-      ethBtn.classList.toggle("on", activeTab === "eth");
-      ethBtn.setAttribute("aria-selected", activeTab === "eth" ? "true" : "false");
-    }
-    if (solBtn) {
-      solBtn.classList.toggle("on", activeTab === "sol");
-      solBtn.setAttribute("aria-selected", activeTab === "sol" ? "true" : "false");
-    }
-    if (hint) {
-      hint.textContent = activeTab === "sol"
-        ? "Solana workspace · Solend liq + Jupiter arb"
-        : "Ethereum workspace · Aave V4 + MEV";
-    }
+    if (hint) hint.textContent = TAB_HINT[activeTab] || TAB_HINT.eth;
     if (chainLabel) {
-      chainLabel.textContent = activeTab === "sol" ? "SOL mainnet" : "ETH mainnet";
+      chainLabel.textContent = activeTab === "eth" ? "ETH mainnet" : "SOL mainnet";
     }
 
     if (activeTab === "sol") {
@@ -3090,8 +3789,19 @@
       });
     }
     let saved = "eth";
-    try { saved = localStorage.getItem(TAB_KEY) || "eth"; } catch (e) { saved = "eth"; }
-    setChainTab(saved === "sol" ? "sol" : "eth");
+    try {
+      const hash = (location.hash || "").replace(/^#/, "").toLowerCase();
+      if (CHAIN_TABS.includes(hash)) saved = hash;
+      else saved = localStorage.getItem(TAB_KEY) || "eth";
+    } catch (e) { saved = "eth"; }
+    setChainTab(CHAIN_TABS.includes(saved) ? saved : "eth");
+    if (!window.__tabHashBound) {
+      window.__tabHashBound = true;
+      window.addEventListener("hashchange", () => {
+        const hash = (location.hash || "").replace(/^#/, "").toLowerCase();
+        if (CHAIN_TABS.includes(hash) && hash !== activeTab) setChainTab(hash);
+      });
+    }
   };
 
   /* ------------------------------------------------ websocket */
@@ -3126,51 +3836,871 @@
     if (!window.__logInit) { updateLog(s, s.log); window.__logInit = true; }
   };
 
-  /* ------------------------------------------------ web3 / wallet */
-  let provider = null;
-  let signerAddr = null;
-  const btnConnect = $("btn-connect");
-  const chip = $("wallet-chip");
+  /* ------------------------------------------------ web3 / wallet (ETH + SOL, independent) */
+  const SOL_MAINNET = "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp";
+  const SOL_SNAP_ID = "npm:@metamask/solana-wallet-snap";
+  const MM_RDNS = { "io.metamask": 1, "io.metamask.flask": 1, "io.metamask.mmi": 1 };
+  const SOL_CAIP_METHODS = [
+    "signAndSendTransaction", "signTransaction", "signMessage", "signAllTransactions", "signIn",
+    "solana_signAndSendTransaction", "solana_signTransaction", "solana_signMessage",
+  ];
+  const EIP155_CAIP_METHODS = [
+    "eth_sendTransaction", "personal_sign", "eth_signTypedData_v4", "eth_getBalance",
+    "eth_call", "eth_blockNumber", "eth_getTransactionCount", "wallet_watchAsset",
+  ];
+  const ethWallet = { provider: null, addr: null, eip1193: null };
+  const solWallet = {
+    kind: null, name: "", pubkey: null, provider: null, stdWallet: null, stdAccount: null, caipEth: null,
+  };
+  window.__ethWallet = ethWallet;
+  window.__solWallet = solWallet;
 
-  btnConnect.addEventListener("click", async () => {
-    if (!window.ethereum) {
-      btnConnect.textContent = "No MetaMask";
+  const stdWallets = [];
+  try {
+    window.addEventListener("wallet-standard:register-wallet", (ev) => {
+      try {
+        const cb = ev.detail;
+        if (typeof cb === "function") {
+          cb({ register: (w) => { if (w && stdWallets.indexOf(w) < 0) stdWallets.push(w); } });
+        }
+      } catch (_) { /* ignore */ }
+    });
+    window.dispatchEvent(new Event("wallet-standard:app-ready"));
+  } catch (_) { /* ignore */ }
+
+  const eip6963 = [];
+  try {
+    window.addEventListener("eip6963:announceProvider", (ev) => {
+      const d = ev && ev.detail;
+      if (!d || !d.provider || !d.info) return;
+      const rdns = String(d.info.rdns || "");
+      if (!eip6963.some((x) => x.info && x.info.rdns === rdns && x.provider === d.provider)) {
+        eip6963.push(d);
+      }
+    });
+    window.dispatchEvent(new Event("eip6963:requestProvider"));
+  } catch (_) { /* ignore */ }
+
+  const walletErr = (e) => String((e && (e.message || e.data || e.error)) || e || "error").slice(0, 180);
+
+  const setEthFundStatus = (msg, cls) => {
+    const st = $("fund-status");
+    if (!st) return;
+    st.textContent = msg || "";
+    st.className = cls || "";
+  };
+
+  const rpcCode = (e) => {
+    if (!e || typeof e !== "object") return null;
+    if (typeof e.code === "number") return e.code;
+    if (e.error && typeof e.error.code === "number") return e.error.code;
+    return null;
+  };
+  const isUserReject = (e) => {
+    const c = rpcCode(e);
+    const m = String((e && (e.message || e.reason || (e.error && e.error.message))) || e || "").toLowerCase();
+    return c === 4001 || c === 5001 || /user rejected|rejected the request|denied request|user denied|rejected by user|request rejected|user cancelled|user canceled/.test(m);
+  };
+  const rejectErr = () => new Error("You rejected the MetaMask Solana permission");
+  const noSolErr = () => new Error("Update MetaMask and enable Solana in Settings → Multichain, then click Connect again");
+  const isSolAddr = (pk) => {
+    const s = String(pk || "");
+    return !!s && s.indexOf("0x") !== 0 && s.length >= 32 && s.length <= 48 && s.indexOf(":") < 0;
+  };
+  const toSolPk = (pk) => {
+    if (!pk) return "";
+    if (typeof pk.toBase58 === "function") return pk.toBase58();
+    if (pk instanceof Uint8Array) {
+      const w3 = window.solanaWeb3;
+      if (w3) {
+        try { return new w3.PublicKey(pk).toBase58(); } catch (_) { /* ignore */ }
+      }
+    }
+    const s = String(pk.address || pk.publicKey || pk);
+    if (s.indexOf("solana:") === 0) {
+      const parts = s.split(":");
+      return parts[parts.length - 1] || "";
+    }
+    return s;
+  };
+
+  const unwrapEip1193 = (p) => {
+    if (!p) return null;
+    if (typeof p.request === "function") return p;
+    if (p.provider && typeof p.provider.request === "function") return p.provider;
+    return null;
+  };
+  const isMetaMaskProvider = (p) => {
+    if (!p) return false;
+    if (p.isPhantom || p.isSolflare || p.isCoinbaseWallet || p.isRabby) return false;
+    return !!(p.isMetaMask || p._metamask);
+  };
+  const getMetaMaskEvm = () => {
+    const e = window.ethereum;
+    if (!e) return null;
+    if (Array.isArray(e.providers)) {
+      return e.providers.find((p) => isMetaMaskProvider(p)) || null;
+    }
+    if (isMetaMaskProvider(e)) return e;
+    return null;
+  };
+  /** Same MetaMask as ETH fund — EIP-6963 rdns, already-connected ETH provider, then window.ethereum. */
+  const getMetaMaskProvider = () => {
+    const fromEth = unwrapEip1193(ethWallet.eip1193) || unwrapEip1193(ethWallet.provider);
+    if (fromEth && isMetaMaskProvider(fromEth)) return fromEth;
+    for (const d of eip6963) {
+      const rdns = String((d.info && d.info.rdns) || "");
+      if (MM_RDNS[rdns] && d.provider) return d.provider;
+    }
+    const named = window.ethereum && window.ethereum.providers
+      ? window.ethereum.providers.find((p) => p && (p.isMetaMaskProvider || (p.rdns && MM_RDNS[p.rdns])))
+      : null;
+    if (named) return named;
+    return getMetaMaskEvm() || (window.metamask && typeof window.metamask.request === "function" ? window.metamask : null);
+  };
+
+  const isMmStd = (w) => {
+    const n = String((w && w.name) || "").toLowerCase();
+    return n === "metamask" || n.indexOf("metamask") >= 0;
+  };
+  const stdHasSolana = (w) => !!(w && w.features && (
+    w.features["solana:signAndSendTransaction"] || w.features["solana:signTransaction"]
+  ));
+  const findMmStd = () => stdWallets.find(isMmStd) || null;
+  const findMmStdSolana = () => stdWallets.find((w) => isMmStd(w) && stdHasSolana(w)) || findMmStd();
+
+  const injectedMmSolana = () => {
+    const mm = getMetaMaskProvider();
+    const cands = [
+      window.metamask && window.metamask.solana,
+      mm && mm.solana,
+      window.ethereum && window.ethereum.solana,
+    ];
+    const e = window.ethereum;
+    if (e && Array.isArray(e.providers)) {
+      const p = e.providers.find((x) => x && x.isMetaMask && (x.isSolana || x._isSolana || x.chain === "solana"));
+      if (p) cands.push(p);
+    }
+    for (const p of cands) {
+      if (p && (typeof p.connect === "function" || typeof p.request === "function"
+          || typeof p.signAndSendTransaction === "function")) return p;
+    }
+    return null;
+  };
+
+  const getPhantom = () => {
+    const p = (window.phantom && window.phantom.solana)
+      || (window.solana && window.solana.isPhantom ? window.solana : null);
+    return p || null;
+  };
+  const getSolflare = () => window.solflare || (window.solana && window.solana.isSolflare ? window.solana : null) || null;
+
+  const unwrapSession = (raw) => {
+    if (!raw) return { sessionScopes: {} };
+    if (raw.sessionScopes || raw.session_scopes) return raw;
+    if (raw.result && (raw.result.sessionScopes || raw.result.session_scopes)) return raw.result;
+    return raw;
+  };
+  const sessionScopesOf = (session) => {
+    const s = unwrapSession(session);
+    return (s && (s.sessionScopes || s.session_scopes)) || {};
+  };
+  const solPkFromSession = (session) => {
+    const scopes = sessionScopesOf(session);
+    for (const [k, v] of Object.entries(scopes)) {
+      if (String(k).indexOf("solana:") !== 0) continue;
+      for (const a of (v && v.accounts) || []) {
+        let pk = "";
+        if (typeof a === "string") {
+          const parts = a.split(":");
+          pk = parts.length >= 3 ? parts[parts.length - 1] : a;
+        } else if (a && typeof a === "object") {
+          pk = toSolPk(a.address || a.publicKey || a.account || a);
+        }
+        if (isSolAddr(pk)) return pk;
+      }
+    }
+    return "";
+  };
+  const caipCopyScopes = (session) => {
+    const out = {};
+    const scopes = sessionScopesOf(session);
+    Object.keys(scopes).forEach((k) => {
+      const sc = scopes[k] || {};
+      out[k] = {
+        methods: (sc.methods && sc.methods.length) ? sc.methods : (String(k).indexOf("eip155:") === 0 ? EIP155_CAIP_METHODS : []),
+        notifications: sc.notifications || (String(k).indexOf("eip155:") === 0 ? ["eth_subscription"] : []),
+      };
+    });
+    return out;
+  };
+  const buildOptionalScopes = (session, chainId) => {
+    const optionalScopes = caipCopyScopes(session);
+    const cid = Number(chainId) > 0 ? Number(chainId) : 1;
+    const keys = ["eip155:1", "eip155:" + cid];
+    keys.forEach((k) => {
+      if (!optionalScopes[k]) {
+        optionalScopes[k] = { methods: EIP155_CAIP_METHODS, notifications: ["eth_subscription"] };
+      }
+    });
+    optionalScopes[SOL_MAINNET] = { methods: SOL_CAIP_METHODS.slice(), notifications: [] };
+    return optionalScopes;
+  };
+
+  const caipCall = async (eth, method, params) => {
+    const tries = [];
+    if (params === undefined) {
+      tries.push({ method });
+      tries.push({ method, params: [] });
+    } else {
+      tries.push({ method, params });
+      tries.push({ method, params: [params] });
+    }
+    let last = null;
+    for (const arg of tries) {
+      try {
+        return await eth.request(arg);
+      } catch (e) {
+        if (isUserReject(e)) throw e;
+        const c = rpcCode(e);
+        if (c === 5100 || c === 4100 || c === 5302 || c === 5000) throw e;
+        last = e;
+      }
+    }
+    throw last || new Error(method + " failed");
+  };
+
+  const waitForSolPk = (eth, ms) => new Promise((resolve) => {
+    let done = false;
+    const finish = (pk) => { if (done) return; done = true; resolve(pk || ""); };
+    const fromMsg = (payload) => {
+      const pk = solPkFromSession(payload) || solPkFromSession(payload && payload.params);
+      if (pk) finish(pk);
+    };
+    try {
+      if (typeof eth.on === "function") {
+        eth.on("wallet_sessionChanged", fromMsg);
+        eth.on("message", (m) => {
+          if (m && (m.method === "wallet_sessionChanged" || (m.params && m.params.sessionScopes))) fromMsg(m);
+        });
+      }
+    } catch (_) { /* ignore */ }
+    setTimeout(() => finish(""), ms);
+  });
+
+  const paintEthChip = () => {
+    const btn = $("btn-connect");
+    const chip = $("wallet-chip");
+    if (!ethWallet.addr) {
+      if (btn) { btn.textContent = "Connect MetaMask (ETH)"; btn.disabled = false; }
+      if (chip) chip.classList.add("hidden");
       return;
     }
-    try {
-      provider = new ethers.BrowserProvider(window.ethereum);
-      await provider.send("eth_requestAccounts", []);
-      const signer = await provider.getSigner();
-      signerAddr = await signer.getAddress();
-      const net = await provider.getNetwork();
-      const bal = await provider.getBalance(signerAddr);
-      chip.textContent = `${signerAddr.slice(0, 6)}…${signerAddr.slice(-4)} | chain ${net.chainId} | ${fmt.eth(Number(bal) / 1e18, 3)}`;
+    if (btn) { btn.textContent = "Connected (ETH)"; btn.disabled = true; }
+    if (chip) {
+      chip.textContent = `ETH ${ethWallet.addr.slice(0, 6)}…${ethWallet.addr.slice(-4)}`;
       chip.classList.remove("hidden");
-      btnConnect.textContent = "Connected";
-      btnConnect.disabled = true;
-    } catch (e) {
-      btnConnect.textContent = "Connect error";
-      console.error(e);
     }
-  });
+  };
 
-  $("btn-fund").addEventListener("click", async () => {
-    const amt = parseFloat($("fund-amt").value);
-    const st = $("fund-status");
-    if (!provider || !signerAddr) { st.textContent = "connect a wallet first"; return; }
-    if (!amt || amt <= 0) { st.textContent = "enter an amount"; return; }
-    try {
-      st.textContent = "requesting signature...";
-      const signer = await provider.getSigner();
-      const tx = await signer.sendTransaction({ to: SPONSOR, value: ethers.parseEther(String(amt)) });
-      st.textContent = `tx ${tx.hash.slice(0, 10)}… sent, waiting confirm`;
-      await tx.wait();
-      st.textContent = `confirmed: ${fmt.eth(amt)} to sponsor`;
-      $("fund-amt").value = "0.07";
-    } catch (e) {
-      st.textContent = "cancelled / " + String(e.message || e).slice(0, 60);
+  const paintSolChip = () => {
+    const pk = solWallet.pubkey;
+    const label = solWallet.name || "SOL";
+    const set = (btnId, chipId) => {
+      const btn = $(btnId);
+      const chip = $(chipId);
+      if (!pk) {
+        if (btn) {
+          btn.textContent = btnId === "lp-btn-connect"
+            ? "Connect MetaMask (SOL) / Phantom" : "Connect MetaMask (SOL)";
+          btn.disabled = false;
+        }
+        if (chip) chip.classList.add("hidden");
+        return;
+      }
+      if (btn) { btn.textContent = "Connected (SOL)"; btn.disabled = true; }
+      if (chip) {
+        chip.textContent = `${label} ${pk.slice(0, 4)}…${pk.slice(-4)}`;
+        chip.classList.remove("hidden");
+      }
+    };
+    set("sol-btn-connect", "sol-wallet-chip");
+    set("lp-btn-connect", "lp-wallet-chip");
+    const disc = $("lp-btn-disconnect");
+    if (disc) disc.classList.toggle("hidden", !pk);
+  };
+
+  const pickSolAccount = (accs) => {
+    for (const a of accs || []) {
+      const chains = (a && a.chains) || [];
+      if (chains.some((c) => String(c).indexOf("solana:") === 0)) return a;
+      const pk = toSolPk(a && (a.address || a.publicKey));
+      if (isSolAddr(pk)) return a;
     }
-  });
+    return null;
+  };
+
+  const applySolWallet = (kind, label, pk, extra) => {
+    const addr = isSolAddr(toSolPk(pk)) ? toSolPk(pk) : "";
+    if (!addr) throw new Error("no Solana pubkey from " + label);
+    solWallet.kind = kind;
+    solWallet.name = label;
+    solWallet.pubkey = addr;
+    solWallet.provider = (extra && extra.provider) || null;
+    solWallet.stdWallet = (extra && extra.stdWallet) || null;
+    solWallet.stdAccount = (extra && extra.stdAccount) || null;
+    solWallet.caipEth = (extra && extra.caipEth) || null;
+    try { paintSolChip(); } catch (_) {}
+    try {
+      if (typeof postLpControl === "function") {
+        Promise.resolve(postLpControl({ owner: addr })).then((r) => {
+          if (r && r.lp && typeof updateLp === "function") updateLp({ sol: { lp: r.lp } });
+        });
+      }
+    } catch (_) {}
+  };
+
+  const connectStdWallet = async (wallet, label) => {
+    const feat = wallet.features || {};
+    const connectFeat = feat["standard:connect"];
+    if (!connectFeat || typeof connectFeat.connect !== "function") throw new Error("wallet has no connect");
+    const res = await connectFeat.connect({ silent: false, chains: [SOL_MAINNET], chain: SOL_MAINNET });
+    const accs = (res && res.accounts) || wallet.accounts || [];
+    const acc = pickSolAccount(accs);
+    if (!acc) throw new Error("no Solana account");
+    applySolWallet("std", label, acc.address || acc.publicKey, { stdWallet: wallet, stdAccount: acc });
+  };
+
+  const connectInjectedSol = async (provider, label) => {
+    let pk = provider.publicKey;
+    try {
+      if (typeof provider.connect === "function") {
+        const res = await provider.connect({ onlyIfTrusted: false });
+        pk = (res && res.publicKey) || provider.publicKey || pk;
+      } else if (typeof provider.request === "function") {
+        const accs = await provider.request({ method: "solana_requestAccounts" }).catch((e) => {
+          if (isUserReject(e)) throw e;
+          return null;
+        });
+        const found = (accs || []).map(toSolPk).find(isSolAddr);
+        pk = found || pk;
+      }
+    } catch (e) {
+      if (isUserReject(e)) throw rejectErr();
+      throw e;
+    }
+    applySolWallet("injected", label, pk, { provider });
+  };
+
+  const requestSolSnap = async (eth) => {
+    const ids = [SOL_SNAP_ID, "npm:solflare-wallet/solana-snap"];
+    let last = null;
+    for (const id of ids) {
+      try {
+        const params = {};
+        params[id] = {};
+        await eth.request({ method: "wallet_requestSnaps", params });
+        return true;
+      } catch (e) {
+        if (isUserReject(e)) throw rejectErr();
+        last = e;
+      }
+    }
+    if (last && rpcCode(last) === -32601) return false;
+    return false;
+  };
+
+  const connectCaipSolana = async (eth) => {
+    if (!eth || typeof eth.request !== "function") return false;
+    let chainId = 1;
+    try {
+      const hex = await eth.request({ method: "eth_chainId" });
+      const n = parseInt(hex, 16);
+      if (n > 0) chainId = n;
+    } catch (_) { /* keep 1 */ }
+
+    let session = null;
+    try {
+      session = unwrapSession(await caipCall(eth, "wallet_getSession"));
+    } catch (e) {
+      if (isUserReject(e)) throw rejectErr();
+      session = { sessionScopes: {} };
+    }
+    let pk = solPkFromSession(session);
+    if (pk) {
+      applySolWallet("caip", "MetaMask", pk, { caipEth: eth });
+      return true;
+    }
+
+    /* Empty session is not a fail — still prompt so the user can grant Solana. */
+    const optionalScopes = buildOptionalScopes(session, chainId);
+    const pendingPk = waitForSolPk(eth, 120000);
+    const hasScopes = Object.keys(sessionScopesOf(session)).length > 0;
+    try {
+      if (hasScopes) {
+        try {
+          session = unwrapSession(await caipCall(eth, "wallet_updateSession", { optionalScopes }));
+          pk = solPkFromSession(session);
+        } catch (e) {
+          if (isUserReject(e)) throw rejectErr();
+        }
+      }
+      if (!pk) {
+        try {
+          session = unwrapSession(await caipCall(eth, "wallet_createSession", { optionalScopes }));
+          pk = solPkFromSession(session);
+        } catch (e) {
+          if (isUserReject(e)) throw rejectErr();
+          /* 5100 / -32601: Solana not enabled yet — caller will request snap and retry. */
+        }
+      }
+    } catch (e) {
+      if (isUserReject(e)) throw rejectErr();
+      throw e;
+    }
+    if (!pk) {
+      pk = await Promise.race([
+        pendingPk,
+        new Promise((r) => setTimeout(() => r(""), 1500)),
+      ]) || pk;
+    }
+    if (!pk) {
+      try {
+        session = unwrapSession(await caipCall(eth, "wallet_getSession"));
+        pk = solPkFromSession(session);
+      } catch (_) { /* ignore */ }
+    }
+    if (!pk) return false;
+    applySolWallet("caip", "MetaMask", pk, { caipEth: eth });
+    return true;
+  };
+
+  const tryMmSolanaSurfaces = async (requireSolFeat) => {
+    const mmStd = requireSolFeat
+      ? stdWallets.find((w) => isMmStd(w) && stdHasSolana(w))
+      : (findMmStdSolana() || findMmStd());
+    if (mmStd) {
+      try {
+        await connectStdWallet(mmStd, "MetaMask");
+        return true;
+      } catch (e) {
+        if (isUserReject(e)) throw rejectErr();
+      }
+    }
+    const mmInj = injectedMmSolana();
+    if (mmInj) {
+      try {
+        await connectInjectedSol(mmInj, "MetaMask");
+        return true;
+      } catch (e) {
+        if (isUserReject(e)) throw rejectErr();
+      }
+    }
+    return false;
+  };
+
+  const connectSolTab = async () => {
+    const mm = getMetaMaskProvider();
+
+    if (await tryMmSolanaSurfaces(true)) return;
+
+    if (mm) {
+      setSolFundStatus("requesting Solana permission in MetaMask…");
+      try {
+        if (await connectCaipSolana(mm)) return;
+      } catch (e) {
+        if (isUserReject(e)) throw rejectErr();
+        /* keep going — still request snap so the popup can enable Solana */
+      }
+
+      if (await tryMmSolanaSurfaces(false)) return;
+
+      setSolFundStatus("enabling Solana in MetaMask…");
+      try {
+        await requestSolSnap(mm);
+      } catch (e) {
+        if (isUserReject(e)) throw rejectErr();
+      }
+      await new Promise((r) => setTimeout(r, 400));
+      try { window.dispatchEvent(new Event("wallet-standard:app-ready")); } catch (_) { /* ignore */ }
+      try { window.dispatchEvent(new Event("eip6963:requestProvider")); } catch (_) { /* ignore */ }
+
+      if (await tryMmSolanaSurfaces(false)) return;
+      try {
+        if (await connectCaipSolana(mm)) return;
+      } catch (e) {
+        if (isUserReject(e)) throw rejectErr();
+      }
+      throw noSolErr();
+    }
+
+    const phantom = getPhantom();
+    const solflare = getSolflare();
+    if (phantom) {
+      await connectInjectedSol(phantom, "Phantom");
+      return;
+    }
+    if (solflare) {
+      await connectInjectedSol(solflare, "Solflare");
+      return;
+    }
+    throw new Error("No Solana wallet (install MetaMask and enable Solana, or Phantom / Solflare)");
+  };
+
+  const solWeb3 = () => window.solanaWeb3 || null;
+
+  const txToBase64 = (tx) => {
+    const raw = tx.serialize({ requireAllSignatures: false, verifySignatures: false });
+    let s = "";
+    for (let i = 0; i < raw.length; i++) s += String.fromCharCode(raw[i]);
+    return btoa(s);
+  };
+
+  const solLatestBlockhash = async () => {
+    try {
+      const r = await fetch("/api/sol/blockhash");
+      const d = await r.json();
+      if (d && d.blockhash) return d;
+    } catch (_) { /* fall through */ }
+    const w3 = solWeb3();
+    if (!w3) throw new Error("solana web3.js not loaded");
+    const urls = [
+      (window.__lastState && window.__lastState.sol && window.__lastState.sol.rpc) || "",
+      "https://api.mainnet-beta.solana.com",
+      "https://solana-rpc.publicnode.com",
+    ].filter(Boolean);
+    let last = null;
+    for (const url of urls) {
+      try {
+        const c = new w3.Connection(url, "confirmed");
+        const bh = await c.getLatestBlockhash();
+        return { blockhash: bh.blockhash, lastValidBlockHeight: bh.lastValidBlockHeight, rpc: url };
+      } catch (e) { last = e; }
+    }
+    throw last || new Error("could not fetch blockhash");
+  };
+
+  const buildSolTransfer = (from, to, lamports, blockhash) => {
+    const w3 = solWeb3();
+    if (!w3) throw new Error("solana web3.js not loaded");
+    const fromPk = new w3.PublicKey(from);
+    const toPk = new w3.PublicKey(to);
+    const tx = new w3.Transaction().add(w3.SystemProgram.transfer({
+      fromPubkey: fromPk, toPubkey: toPk, lamports,
+    }));
+    tx.feePayer = fromPk;
+    tx.recentBlockhash = blockhash;
+    return tx;
+  };
+
+  const sigToBase58 = (sig) => {
+    if (!sig) return "";
+    if (typeof sig === "string") return sig.replace(/[^1-9A-HJ-NP-Za-km-z]/g, "");
+    if (Array.isArray(sig) && sig.length) return sigToBase58(sig[0]);
+    if (sig.signature) return sigToBase58(sig.signature);
+    const w3 = solWeb3();
+    if (w3 && sig instanceof Uint8Array) {
+      try {
+        if (w3.bs58 && typeof w3.bs58.encode === "function") return w3.bs58.encode(sig);
+      } catch (_) { /* ignore */ }
+    }
+    return "";
+  };
+
+  const sendSolTransfer = async (tx) => {
+    if (solWallet.kind === "injected" && solWallet.provider) {
+      const p = solWallet.provider;
+      if (typeof p.signAndSendTransaction === "function") {
+        const out = await p.signAndSendTransaction(tx);
+        return (out && (out.signature || out)) || "";
+      }
+      if (typeof p.request === "function") {
+        const out = await p.request({ method: "signAndSendTransaction", params: { transaction: tx } });
+        return (out && (out.signature || out)) || "";
+      }
+    }
+    if (solWallet.kind === "std" && solWallet.stdWallet) {
+      const feat = solWallet.stdWallet.features || {};
+      const send = feat["solana:signAndSendTransaction"];
+      const raw = tx.serialize({ requireAllSignatures: false, verifySignatures: false });
+      if (send && send.signAndSendTransaction) {
+        const out = await send.signAndSendTransaction({
+          transaction: raw,
+          account: solWallet.stdAccount,
+          chain: SOL_MAINNET,
+        });
+        const sig = Array.isArray(out) ? out[0] : out;
+        return (sig && (sig.signature || sig)) || "";
+      }
+      const sign = feat["solana:signTransaction"];
+      if (sign && sign.signTransaction) {
+        const signed = await sign.signTransaction({
+          transaction: raw,
+          account: solWallet.stdAccount,
+          chain: SOL_MAINNET,
+        });
+        const bytes = (Array.isArray(signed) ? signed[0] : signed);
+        const buf = bytes && (bytes.signedTransaction || bytes.transaction || bytes);
+        const w3 = solWeb3();
+        const rpc = (window.__lastState && window.__lastState.sol && window.__lastState.sol.rpc)
+          || "https://api.mainnet-beta.solana.com";
+        const c = new w3.Connection(rpc, "confirmed");
+        return await c.sendRawTransaction(buf instanceof Uint8Array ? buf : new Uint8Array(buf));
+      }
+    }
+    if (solWallet.kind === "caip" && solWallet.caipEth) {
+      const b64 = txToBase64(tx);
+      const methods = ["signAndSendTransaction", "solana_signAndSendTransaction"];
+      let last = null;
+      for (const method of methods) {
+        try {
+          const out = await solWallet.caipEth.request({
+            method: "wallet_invokeMethod",
+            params: {
+              scope: SOL_MAINNET,
+              request: {
+                method,
+                params: {
+                  account: { address: solWallet.pubkey },
+                  transaction: b64,
+                  scope: SOL_MAINNET,
+                },
+              },
+            },
+          });
+          if (typeof out === "string") return out;
+          const sig = (out && (out.signature || out.hash || out.txid)) || "";
+          if (sig) return sig;
+        } catch (e) {
+          last = e;
+        }
+      }
+      throw last || new Error("CAIP signAndSendTransaction failed");
+    }
+    throw new Error("SOL wallet cannot sign (reconnect MetaMask Solana)");
+  };
+
+  const sendSolVersionedB64 = async (b64, extraSecretB64) => {
+    if (!b64) throw new Error("no transaction");
+    const w3 = solWeb3();
+    const raw = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    let vtx = null;
+    if (w3 && w3.VersionedTransaction) {
+      vtx = w3.VersionedTransaction.deserialize(raw);
+      if (extraSecretB64 && w3.Keypair) {
+        const sec = Uint8Array.from(atob(extraSecretB64), (c) => c.charCodeAt(0));
+        const kp = sec.length === 64 ? w3.Keypair.fromSecretKey(sec)
+          : (sec.length === 32 && w3.Keypair.fromSeed ? w3.Keypair.fromSeed(sec) : null);
+        if (kp) vtx.sign([kp]);
+      }
+    }
+    if (solWallet.kind === "injected" && solWallet.provider) {
+      const p = solWallet.provider;
+      if (vtx && typeof p.signAndSendTransaction === "function") {
+        const out = await p.signAndSendTransaction(vtx);
+        return (out && (out.signature || out)) || "";
+      }
+      if (typeof p.request === "function") {
+        let payload = b64;
+        if (vtx) {
+          const ser = vtx.serialize();
+          let s = "";
+          for (let i = 0; i < ser.length; i++) s += String.fromCharCode(ser[i]);
+          payload = btoa(s);
+        }
+        const out = await p.request({
+          method: "signAndSendTransaction",
+          params: { transaction: payload },
+        });
+        return (out && (out.signature || out)) || "";
+      }
+    }
+    if (solWallet.kind === "std" && solWallet.stdWallet) {
+      const feat = solWallet.stdWallet.features || {};
+      const send = feat["solana:signAndSendTransaction"];
+      if (send && send.signAndSendTransaction) {
+        const bytes = vtx ? vtx.serialize() : raw;
+        const out = await send.signAndSendTransaction({
+          transaction: bytes,
+          account: solWallet.stdAccount,
+          chain: SOL_MAINNET,
+        });
+        const sig = Array.isArray(out) ? out[0] : out;
+        return (sig && (sig.signature || sig)) || "";
+      }
+    }
+    if (solWallet.kind === "caip" && solWallet.caipEth) {
+      let payload = b64;
+      if (vtx) {
+        const ser = vtx.serialize();
+        let s = "";
+        for (let i = 0; i < ser.length; i++) s += String.fromCharCode(ser[i]);
+        payload = btoa(s);
+      }
+      const methods = ["signAndSendTransaction", "solana_signAndSendTransaction"];
+      let last = null;
+      for (const method of methods) {
+        try {
+          const out = await solWallet.caipEth.request({
+            method: "wallet_invokeMethod",
+            params: {
+              scope: SOL_MAINNET,
+              request: {
+                method,
+                params: {
+                  account: { address: solWallet.pubkey },
+                  transaction: payload,
+                  scope: SOL_MAINNET,
+                },
+              },
+            },
+          });
+          if (typeof out === "string") return out;
+          const sig = (out && (out.signature || out.hash || out.txid)) || "";
+          if (sig) return sig;
+        } catch (e) { last = e; }
+      }
+      throw last || new Error("CAIP signAndSendTransaction failed");
+    }
+    throw new Error("SOL wallet cannot sign versioned tx");
+  };
+
+  const refreshSolFunds = async () => {
+    const r = await postSolControl({ refresh_funds: true });
+    if (r && r.funds && window.__lastState) {
+      window.__lastState.sol = window.__lastState.sol || {};
+      window.__lastState.sol.funds = r.funds;
+      if (r.fund_guide) window.__lastState.sol.fund_guide = r.fund_guide;
+      updateSolFunds(window.__lastState.sol);
+    }
+  };
+
+  const solSponsorPk = () => {
+    const s = (window.__lastState && window.__lastState.sol) || {};
+    const funds = s.funds || {};
+    const g = s.fund_guide || {};
+    const w = s.wallets || {};
+    return (funds.sponsor || {}).pubkey || g.sponsor || w.sponsor || "";
+  };
+
+  /* ETH tab: MetaMask EVM only — never writes __solWallet */
+  const btnConnect = $("btn-connect");
+  const chip = $("wallet-chip");
+  if (btnConnect) {
+    btnConnect.addEventListener("click", async () => {
+      const mm = getMetaMaskProvider() || getMetaMaskEvm() || window.ethereum;
+      if (!mm) {
+        btnConnect.textContent = "No MetaMask";
+        setEthFundStatus("install MetaMask for ETH", "err");
+        return;
+      }
+      try {
+        ethWallet.eip1193 = unwrapEip1193(mm) || mm;
+        ethWallet.provider = new ethers.BrowserProvider(mm);
+        await ethWallet.provider.send("eth_requestAccounts", []);
+        const signer = await ethWallet.provider.getSigner();
+        ethWallet.addr = await signer.getAddress();
+        const net = await ethWallet.provider.getNetwork();
+        const bal = await ethWallet.provider.getBalance(ethWallet.addr);
+        if (chip) {
+          chip.textContent = `ETH ${ethWallet.addr.slice(0, 6)}…${ethWallet.addr.slice(-4)} | chain ${net.chainId} | ${fmt.eth(Number(bal) / 1e18, 3)}`;
+          chip.classList.remove("hidden");
+        }
+        btnConnect.textContent = "Connected (ETH)";
+        btnConnect.disabled = true;
+        setEthFundStatus("");
+      } catch (e) {
+        btnConnect.textContent = "Connect MetaMask (ETH)";
+        setEthFundStatus("connect error / " + walletErr(e), "err");
+        console.error(e);
+      }
+    });
+  }
+
+  const btnFund = $("btn-fund");
+  if (btnFund) {
+    btnFund.addEventListener("click", async () => {
+      const amt = parseFloat($("fund-amt").value);
+      const st = $("fund-status");
+      if (!ethWallet.provider || !ethWallet.addr) {
+        if (st) st.textContent = "connect MetaMask (ETH) first";
+        return;
+      }
+      if (!amt || amt <= 0) { if (st) st.textContent = "enter an amount"; return; }
+      try {
+        if (st) { st.className = ""; st.textContent = "requesting signature..."; }
+        const signer = await ethWallet.provider.getSigner();
+        const tx = await signer.sendTransaction({ to: SPONSOR, value: ethers.parseEther(String(amt)) });
+        if (st) st.textContent = `tx ${tx.hash.slice(0, 10)}… sent, waiting confirm`;
+        await tx.wait();
+        if (st) { st.className = "ok"; st.textContent = `confirmed: ${fmt.eth(amt)} to sponsor`; }
+        $("fund-amt").value = "0.07";
+      } catch (e) {
+        if (st) { st.className = "err"; st.textContent = "cancelled / " + walletErr(e); }
+      }
+    });
+  }
+
+  /* SOL tab: MetaMask Solana first, Phantom/Solflare fallback — never writes __ethWallet */
+  const solAmt = $("sol-fund-amt");
+  if (solAmt && !solAmt.__dirtyBound) {
+    solAmt.__dirtyBound = true;
+    solAmt.addEventListener("input", () => { solAmt.dataset.dirty = "1"; });
+  }
+  const solBtnConnect = $("sol-btn-connect");
+  if (solBtnConnect && !solBtnConnect.__bound) {
+    solBtnConnect.__bound = true;
+    solBtnConnect.addEventListener("click", async () => {
+      try {
+        setSolFundStatus("connecting Solana…");
+        await connectSolTab();
+        paintSolChip();
+        setSolFundStatus(`connected ${solWallet.name} (SOL) — send uses this account`, "ok");
+        if (solWallet.pubkey) postLpControl({ owner: solWallet.pubkey });
+      } catch (e) {
+        paintSolChip();
+        setSolFundStatus(walletErr(e), "err");
+      }
+    });
+  }
+  const solBtnFund = $("sol-btn-fund");
+  if (solBtnFund && !solBtnFund.__bound) {
+    solBtnFund.__bound = true;
+    solBtnFund.addEventListener("click", async () => {
+      const amtEl = $("sol-fund-amt");
+      const amt = parseFloat(amtEl && amtEl.value);
+      const dest = solSponsorPk();
+      if (!solWallet.pubkey) {
+        try {
+          setSolFundStatus("connecting Solana…");
+          await connectSolTab();
+          paintSolChip();
+        } catch (e) {
+          setSolFundStatus(walletErr(e), "err");
+          return;
+        }
+      }
+      if (!solWallet.pubkey) { setSolFundStatus("connect MetaMask (SOL) first", "err"); return; }
+      if (!dest) { setSolFundStatus("sponsor pubkey missing — restart dashboard", "err"); return; }
+      if (!amt || amt <= 0) { setSolFundStatus("enter an amount", "err"); return; }
+      try {
+        setSolFundStatus("requesting Solana signature…");
+        const bh = await solLatestBlockhash();
+        const lamports = Math.round(amt * 1e9);
+        const tx = buildSolTransfer(solWallet.pubkey, dest, lamports, bh.blockhash);
+        const sig = sigToBase58(await sendSolTransfer(tx));
+        if (!sig) { setSolFundStatus("wallet returned no signature", "err"); return; }
+        const short = sig.length > 12 ? sig.slice(0, 8) + "…" : sig;
+        setSolFundStatus(
+          `sent ${amt} SOL → sponsor · <a href="https://solscan.io/tx/${sig}" target="_blank" rel="noopener">${short}</a>`,
+          "ok"
+        );
+        try { await refreshSolFunds(); } catch (_) { /* next WS tick */ }
+      } catch (e) {
+        setSolFundStatus("cancelled / " + walletErr(e), "err");
+      }
+    });
+  }
 
   bindAlControls();
   setInterval(() => { if (logLines.length) updateAlHero(); }, 5000);

@@ -50,6 +50,16 @@ def dynamic_min_arb_profit_usd(gas_gwei: Optional[float], eth_usd: Optional[floa
     return max(base, base * 0.75 + gas_usd)
 
 
+def eth_arb_plus_ev(net_usd, min_usd: float) -> bool:
+    """Live ETH arb gate: net after gas/fees/slip > 0 and at/above the floor."""
+    try:
+        net = float(net_usd)
+        floor = float(min_usd or 0)
+    except (TypeError, ValueError):
+        return False
+    return net > 0 and net >= floor
+
+
 def is_peak_hour(hours: Dict[Any, int], now_h: Optional[int] = None,
                  top_n: int = 6) -> bool:
     """True when current SAST hour is among the historically busiest."""
@@ -93,12 +103,17 @@ def is_edge_opp(opp: Dict[str, Any]) -> bool:
 
 def rank_liq_opps(opps: Iterable[Dict[str, Any]], edge_bias: bool = True
                   ) -> List[Dict[str, Any]]:
-    """Prefer long-tail, then highest profit."""
+    """Prefer long-tail, then uncontested, then highest profit.
+
+    Contested books stay in the list — we never drop a +EV race.
+    """
     rows = list(opps)
 
     def key(o):
         edge = 1 if (edge_bias and is_edge_opp(o)) else 0
-        return (-edge, -(float(o.get("profit_usd") or 0)))
+        race = 1 if (o.get("contested") or o.get("recent_competitor")
+                     or o.get("race")) else 0
+        return (-edge, race, -(float(o.get("profit_usd") or 0)))
 
     return sorted(rows, key=key)
 
@@ -142,14 +157,43 @@ def recent_competitor_users(competitors: Iterable[Dict[str, Any]],
     return out
 
 
-def should_skip_user(user: str, contested: Set[str], recent: Set[str]) -> Tuple[bool, str]:
+def race_label(user: str, contested: Set[str], recent: Set[str]) -> str:
+    """Annotate competition. Empty string = uncontested."""
     u = (user or "").lower()
     short = u[:10]
     if u in contested or short in contested:
-        return True, "mempool-contested"
+        return "mempool-contested"
     if u in recent or short in recent:
-        return True, "recent-competitor"
-    return False, ""
+        return "recent-competitor"
+    return ""
+
+
+def race_prio_mult(why: str, base: float = 1.0) -> float:
+    """Bump builder tip/priority gas when racing; identity if uncontested."""
+    if why == "mempool-contested":
+        return float(base) * 1.4
+    if why == "recent-competitor":
+        return float(base) * 1.25
+    return float(base)
+
+
+def should_skip_user(user: str, contested: Set[str], recent: Set[str],
+                     net_usd: Optional[float] = None,
+                     min_usd: Optional[float] = None) -> Tuple[bool, str]:
+    """Do not yield races.
+
+    Mempool-contested / recent-competitor is an annotation, not a skip.
+    Still *prefer* uncontested via rank_liq_opps. Skip only when a net
+    is provided and it is below the +EV floor.
+    """
+    why = race_label(user, contested, recent)
+    if net_usd is not None and min_usd is not None:
+        try:
+            if float(net_usd) < float(min_usd):
+                return True, "below-floor"
+        except (TypeError, ValueError):
+            return True, "below-floor"
+    return False, why
 
 
 def arb_plan_stale(quoted_block: Optional[int], now_block: Optional[int],
@@ -251,12 +295,17 @@ def rank_arb_opps(opps: Iterable[Dict[str, Any]], gas_gwei: float,
         r = dict(o)
         profit_weth = float(r.get("profit_weth") or 0)
         profit_usd = float(r.get("profit_usd") or (profit_weth * eth if eth else 0))
-        net_usd = profit_usd - gas_usd
         borrow = float(r.get("borrow_weth") or 0) or 1e-12
-        r["gas_usd"] = round(gas_usd, 2)
-        r["net_usd"] = round(net_usd, 2)
+        g_usd = r.get("gas_usd")
+        if g_usd is None:
+            g_usd = gas_usd
+            r["gas_usd"] = round(float(g_usd), 2)
+        if r.get("net_usd") is None:
+            r["net_usd"] = round(profit_usd - float(g_usd or 0), 2)
+        net_usd = float(r.get("net_usd") or 0)
         r["roi_bps"] = round(profit_weth / borrow * 10_000, 1)
-        r["gap_usd"] = round(min(0.0, net_usd), 2)  # how far below gas bar (≤0)
+        if r.get("gap_usd") is None:
+            r["gap_usd"] = round(min(0.0, net_usd), 2)
         rows.append(r)
     rows.sort(key=lambda x: (-(x.get("net_usd") or -1e18),
                              -(x.get("profit_usd") or 0)))
@@ -461,3 +510,38 @@ def snapshot_performance(funds: Dict[str, Any], eth_usd: float,
         "ledger": ledger[:12],
         "updated": now,
     }
+
+
+# --------------------------------------------------------------------------- Solana floors
+SOL_LONG_TAIL = {
+    "BONK", "WIF", "PYTH", "RAY", "MSOL", "JITOSOL", "CBBTC", "WSTETH", "STSOL",
+}
+
+
+def dynamic_min_sol_arb_usd(prio_ul: Optional[float], sol_usd: Optional[float],
+                            base: float = 0.05, cu: int = 400_000,
+                            jito_sol: float = 0.00001) -> float:
+    """Arb floor = env base + CU priority + Jito tip, in USD."""
+    px = max(float(sol_usd or 0.0), 0.0)
+    fee_sol = max(int(prio_ul or 0) * int(cu) / 1e15, 0.00002)
+    return round(max(float(base), float(base) * 0.5 + (fee_sol + float(jito_sol)) * px), 6)
+
+
+def dynamic_min_sol_liq_usd(prio_ul: Optional[float], sol_usd: Optional[float],
+                            base: float = 0.50, cu: int = 400_000,
+                            jito_sol: float = 0.00001) -> float:
+    """Liq floor stays low on Solana (cheap CU) but never below fee+tip+base*0.4."""
+    px = max(float(sol_usd or 0.0), 0.0)
+    fee_sol = max(int(prio_ul or 0) * int(cu) / 1e15, 0.00002)
+    cost = (fee_sol + float(jito_sol)) * px
+    return round(max(float(base), cost + float(base) * 0.4), 4)
+
+
+def sol_is_edge_opp(opp: Dict[str, Any]) -> bool:
+    if opp.get("edge"):
+        return True
+    for k in ("coll_sym", "debt_sym", "collateral_sym", "debt_symbol", "symbol"):
+        sym = str(opp.get(k) or "").upper().replace("JITOSOL", "JITOSOL")
+        if sym in SOL_LONG_TAIL:
+            return True
+    return False

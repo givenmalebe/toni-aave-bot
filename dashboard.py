@@ -14,7 +14,8 @@ With --broadcast (default on):
   - liquidations: sign + Flashbots eth_sendBundle via live_liquidator._submit
   - arb: cast send FlashLoanArbitrage plans when ARB_CONTRACT is set
 
-Wallet funding remains user-initiated in the browser (MetaMask -> sponsor).
+Wallet funding remains user-initiated in the browser
+(ETH: MetaMask EVM -> sponsor; SOL: MetaMask Solana / Phantom -> sponsor).
 """
 import argparse
 import asyncio
@@ -22,6 +23,7 @@ import json
 import os
 import socket
 import sys
+import threading
 import time
 from collections import deque, defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -88,7 +90,6 @@ import mev_bot  # noqa: E402
 import profit_engine as pe  # noqa: E402
 import profit_brain as brain  # noqa: E402
 import sol_scanner as sols  # noqa: E402
-
 # Route every RPC through the fast requests transport (see _rpc_requests).
 avm.rpc = _rpc_requests
 lb.rpc = _rpc_requests
@@ -114,7 +115,9 @@ SOL_ARB_PROGRAM = os.environ.get("SOL_ARB_PROGRAM") or _BAKED.get("SOL_ARB_PROGR
 MIN_LIQ_PROFIT_USD = float(os.environ.get("MIN_LIQ_PROFIT_USD", "10"))
 MIN_ARB_PROFIT_USD = float(os.environ.get("MIN_ARB_PROFIT_USD", "5"))
 MIN_SOL_ARB_USD = float(os.environ.get("MIN_SOL_ARB_USD", "0.05"))
-LIQ_COOLDOWN_BLOCKS = int(os.environ.get("LIQ_COOLDOWN_BLOCKS", "50"))
+MIN_SOL_LIQ_USD = float(os.environ.get("MIN_SOL_LIQ_USD", "0.50"))
+LIQ_COOLDOWN_BLOCKS = int(os.environ.get("LIQ_COOLDOWN_BLOCKS", "2"))
+LIQ_LANDED_COOLDOWN_BLOCKS = int(os.environ.get("LIQ_LANDED_COOLDOWN_BLOCKS", "50"))
 EDGE_BIAS = os.environ.get("EDGE_BIAS", "1") != "0"
 SIM_ONLY_DEFAULT = os.environ.get("SIM_ONLY", "1") != "0"
 COLD_WALLET = os.environ.get("COLD_WALLET", "")  # optional profit sweep destination
@@ -140,11 +143,18 @@ _RPC_COOLDOWN = {}
 _RPC_FAILS = {}
 
 
+_NO_COOLDOWN_METHODS = frozenset({
+    "eth_getLogs", "txpool_status", "txpool_content",
+})
+
+
 def _healthy_jrpc(urls, method, params):
     now = time.time()
     last = None
+    skipped = []
     for url in urls:
         if url in _RPC_COOLDOWN and now < _RPC_COOLDOWN[url]:
+            skipped.append(url)
             continue
         try:
             out = _rpc_requests(url, method, params)
@@ -153,9 +163,19 @@ def _healthy_jrpc(urls, method, params):
             return out
         except Exception as e:  # noqa: BLE001
             last = e
+            if method in _NO_COOLDOWN_METHODS:
+                continue
             n = _RPC_FAILS.get(url, 0) + 1
             _RPC_FAILS[url] = n
             _RPC_COOLDOWN[url] = now + min(60 * (2 ** min(n, 3)), 300)
+    for url in skipped:
+        try:
+            out = _rpc_requests(url, method, params)
+            _RPC_FAILS.pop(url, None)
+            _RPC_COOLDOWN.pop(url, None)
+            return out
+        except Exception as e:  # noqa: BLE001
+            last = e
     raise RuntimeError(f"all RPCs failed for {method}: {last}")
 
 
@@ -400,6 +420,9 @@ class Dashboard:
                 "count": 0, "edge_n": 0, "best_profit": 0, "sum_profit": 0,
                 "sweep_total": 0, "watch_n": 0, "avg_hf": None,
                 "pressure": "idle", "pair_mix": [],
+                "last_scan": None, "last_block": None,
+                "scanned": 0, "skipped": {}, "submit_gate": "blocked",
+                "from_block": None, "to_block": None, "n_logs": 0,
             },
             "competitors": [],
             "competitors_meta": {
@@ -409,17 +432,28 @@ class Dashboard:
                 "sum_net_est": 0, "missed_by_us": 0,
                 "miss_rate_pct": 0, "edge_n": 0, "revert_n": 0,
                 "pressure": "idle", "top_searchers": [], "pair_mix": [],
-                "last_block": None, "total": 0,
+                "last_block": None, "last_scan": None,
+                "from_block": None, "to_block": None, "n_logs": 0,
+                "window": 0, "v3_pool": True, "errors": [],
+                "total": 0,
             },
             "arb": {
                 "opps": [], "near": [], "stats": {}, "error": None,
+                "last_scan": None,
+                "universe": {"pairs": 0, "venues": [], "tokens": []},
                 "meta": {
                     "scan_ms": None, "scan_block": None, "gas_gwei": None,
-                    "live": 0, "near": 0, "actionable": 0,
+                    "live": 0, "near": 0, "actionable": 0, "skipped": 0,
                     "best_net_usd": None, "top_mid": None,
                     "preferred_mids": [], "pressure": "idle",
                     "dexes": [], "by_dex": {}, "cross_dex": 0,
-                    "venue_mix": [], "mode": "dash",
+                    "venue_mix": [], "mode": "backrun+lst",
+                    "pairs": 0, "quoted": 0, "last_scan": None,
+                    "submit_gate": "blocked",
+                    "last_victim": None,
+                    "quote_src": "v2-getAmountsOut + v3-quoter",
+                    "flash_fee_bps": 9,
+                    "flash_fee_src": "aave-v3",
                 },
             },
             "intel": {"records": 0, "readiness": 0, "hours": {}, "dows": {},
@@ -437,8 +471,11 @@ class Dashboard:
                 "arb_contract": ARB_CONTRACT,
                 "min_liq_profit_usd": MIN_LIQ_PROFIT_USD,
                 "min_arb_profit_usd": MIN_ARB_PROFIT_USD,
-                "dyn_min_liq": MIN_LIQ_PROFIT_USD,
-                "dyn_min_arb": MIN_ARB_PROFIT_USD,
+            "dyn_min_liq": MIN_LIQ_PROFIT_USD,
+            "dyn_min_arb": MIN_ARB_PROFIT_USD,
+            "liq_cooldown_blocks": LIQ_COOLDOWN_BLOCKS,
+            "race_policy": "submit-if-floor",
+            "plans_cached": 0,
                 "peak_hour": False,
                 "sponsor_target_eth": 0.03,
                 "ready": {"liq": False, "arb": False, "reasons": []},
@@ -480,13 +517,27 @@ class Dashboard:
             "sol_arb_best_net": deque(maxlen=MAXLEN),
             "sol_arb_actionable": deque(maxlen=MAXLEN),
             "sol_comp_1h": deque(maxlen=MAXLEN),
+            "sol_mp_liq": deque(maxlen=MAXLEN),
+            "sol_mp_mev": deque(maxlen=MAXLEN),
         }
         self.clients = set()
         self.tx_pool = ThreadPoolExecutor(max_workers=8)
         self._uni = None
         self._spokes = {lb.SPOKE.lower()}
         self._spokes_fut = None
-        self._liq_alerted = {}  # user -> block
+        self._liq_alerted = {}  # user -> block of last submit attempt
+        self._liq_landed = {}  # user -> block of last landed/sent submit
+        self._flash_plans = {}  # user -> {block, plan, ts}
+        self._liq_fire_lock = threading.Lock()
+        self._liq_inflight = set()
+        self._pending_aave_users = set()
+        self._pending_aave_ok = False
+        self._pending_swaps = []
+        self._pending_swaps_ok = False
+        self._arb_hot = None  # {block, opps, victim, ts, stats}
+        self._eth_hot_kick = None
+        self._liq_harvest_block = 0
+        self._comp_last_scanned = 0
         self.broadcast_enabled = True
         self.armed = False
         self.sim_only = SIM_ONLY_DEFAULT
@@ -547,9 +598,10 @@ class Dashboard:
                 "ledger": [],
             },
             "mempool": {
-                "count": 0, "queued": 0, "method": "getRecentPrioritizationFees",
+                "count": 0, "queued": 0, "method": "landing+prio",
                 "spoke_txs": [], "watch_txs": [],
                 "mev": {}, "mev_txs": [], "mev_samples": [],
+                "hits": [], "liq_hits": [], "mev_hits": [],
                 "top_to": [], "top_mev": [],
                 "meta": {
                     "pending": 0, "queued": 0, "content_age_s": None,
@@ -557,7 +609,9 @@ class Dashboard:
                     "median_fee": None, "p90_fee": None, "p99_fee": None,
                     "avg_fee": None, "max_fee": None, "zero_pct": 0,
                     "slots": 0, "tps": None, "nv_tps": None,
-                    "note": "getRecentPrioritizationFees · microlamports/CU",
+                    "liq_hits": 0, "mev_hits": 0, "refresh_n": 0,
+                    "jito_bundles": 0, "decoded": 0,
+                    "note": "Solend landing + Jito tips · µl/CU",
                 },
             },
             "opportunities": [],
@@ -581,19 +635,24 @@ class Dashboard:
             },
             "arb": {
                 "opps": [], "near": [], "stats": {}, "error": None,
+                "last_scan": None, "universe": sols.arb_universe(),
                 "meta": {
                     "scan_ms": None, "scan_slot": None, "gas_gwei": None,
-                    "live": 0, "near": 0, "actionable": 0,
+                    "live": 0, "near": 0, "actionable": 0, "skipped": 0,
                     "best_net_usd": None, "top_mid": None,
                     "preferred_mids": [
-                        "SOL-USDC", "SOL-USDT", "SOL-mSOL",
-                        "SOL-JitoSOL", "USDC-USDT", "SOL-BONK",
-                        "SOL-RAY", "SOL-WIF", "SOL-PYTH",
+                        "SOL-mSOL", "SOL-JitoSOL", "SOL-USDC", "SOL-USDT",
+                        "USDC-USDT", "SOL-USDC-USDT",
                     ],
                     "pressure": "idle",
-                    "dexes": ["jupiter"], "by_dex": {}, "cross_dex": 0,
-                    "venue_mix": [], "mode": "jup-smart",
-                    "tip_usd": None, "quotes": 0,
+                    "dexes": ["raydium", "orca"], "by_dex": {}, "cross_dex": 0,
+                    "venue_mix": [], "mode": "local-pool+jup",
+                    "tip_usd": None, "quotes": 0, "quoted": 0, "pairs": 0,
+                    "quote_src": "raydium-account+orca-account",
+                    "quote_src_mix": {}, "local_n": 0, "jup_n": 0,
+                    "pools_decoded": 0, "geyser": False,
+                    "submit_gate": "blocked",
+                    "last_scan": None, "sample_route": None,
                 },
             },
             "intel": {
@@ -613,14 +672,14 @@ class Dashboard:
                 "edge_bias": True,
                 "liq_contract": SOL_LIQ_PROGRAM,
                 "arb_contract": SOL_ARB_PROGRAM,
-                "min_liq_profit_usd": MIN_LIQ_PROFIT_USD,
+                "min_liq_profit_usd": MIN_SOL_LIQ_USD,
                 "min_arb_profit_usd": MIN_SOL_ARB_USD,
-                "dyn_min_liq": MIN_LIQ_PROFIT_USD,
+                "dyn_min_liq": MIN_SOL_LIQ_USD,
                 "dyn_min_arb": MIN_SOL_ARB_USD,
                 "peak_hour": False,
                 "sponsor_target_eth": 0,
                 "ready": {"liq": False, "arb": False, "reasons": [
-                    "SOL programs not deployed — see solana/README.md",
+                    "sol sim_only ON — Python Jupiter+Jito send after arm",
                 ]},
                 "last_liq": None,
                 "last_arb": None,
@@ -696,25 +755,35 @@ class Dashboard:
     def refresh_sol_broadcast_ready(self):
         sol = self.state.setdefault("sol", {})
         bc = sol.setdefault("broadcast", {})
+        liq_blockers = sols.live_submit_blockers("liq")
+        arb_blockers = sols.live_submit_blockers("arb")
+        funds = sol.get("funds") or {}
+        funded, fund_rs = sols.wallets_funded_enough(funds)
+        liq_ok = (not liq_blockers) and funded
+        arb_ok = (not arb_blockers) and funded
         reasons = []
-        liq_ok = False
-        arb_ok = False
-        if not SOL_LIQ_PROGRAM:
-            reasons.append("SOL_LIQ_PROGRAM unset — deploy solana/programs/liq")
-        else:
-            reasons.append("SOL_LIQ_PROGRAM set but mainnet CPI not armed in this build")
-        if not SOL_ARB_PROGRAM:
-            reasons.append("SOL_ARB_PROGRAM unset — deploy solana/programs/arb")
-        else:
-            reasons.append("SOL_ARB_PROGRAM set but Jupiter CPI stub only")
+        seen = set()
         if self.sol_sim_only:
-            reasons.append("sol sim_only ON")
+            reasons.append("sol sim_only ON — arm LIVE from Broadcast to submit")
         if not self.sol_armed:
-            reasons.append("sol not armed (POST /api/control {\"chain\":\"sol\",\"armed\":true})")
-        # Never mark live-ready until programs are real + funded keypair present
-        keypair = os.environ.get("SOL_KEYPAIR", "")
-        if not keypair or not os.path.exists(os.path.expanduser(keypair)):
-            reasons.append("SOL_KEYPAIR missing — funded keypair required for deploy/submit")
+            reasons.append("sol not armed (Broadcast → Arm LIVE 15m)")
+        if not funded:
+            reasons.extend(fund_rs)
+        for r in arb_blockers:
+            if r not in seen:
+                seen.add(r)
+                reasons.append(f"arb: {r}")
+        for r in liq_blockers:
+            if r not in seen:
+                seen.add(r)
+                reasons.append(f"liq: {r}")
+        px = sol.get("sol_price_usd")
+        prio = sol.get("priority_fee")
+        jito = float(os.environ.get("SOL_JITO_TIP_SOL", "0.00001") or 0)
+        dyn_liq = pe.dynamic_min_sol_liq_usd(prio, px, MIN_SOL_LIQ_USD,
+                                            jito_sol=jito)
+        dyn_arb = pe.dynamic_min_sol_arb_usd(prio, px, MIN_SOL_ARB_USD,
+                                            jito_sol=jito)
         bc.update({
             "enabled": True,
             "armed": self.sol_armed,
@@ -722,16 +791,18 @@ class Dashboard:
             "edge_bias": self.sol_edge_bias,
             "liq_contract": SOL_LIQ_PROGRAM,
             "arb_contract": SOL_ARB_PROGRAM,
-            "min_liq_profit_usd": MIN_LIQ_PROFIT_USD,
+            "min_liq_profit_usd": MIN_SOL_LIQ_USD,
             "min_arb_profit_usd": MIN_SOL_ARB_USD,
-            "dyn_min_liq": MIN_LIQ_PROFIT_USD,
-            "dyn_min_arb": MIN_SOL_ARB_USD,
+            "dyn_min_liq": dyn_liq,
+            "dyn_min_arb": dyn_arb,
             "ready": {"liq": liq_ok, "arb": arb_ok, "reasons": reasons},
         })
         hist = bc.get("history") or []
         skipped = bc.get("skipped") or []
         n_sent = sum(1 for h in hist if (h.get("stage") or "") in ("sent", "ok"))
         n_sim = sum(1 for h in hist if (h.get("stage") or "") == "simulated")
+        n_liq = sum(1 for h in hist if h.get("kind") == "liq")
+        n_mev = sum(1 for h in hist if h.get("kind") in ("arb", "mev", "backrun"))
         pressure = "idle"
         label = "idle"
         if self.sol_armed and (liq_ok or arb_ok):
@@ -745,10 +816,244 @@ class Dashboard:
             "pressure": pressure, "label": label,
             "n_hist": len(hist), "n_sent": n_sent, "n_sim": n_sim,
             "n_skip": len(skipped),
+            "n_liq": n_liq, "n_mev": n_mev,
             "last_stage": (hist[0].get("stage") if hist else None),
             "last_kind": (hist[0].get("kind") if hist else None),
         }
         return liq_ok, arb_ok, reasons
+
+    def _sol_submit_gate(self, kind: str = "arb"):
+        if self.sol_sim_only:
+            return "sim", "sol sim_only"
+        if not self.sol_armed:
+            return "blocked", "sol not armed"
+        reasons = list(sols.live_submit_blockers(kind))
+        funds = (self.state.get("sol") or {}).get("funds") or {}
+        funded, fund_rs = sols.wallets_funded_enough(funds)
+        if not funded:
+            reasons.extend(fund_rs)
+        if reasons:
+            return "blocked", reasons[0]
+        return "live", "jupiter+jito" if kind != "liq" else "solend+jito"
+
+    def _commit_sol_arb(self, data: dict, live: list, near: list,
+                        ms: int, floor: float, error=None) -> dict:
+        """Always write last_scan / quotes / skips / live[] / universe.
+
+        Honest empty (live=0) is a completed scan — never leave the card
+        stuck on the 'scanning…' placeholder.
+        """
+        last_scan = int(time.time())
+        sol = self.state.setdefault("sol", {})
+        gate, gate_reason = self._sol_submit_gate("arb")
+        uni = data.get("universe") if isinstance(data.get("universe"), dict) \
+            else sols.arb_universe(data.get("pairs_tried"))
+        quoted = int(data.get("quoted") or data.get("quotes") or 0)
+        skipped = int(data.get("skipped") or 0)
+        dex_counts = dict(data.get("by_dex") or {})
+        if not dex_counts:
+            for o in list(live) + list(near):
+                for lab in o.get("labels") or o.get("hop_src") or []:
+                    dex_counts[lab] = dex_counts.get(lab, 0) + 1
+        venue_mix = {}
+        mid_mix = {}
+        for o in live:
+            v = (o.get("venue") or "jup")[:24]
+            venue_mix[v] = venue_mix.get(v, 0) + 1
+            m = o.get("mid") or "?"
+            mid_mix[m] = mid_mix.get(m, 0) + 1
+        tot_rows = max(len(live), 1)
+        mix = [
+            {"venue": k, "n": v, "pct": round(100 * v / tot_rows, 1)}
+            for k, v in venue_mix.items()
+        ]
+        actionable = sum(1 for o in live if o.get("actionable"))
+        best = live[0]["net_usd"] if live else None
+        pressure = "hot" if actionable else ("busy" if live else "idle")
+        err = error if error is not None else data.get("error")
+        sample = data.get("sample_route")
+        stats = {
+            "quotes": quoted, "quoted": quoted,
+            "pairs": int(data.get("pairs") or data.get("pairs_tried") or uni.get("pairs") or 0),
+            "pairs_tried": data.get("pairs_tried"),
+            "skipped": skipped,
+            "skipped_quote_fail": data.get("skipped_quote_fail") or 0,
+            "skipped_same_pool": data.get("skipped_same_pool") or 0,
+            "skipped_negative": data.get("skipped_negative") or 0,
+            "skipped_below_floor": data.get("skipped_below_floor") or 0,
+            "skipped_no_route": data.get("skipped_no_route") or 0,
+            "venues": list(venue_mix.keys()) or list(dex_counts.keys()) or ["raydium", "orca"],
+            "mids": list(mid_mix.keys()) or uni.get("tokens") or [],
+            "dexes": list(dex_counts.keys()) or data.get("dexes") or ["raydium", "orca"],
+            "by_dex": dex_counts,
+            "mode": data.get("mode") or "local-pool+jup",
+            "tip_usd": data.get("tip_usd"),
+            "min_usd": data.get("min_usd") or floor,
+            "universe": uni.get("paths") or uni.get("tokens") or [],
+            "quote_src": data.get("quote_src") or "raydium-account+orca-account",
+            "quote_src_mix": data.get("quote_src_mix") or {},
+            "local_n": data.get("local_n") or 0,
+            "jup_n": data.get("jup_n") or 0,
+            "pools_decoded": data.get("pools_decoded") or 0,
+            "pools_watch": data.get("pools_watch") or 0,
+            "geyser": False,
+            "scan_ms": ms,
+        }
+        payload = {
+            "opps": live,
+            "near": near,
+            "stats": stats,
+            "error": err,
+            "last_scan": last_scan,
+            "universe": uni,
+            "meta": {
+                "scan_ms": ms,
+                "scan_slot": sol.get("slot"),
+                "live": len(live),
+                "near": len(near),
+                "actionable": actionable,
+                "best_net_usd": best,
+                "top_mid": (live[0].get("mid") if live else None),
+                "preferred_mids": [
+                    "SOL-mSOL", "SOL-JitoSOL", "SOL-USDC", "SOL-USDT",
+                    "USDC-USDT", "SOL-USDC-USDT",
+                ],
+                "pressure": pressure,
+                "dexes": stats["dexes"],
+                "by_dex": dex_counts,
+                "cross_dex": sum(1 for o in live if o.get("cross_dex")),
+                "venue_mix": mix,
+                "mode": stats["mode"],
+                "tip_usd": data.get("tip_usd"),
+                "quotes": quoted, "quoted": quoted,
+                "skipped": skipped,
+                "skipped_quote_fail": stats["skipped_quote_fail"],
+                "skipped_same_pool": stats["skipped_same_pool"],
+                "skipped_negative": stats["skipped_negative"],
+                "skipped_no_route": stats["skipped_no_route"],
+                "min_usd": data.get("min_usd") or floor,
+                "priority_median": data.get("priority_median"),
+                "pairs_tried": data.get("pairs_tried") or 0,
+                "pairs": stats["pairs"],
+                "quote_errors": data.get("quote_errors") or 0,
+                "quote_src": stats["quote_src"],
+                "quote_src_mix": stats["quote_src_mix"],
+                "local_n": stats["local_n"],
+                "jup_n": stats["jup_n"],
+                "pools_decoded": stats["pools_decoded"],
+                "pools_watch": stats["pools_watch"],
+                "geyser": False,
+                "geyser_note": data.get("geyser_note") or (
+                    "public RPC; no Geyser — getMultipleAccounts polling"),
+                "covered_pairs": data.get("covered_pairs") or [],
+                "jup_jobs": data.get("jup_jobs") or 0,
+                "local_jobs": data.get("local_jobs") or 0,
+                "last_scan": last_scan,
+                "submit_gate": gate,
+                "submit_reason": gate_reason,
+                "venues": uni.get("venues") or stats["dexes"],
+                "tokens": uni.get("tokens") or [],
+                "sample_route": sample,
+            },
+        }
+        sol["arb"] = payload
+        self.hist["sol_arb_best_net"].append(
+            float(best) if best is not None else 0)
+        self.hist["sol_arb_actionable"].append(actionable)
+        return payload
+
+    def _sol_decorate_liq(self, o: dict) -> dict:
+        submit, reason = self._sol_submit_gate("liq")
+        o["submit"] = submit
+        o["submit_reason"] = reason
+        pk = o.get("obligation") or o.get("user") or ""
+        o["user"] = pk
+        o["solscan"] = f"https://solscan.io/account/{pk}" if pk else ""
+        o["coll_sym"] = o.get("coll_sym") or o.get("collateral_sym")
+        o["race"] = bool(o.get("contested") or o.get("race"))
+        plan = o.get("plan") or {}
+        o["flash"] = True
+        o["flash_fee_bps"] = o.get("flash_fee_bps") or plan.get("flash_fee_bps")
+        o["flash_fee_usd"] = o.get("flash_fee_usd") or plan.get("flash_fee_usd")
+        o["flash_fee_src"] = o.get("flash_fee_src") or "solend"
+        leftover = plan.get("leftover") or plan.get("account_gaps") or o.get(
+            "account_gaps") or []
+        o["leftover"] = leftover
+        return o
+
+    def _sol_record(self, rec: dict, skip: bool = False):
+        """Append a SOL sim/blocked/skip row to broadcast history."""
+        sol = self.state.setdefault("sol", {})
+        bc = sol.setdefault("broadcast", {})
+        if skip:
+            bc.setdefault("skipped", []).insert(0, rec)
+            bc["skipped"] = bc["skipped"][:30]
+        else:
+            bc.setdefault("history", []).insert(0, rec)
+            bc["history"] = bc["history"][:40]
+            if rec.get("kind") == "liq":
+                bc["last_liq"] = rec
+            else:
+                bc["last_arb"] = rec
+        self.refresh_sol_broadcast_ready()
+
+    def _sol_maybe_submit(self, kind: str, opp: dict, plan: dict) -> dict:
+        """Sim-only by default; LIVE stays gated. Never silent-sends."""
+        floor = (self.state.get("sol") or {}).get("broadcast") or {}
+        min_usd = float(
+            floor.get("dyn_min_liq" if kind == "liq" else "dyn_min_arb")
+            or (MIN_SOL_LIQ_USD if kind == "liq" else MIN_SOL_ARB_USD)
+        )
+        profit = float(
+            opp.get("profit_usd") or opp.get("net_usd")
+            or plan.get("expected_profit_usd") or plan.get("expected_net_usd")
+            or 0
+        )
+        key = plan.get("obligation") or plan.get("path") or ""
+        now = time.time()
+        for h in (floor.get("history") or [])[:8]:
+            hp = h.get("plan") or {}
+            same = (
+                (key and (hp.get("obligation") == plan.get("obligation")
+                          or hp.get("path") == plan.get("path")))
+            )
+            if same and now - float(h.get("ts") or 0) < 90:
+                return h
+        if profit <= 0 or profit < min_usd:
+            rec = {
+                "ts": int(time.time()), "kind": kind, "stage": "skip",
+                "why": (f"non-positive net ${profit}" if profit <= 0
+                        else f"below floor ${min_usd} (net ${profit})"),
+                "plan": plan,
+            }
+            self._sol_record(rec, skip=True)
+            return rec
+        if kind == "liq" and self.sol_edge_bias:
+            contested = bool(opp.get("contested"))
+            if contested and not pe.sol_is_edge_opp(opp):
+                rec = {
+                    "ts": int(time.time()), "kind": "liq", "stage": "skip",
+                    "why": "mempool-contested crowded name",
+                    "plan": plan,
+                }
+                self._sol_record(rec, skip=True)
+                return rec
+        rec = sols.submit_sol_plan(
+            plan, sim_only=self.sol_sim_only, armed=self.sol_armed,
+            funds=(self.state.get("sol") or {}).get("funds"),
+        )
+        rec["kind"] = kind
+        if rec.get("stage") == "skip":
+            self._sol_record(rec, skip=True)
+        else:
+            self._sol_record(rec)
+        lvl = "info" if rec.get("stage") == "sent" else "warn"
+        self.log(
+            "sol-broadcast",
+            lvl,
+            rec.get("detail") or rec.get("why") or rec.get("stage"),
+        )
+        return rec
 
     def snapshot(self):
         s = self.state
@@ -801,6 +1106,8 @@ class Dashboard:
                 "sol_arb_best_net": list(self.hist.get("sol_arb_best_net") or []),
                 "sol_arb_actionable": list(self.hist.get("sol_arb_actionable") or []),
                 "sol_comp_1h": list(self.hist.get("sol_comp_1h") or []),
+                "sol_mp_liq": list(self.hist.get("sol_mp_liq") or []),
+                "sol_mp_mev": list(self.hist.get("sol_mp_mev") or []),
             },
         }
         return out
@@ -851,6 +1158,11 @@ class Dashboard:
                 reasons.append(f"ARB_CONTRACT {ARB_CONTRACT[:10]}… has no code")
             elif not mev_bot.KEYSTORE_PW:
                 reasons.append("arb KEYSTORE_PW missing")
+            elif not mev_bot.flash_abi_matches():
+                reasons.append(
+                    "ARB_CONTRACT flash ABI is uni-v2; net is Aave-priced "
+                    "(set ARB_FLASH_KIND=aave-v3 after matching deploy)")
+                arb_ok = True  # sim OK; live send gated in _broadcast_arb
             else:
                 arb_ok = True
         hist = self.state["broadcast"].get("history") or []
@@ -897,6 +1209,17 @@ class Dashboard:
             "min_arb_profit_usd": MIN_ARB_PROFIT_USD,
             "dyn_min_liq": round(dyn_liq, 2),
             "dyn_min_arb": round(dyn_arb, 2),
+            "liq_cooldown_blocks": LIQ_COOLDOWN_BLOCKS,
+            "race_policy": "submit-if-floor",
+            "plans_cached": len(self._flash_plans),
+            "pending_aave": {
+                "ok": bool(self._pending_aave_ok),
+                "n": len(self._pending_aave_users),
+            },
+            "pending_swaps": {
+                "ok": bool(self._pending_swaps_ok),
+                "n": len(self._pending_swaps or []),
+            },
             "peak_hour": peak,
             "sponsor_target_eth": sponsor_tgt,
             "brain_advice": pol.get("advice"),
@@ -941,10 +1264,18 @@ class Dashboard:
                  f"{kind}:{stage}")
 
     def _broadcast_liquidation(self, user, profit_usd):
-        """Sign + (sim|submit) a flash-liquidation bundle for `user`."""
+        """Sign + (sim|submit) a flash-liquidation bundle for `user`.
+
+        Race path is in-memory: cached plan → sign → eth_sendBundle spray.
+        Contested users still submit when sim net ≥ floor (higher tip).
+        """
+        uk = (user or "").lower()
         block = self.state["block"] or ll.latest_block()
-        last = self._liq_alerted.get(user.lower(), 0)
-        if block - last < LIQ_COOLDOWN_BLOCKS:
+        landed = self._liq_landed.get(uk, 0)
+        if landed and block - landed < LIQ_LANDED_COOLDOWN_BLOCKS:
+            return {"stage": "skip", "reason": "landed-cooldown", "user": user}
+        last = self._liq_alerted.get(uk, 0)
+        if last and block - last < LIQ_COOLDOWN_BLOCKS:
             return {"stage": "skip", "reason": "cooldown", "user": user}
         min_p = pe.dynamic_min_liq_profit_usd(
             self.state.get("gas_gwei"), MIN_LIQ_PROFIT_USD)
@@ -959,69 +1290,325 @@ class Dashboard:
                     "user": user}
         skip, why = pe.should_skip_user(
             user, self._contested,
-            pe.recent_competitor_users(self.state.get("competitors") or []))
+            pe.recent_competitor_users(self.state.get("competitors") or []),
+            net_usd=profit_usd, min_usd=min_p)
         if skip:
             self.state["broadcast"]["skipped"].insert(
                 0, {"ts": int(time.time()), "user": user[:12], "why": why})
             self.state["broadcast"]["skipped"] = self.state["broadcast"]["skipped"][:30]
             return {"stage": "skip", "reason": why, "user": user}
-        out = ml.build_full_plan(user)
+        with self._liq_fire_lock:
+            if uk in self._liq_inflight:
+                return {"stage": "skip", "reason": "inflight", "user": user}
+            self._liq_inflight.add(uk)
+        try:
+            return self._broadcast_liquidation_locked(
+                user, uk, profit_usd, min_p, why, block)
+        finally:
+            self._liq_inflight.discard(uk)
+
+    def _broadcast_liquidation_locked(self, user, uk, profit_usd, min_p, why, block):
+        out = self._cached_flash_plan(uk, block, need_liquidatable=True)
+        cached = bool(out)
+        if out is None:
+            out = ml.build_full_plan(
+                user,
+                gas_gwei=self.state.get("gas_gwei"),
+                eth_usd=self.state.get("eth_price_usd"),
+                allow_near=False)
         if out is None:
             return {"stage": "refuse", "reason": "no flash plan", "user": user}
-        if self.edge_bias and not ml.is_long_tail(out):
-            # still allow if profit is fat enough vs dyn min * 2
-            if profit_usd is None or profit_usd < min_p * 2:
-                return {"stage": "skip", "reason": "non-edge below fat floor",
-                        "user": user}
-        path = ll.emit_opportunity(user, out, block, ml.is_long_tail(out))
-        signed_hex, signer, _ks = ll._sign_tx(out, block + 1, "bot")
-        with open(path) as f:
-            rec = json.load(f)
-        rec["signer"] = signer
-        rec["signed_tx"] = signed_hex[:66] + "..." + signed_hex[-8:]
-        with open(path, "w") as f:
-            json.dump(rec, f, indent=2)
+        if not out.get("liquidatable", True):
+            return {"stage": "skip", "reason": "not liquidatable", "user": user}
+        net = out.get("net_usd")
+        if net is None:
+            net = profit_usd
+        try:
+            net_f = float(net)
+        except (TypeError, ValueError):
+            net_f = None
+        if net_f is not None and net_f < min_p:
+            return {"stage": "skip",
+                    "reason": f"net ${net_f:.2f} < dyn min ${min_p:.2f}",
+                    "user": user}
+        out = dict(out)
+        out["gas_gwei"] = float(self.state.get("gas_gwei") or out.get("gas_gwei") or 2)
+        out["contract"] = out.get("contract") or ml.CONTRACT or ""
+        prio_mult = pe.race_prio_mult(why)
+        do_sim_only = self.sim_only or not self.armed
+        if not out.get("contract"):
+            return {"stage": "refuse", "reason": "LIQ_CONTRACT unset",
+                    "user": user, "profit_usd": profit_usd,
+                    "race": why, "sim_only": True}
+
+        signed_hex = None
+        signer = None
+        try:
+            signed_hex, signer, _ks = ll._sign_tx(
+                out, block + 1, "bot", prio_mult=prio_mult)
+        except Exception as e:
+            if not do_sim_only:
+                return {"stage": "error", "reason": f"sign: {e}"[:200],
+                        "user": user, "race": why, "cached_plan": cached}
+            # sim still records the attempt with economics
+            self._liq_alerted[uk] = block
+            return {
+                "stage": "simulated",
+                "reason": f"sim — sign skipped ({e})"[:200],
+                "user": user, "profit_usd": profit_usd,
+                "race": why, "prio_mult": prio_mult,
+                "cached_plan": cached, "sim_only": True,
+            }
+
         sponsor_hex = None
-        if ll.SPONSOR_KEYSTORE and ll.SPONSOR_PW:
-            # lean sponsor amount from gas
-            ll.SPONSOR_AMOUNT_ETH = pe.sponsor_target_eth(self.state.get("gas_gwei"))
-            sponsor_hex, sponsor_addr = ll._sign_sponsor(block + 1)
+        bot_eth = float((self.state.get("funds") or {}).get("bot", {}).get("eth") or 0)
+        if (not do_sim_only and bot_eth < 0.008
+                and ll.SPONSOR_KEYSTORE and ll.SPONSOR_PW):
+            try:
+                ll.SPONSOR_AMOUNT_ETH = pe.sponsor_target_eth(
+                    self.state.get("gas_gwei"))
+                sponsor_hex, _sa = ll._sign_sponsor(block + 1)
+            except Exception:
+                sponsor_hex = None
+        if sponsor_hex:
             body = broadcast.build_sponsored_bundle(
                 signed_hex, sponsor_hex, block + 1)
-            rec["sponsor"] = {"addr": sponsor_addr,
-                              "amount_eth": ll.SPONSOR_AMOUNT_ETH}
-            with open(path, "w") as f:
-                json.dump(rec, f, indent=2)
         else:
             body = ll.build_bundle_body(signed_hex, block + 1)
-        with open(path + ".bundle.json", "w") as f:
-            json.dump(body, f, indent=2)
-        stealth.write_relay_payloads(path + ".bundle", body)
-        # sim-only unless armed for live
-        do_sim_only = self.sim_only or not self.armed
-        result = ll._submit(path, body, block + 1, sim_only=do_sim_only,
+        result = ll._submit(None, body, block + 1, sim_only=do_sim_only,
                             sponsor_hex=sponsor_hex)
         result["user"] = user
-        result["path"] = path
-        result["profit_usd"] = profit_usd
+        result["profit_usd"] = profit_usd if profit_usd is not None else net_f
         result["sim_only"] = do_sim_only
-        self._liq_alerted[user.lower()] = block
+        result["race"] = why
+        result["prio_mult"] = prio_mult
+        result["cached_plan"] = cached
+        result["signer"] = (signer[:10] + "…") if signer else None
+        self._liq_alerted[uk] = block
+        stage = (result.get("stage") or "").lower()
+        if stage in ("sent", "ok"):
+            self._liq_landed[uk] = block
         return result
 
+    def _cached_flash_plan(self, user, block, need_liquidatable=False):
+        rec = self._flash_plans.get((user or "").lower())
+        if not rec:
+            return None
+        pb = int(rec.get("block") or 0)
+        plan = rec.get("plan")
+        if not plan:
+            return None
+        if need_liquidatable:
+            # liquidatable calldata is reusable for the next block
+            if not plan.get("liquidatable", True):
+                return None
+            if not block or (int(block) - pb) > 1:
+                return None
+            return plan
+        # near-HF plans expire at the next block so we re-check HF
+        if not block or int(block) != pb:
+            return None
+        return plan
+
+    def _put_flash_plan(self, user, block, plan):
+        uk = (user or "").lower()
+        if not uk.startswith("0x") or not plan:
+            return
+        self._flash_plans[uk] = {
+            "block": int(block or 0), "plan": plan, "ts": time.time(),
+        }
+        if len(self._flash_plans) > 48:
+            oldest = sorted(
+                self._flash_plans.items(),
+                key=lambda kv: kv[1].get("ts") or 0)
+            for k, _ in oldest[: len(self._flash_plans) - 40]:
+                self._flash_plans.pop(k, None)
+
+    def _invalidate_stale_plans(self, block):
+        dead = [u for u, r in self._flash_plans.items()
+                if int(block or 0) - int(r.get("block") or 0) > 1]
+        for u in dead:
+            self._flash_plans.pop(u, None)
+
+    def _kick_eth_hot(self):
+        ev = self._eth_hot_kick
+        if ev is not None:
+            try:
+                ev.set()
+            except Exception:
+                pass
+
+    def _poll_pending_aave(self):
+        """Pending Aave users from mempool + optional pending logs. Fail-open."""
+        users = set()
+        for t in (self.state.get("mempool") or {}).get("spoke_txs") or []:
+            u = str(t.get("user") or "").lower()
+            if u.startswith("0x") and len(u) >= 42:
+                users.add(u[:42])
+        users.update(x.lower()[:42] for x in (self._contested or [])
+                     if str(x).startswith("0x"))
+        pending_ok = False
+        try:
+            got = lb.pending_event_users()
+            pending_ok = bool(got.get("pending_ok"))
+            for u in got.get("users") or []:
+                if str(u).startswith("0x"):
+                    users.add(str(u).lower()[:42])
+        except Exception:
+            pending_ok = False
+        blk = int(self.state.get("block") or 0)
+        if blk:
+            try:
+                h = lb.harvest_event_users(max(1, blk - 2), blk)
+                for u in h.get("users") or []:
+                    if str(u).startswith("0x"):
+                        users.add(str(u).lower()[:42])
+            except Exception:
+                pass
+        self._pending_aave_users = users
+        self._pending_aave_ok = pending_ok
+        return users
+
+    def _merge_liq_opp_from_plan(self, plan):
+        if not plan or not plan.get("liquidatable"):
+            return
+        net = plan.get("net_usd")
+        if net is not None and float(net) <= 0:
+            return
+        uk = (plan.get("user") or "").lower()
+        rec = {
+            "user": uk,
+            "hf": plan.get("healthFactor") or plan.get("hf"),
+            "coll_sym": plan.get("coll_sym") or "?",
+            "debt_sym": plan.get("debt_sym") or "?",
+            "coll_usd": plan.get("coll_usd"),
+            "debt_usd": plan.get("debt_usd"),
+            "bonus_usd": plan.get("bonus_usd"),
+            "gas_usd": plan.get("gas_usd"),
+            "profit_usd": plan.get("profit_usd") or plan.get("net_usd"),
+            "net_usd": plan.get("net_usd"),
+            "protocol": plan.get("protocol") or "v3",
+            "contested": uk in self._contested,
+            "recent_competitor": False,
+            "race": uk in self._contested,
+            "source": "hot",
+            "plan_cached": True,
+        }
+        rec = self._decorate_liq_opp(rec)
+        opps = list(self.state.get("opportunities") or [])
+        opps = [o for o in opps if (o.get("user") or "").lower() != uk]
+        opps.append(rec)
+        self.state["opportunities"] = pe.rank_liq_opps(
+            opps, edge_bias=self.edge_bias)
+
+    def _precompute_closest(self):
+        """Keep flash plans ready for closest-10 + pending/contested users."""
+        block = int(self.state.get("block") or 0)
+        if not block:
+            return 0
+        self._invalidate_stale_plans(block)
+        gas = self.state.get("gas_gwei")
+        eth = self.state.get("eth_price_usd")
+        users = []
+        seen = set()
+        for w in (self.state.get("watchlist") or [])[:10]:
+            u = (w.get("user") or "").lower()
+            if u.startswith("0x") and u not in seen:
+                seen.add(u)
+                users.append(u)
+        for u in list(self._pending_aave_users) + list(self._contested or []):
+            a = str(u or "").lower()[:42]
+            if a.startswith("0x") and a not in seen:
+                seen.add(a)
+                users.append(a)
+        n = 0
+        for u in users[:16]:
+            if self._cached_flash_plan(u, block) is not None:
+                continue
+            try:
+                plan = ml.build_full_plan(
+                    u, gas_gwei=gas, eth_usd=eth, allow_near=True, max_hf=1.05)
+            except Exception:
+                continue
+            if not plan:
+                continue
+            self._put_flash_plan(u, block, plan)
+            n += 1
+            self._touch_watch_hf(u, plan)
+            if plan.get("liquidatable"):
+                self._merge_liq_opp_from_plan(plan)
+        if self.state.get("broadcast") is not None:
+            self.state["broadcast"]["plans_cached"] = len(self._flash_plans)
+        return n
+
+    def _touch_watch_hf(self, user, plan):
+        uk = (user or "").lower()
+        for w in self.state.get("watchlist") or []:
+            if (w.get("user") or "").lower() == uk:
+                if plan.get("healthFactor") is not None:
+                    w["hf"] = plan["healthFactor"]
+                w["plan_cached"] = True
+                w["liquidatable"] = bool(plan.get("liquidatable"))
+                return
+
+    def _fire_cached_liquidatable(self):
+        """If a cached closest-book just became HF<1 and net ≥ floor, submit."""
+        if not self.broadcast_enabled:
+            return []
+        liq_ok, _, _ = self.refresh_broadcast_ready()
+        if not liq_ok:
+            return []
+        min_p = float((self.state.get("broadcast") or {}).get("dyn_min_liq")
+                      or MIN_LIQ_PROFIT_USD)
+        fired = []
+        block = int(self.state.get("block") or 0)
+        for uk, rec in list(self._flash_plans.items()):
+            plan = rec.get("plan") or {}
+            pb = int(rec.get("block") or 0)
+            if block and pb and (block - pb) > 1:
+                continue
+            if not plan.get("liquidatable"):
+                continue
+            net = plan.get("net_usd")
+            if net is None or float(net) < min_p:
+                continue
+            try:
+                out = self._broadcast_liquidation(uk, float(net))
+            except Exception as e:  # noqa: BLE001
+                out = {"stage": "error", "reason": str(e)[:200], "user": uk}
+            if out:
+                fired.append(out)
+                st = (out.get("stage") or "").lower()
+                if st not in ("skip",):
+                    self._record_broadcast("liq", out)
+        return fired
+
     def _broadcast_arb(self, opp, eth_usd):
-        """Dry-run then optionally cast-send a DEX arb plan (fresh quote only)."""
+        """Dry-run then optionally bundle-spray a DEX arb plan (fresh quote).
+
+        Same-block backrun places our signed tx after the victim raw tx when
+        we have it; otherwise next-block close. Uni-flash contracts stay
+        submit-blocked while PnL is Aave-priced (unless inventory).
+        """
         if not ARB_CONTRACT:
             return {"stage": "refuse", "reason": "ARB_CONTRACT unset"}
         now_block = self.state.get("block")
-        if pe.arb_plan_stale(self._arb_quoted_block, now_block, max_blocks=1):
+        max_age = 2 if (opp.get("mode") == "backrun") else 1
+        if pe.arb_plan_stale(self._arb_quoted_block, now_block, max_blocks=max_age):
             return {"stage": "skip", "reason": "stale quote (>1 block)"}
         min_p = pe.dynamic_min_arb_profit_usd(
             self.state.get("gas_gwei"), eth_usd, MIN_ARB_PROFIT_USD)
         profit_usd = (opp["profit"] * eth_usd / 1e18) if eth_usd else 0
-        if profit_usd < min_p:
+        if opp.get("net_profit") is not None and eth_usd:
+            net_usd = opp["net_profit"] / 1e18 * eth_usd
+        else:
+            gas_usd = 450_000 * float(self.state.get("gas_gwei") or 1) * 1e-9 * float(eth_usd or 0)
+            net_usd = profit_usd - gas_usd
+        if not pe.eth_arb_plus_ev(net_usd, min_p) or opp.get("same_pool"):
             return {"stage": "skip",
-                    "reason": f"profit ${profit_usd:.2f} < dyn min ${min_p:.2f}"}
-        # gas-aware shrink
+                    "reason": f"net ${net_usd:.2f} < dyn min ${min_p:.2f}"}
+        inv = bool(opp.get("inventory"))
+        flash_ok = inv or mev_bot.flash_abi_matches()
         depth = int(opp.get("flash_weth") or opp.get("borrow") or 0) * 4
         sized = pe.gas_aware_borrow_weth(
             int(opp["borrow"]), depth or int(opp["borrow"]),
@@ -1035,20 +1622,79 @@ class Dashboard:
         ok, out = mev_bot.cast_call_plan(ARB_CONTRACT, sig, plan_json)
         if not ok:
             return {"stage": "sim-fail", "reason": str(out)[:240],
-                    "profit_usd": round(profit_usd, 2)}
-        if self.sim_only or not self.armed:
-            return {"stage": "simulated", "reason": str(out)[:200],
                     "profit_usd": round(profit_usd, 2),
-                    "flash": opp["flashPool"][:12], "sim_only": True}
-        ok2, out2 = mev_bot.cast_send_plan(
-            ARB_CONTRACT, sig, plan_json, gas_price)
-        return {
-            "stage": "sent" if ok2 else "error",
-            "reason": str(out2)[:300],
-            "profit_usd": round(profit_usd, 2),
-            "flash": opp["flashPool"][:12],
-            "sim_only": False,
-        }
+                    "mode": opp.get("mode"),
+                    "victim": (opp.get("victim_hash") or "")[:18]}
+        victim_raw = opp.get("victim_raw") or ""
+        victim_hash = opp.get("victim_hash") or ""
+        bundle_mode = opp.get("bundle_mode") or (
+            "same-block-backrun" if victim_raw else (
+                "next-block-close" if opp.get("mode") == "backrun" else "resting"))
+        sim_note = str(out)[:160]
+        if not flash_ok:
+            sim_note = ("Aave-priced net; submit blocked until ARB_CONTRACT "
+                        "matches Aave flash (ARB_FLASH_KIND=aave-v3)")
+        if self.sim_only or not self.armed or not flash_ok:
+            return {"stage": "simulated", "reason": sim_note[:200],
+                    "profit_usd": round(profit_usd, 2),
+                    "flash": (opp.get("flashPool") or "")[:12],
+                    "sim_only": True,
+                    "mode": opp.get("mode"),
+                    "bundle_mode": bundle_mode,
+                    "victim": victim_hash[:18],
+                    "flash_fee_bps": opp.get("flash_fee_bps") or mev_bot.AAVE_FLASH_BPS,
+                    "submit_flash_ok": flash_ok}
+        try:
+            mp = {}
+            if isinstance(plan_json, str):
+                mp = json.loads(plan_json)
+            elif isinstance(plan_json, dict):
+                mp = plan_json
+            call_args = [
+                mp.get("flashPool") or "",
+                mp.get("amount") or "0",
+                mp.get("tokenMid") or "",
+                mp.get("poolIn") or "",
+                mp.get("routerIn") or "",
+                mp.get("routerOut") or "",
+            ]
+            gwei = float(self.state.get("gas_gwei") or 2)
+            if gas_price:
+                try:
+                    gwei = max(gwei, int(gas_price) / 1e9)
+                except (TypeError, ValueError):
+                    pass
+            signed_hex, _signer = ll._sign_raw_to(
+                ARB_CONTRACT, sig, call_args, gas_gwei=gwei,
+                prio_mult=1.0, gas_limit=700_000)
+            tgt = int(self.state.get("block") or ll.latest_block()) + 1
+            body = ll.build_bundle_body(signed_hex, tgt)
+            if victim_raw:
+                try:
+                    params0 = (body.get("params") or [{}])[0]
+                    params0["txs"] = [victim_raw, signed_hex]
+                    body["params"] = [params0]
+                except Exception:
+                    pass
+            result = ll._submit(None, body, tgt, sim_only=False)
+            result["profit_usd"] = round(profit_usd, 2)
+            result["flash"] = (opp.get("flashPool") or "")[:12]
+            result["net_usd"] = round(net_usd, 2)
+            result["mode"] = opp.get("mode")
+            result["bundle_mode"] = bundle_mode
+            result["victim"] = victim_hash[:18]
+            result["flash_fee_bps"] = opp.get("flash_fee_bps")
+            return result
+        except Exception as e:  # noqa: BLE001
+            return {
+                "stage": "error",
+                "reason": f"bundle sign/send: {e}"[:300],
+                "profit_usd": round(profit_usd, 2),
+                "flash": (opp.get("flashPool") or "")[:12],
+                "sim_only": False,
+                "mode": opp.get("mode"),
+                "victim": victim_hash[:18],
+            }
 
     # ------------------------------------------------------------ loops
     async def _run(self, fn, timeout, *a, **kw):
@@ -1062,13 +1708,13 @@ class Dashboard:
     async def mempool_loop(self):
         while True:
             try:
-                refresh = (time.time() - self.state["mempool"].get("last_content", 0)) > 180
+                refresh = (time.time() - self.state["mempool"].get("last_content", 0)) > 25
                 result = await self._run(self._mempool_poll, 80, refresh)
                 pend, queued = result if result else (0, 0)
                 s = self.state["mempool"]
                 txs = s.get("txs") or []
                 spoke = ic.spoke_txs(txs)
-                watch = ic.watch_txs(txs, [lb.SPOKE])
+                watch = ic.watch_txs(txs, [lb.SPOKE, getattr(lb, "V3_POOL", "")])
                 mv, _old_samples = ic.mev_classes(txs)
                 live_mev = _build_live_mev(txs, limit=48)
                 top = {}
@@ -1122,6 +1768,13 @@ class Dashboard:
                     })
                 contested = pe.contested_users_from_mempool(spoke)
                 self._contested = contested
+                try:
+                    self._pending_swaps = mev_bot.decode_swaps_from_txs(txs)
+                    self._pending_swaps_ok = True
+                except Exception:
+                    self._pending_swaps_ok = False
+                if contested or any(r.get("hot") for r in spoke_rows) or self._pending_swaps:
+                    self._kick_eth_hot()
                 mev_hit = (int(mv.get("liq", 0)) + int(mv.get("router", 0))
                            + int(mv.get("spoke", 0)) + int(mv.get("aave", 0)))
                 content_ts = s.get("last_content")
@@ -1183,20 +1836,34 @@ class Dashboard:
         if refresh:
             try:
                 content = _rpc_requests(_RPC_POOL[0], "txpool_content", [],
-                                        timeout=60, retries=1)
+                                        timeout=40, retries=1)
                 txs = []
+                dex = getattr(mev_bot, "DEX_ROUTERS", set())
                 for bucket in (content.get("pending") or {}).values():
                     for t in bucket.values():
-                        txs.append({
+                        to = (t.get("to") or "").lower()
+                        full = to in dex
+                        rec = {
                             "hash": t.get("hash", ""),
                             "from": t.get("from", ""),
                             "to": t.get("to") or "",
                             "value": t.get("value", "0x0"),
-                            "input": (t.get("input") or "")[:10],
+                            "input": (t.get("input") or "")[:4096] if full
+                            else (t.get("input") or "")[:10],
                             "gasPrice": t.get("gasPrice") or t.get("maxFeePerGas") or "0x0",
                             "maxPriorityFeePerGas": t.get("maxPriorityFeePerGas", "0x0"),
                             "gas": t.get("gas", "0x0"),
-                        })
+                        }
+                        if full:
+                            rec.update({
+                                "nonce": t.get("nonce"),
+                                "type": t.get("type"),
+                                "v": t.get("v"), "r": t.get("r"), "s": t.get("s"),
+                                "chainId": t.get("chainId") or "0x1",
+                                "maxFeePerGas": t.get("maxFeePerGas"),
+                                "accessList": t.get("accessList") or [],
+                            })
+                        txs.append(rec)
                 out["txs"] = txs
                 out["method"] = "txpool_content"
                 out["last_content"] = int(time.time())
@@ -1236,8 +1903,12 @@ class Dashboard:
             try:
                 bg = await self._run(self._block_gas, 55)
                 if bg:
+                    prev_blk = self.state["block"]
                     self.state["block"] = bg[0]
                     self.state["gas_gwei"] = round(bg[1], 1)
+                    if prev_blk != bg[0]:
+                        self._invalidate_stale_plans(bg[0])
+                        self._kick_eth_hot()
                     self.state["gas_class"] = ic.gas_class(bg[1])
                     self.hist["gas"].append([int(time.time()), round(bg[1], 1)])
                 prices = await self._run(self._fetch_prices, 75)
@@ -1257,7 +1928,8 @@ class Dashboard:
                                      f"reserve[{rid}] {RESERVE_SYMS.get(rid, '?')} "
                                      f"moved {pct:+.2f}%")
                     reserves[str(rid)] = v
-                    self.hist["reserves"][rid].append([int(time.time()), v])
+                    self.hist["reserves"].setdefault(
+                        rid, deque(maxlen=MAXLEN)).append([int(time.time()), v])
                 self.state["prices"]["reserves"] = reserves
                 self.state["prices"]["deltas"] = deltas
                 if deltas:
@@ -1357,20 +2029,51 @@ class Dashboard:
             "to": COLD_WALLET[:12],
         }
 
+    def _liq_submit_gate(self):
+        if not ml.CONTRACT:
+            return "blocked", "LIQ_CONTRACT unset"
+        if not lb.KEYSTORE_PW:
+            return "blocked", "no liq keystore"
+        if self.sim_only:
+            return "sim", "sim-only"
+        if not self.armed:
+            return "sim", "not armed"
+        return "live", "armed"
+
+    def _decorate_liq_opp(self, o):
+        submit, reason = self._liq_submit_gate()
+        o["submit"] = submit
+        o["submit_reason"] = reason
+        net = o.get("net_usd")
+        if net is None:
+            net = o.get("profit_usd")
+        o["actionable"] = bool(
+            submit in ("live", "sim") and net is not None and float(net) > 0)
+        if o.get("edge"):
+            pass
+        elif pe.is_edge_opp(o) or (o.get("user") or "")[:10] in _EDGE:
+            o["edge"] = "long-tail"
+        else:
+            o["edge"] = ""
+        u = o.get("user") or ""
+        o["etherscan"] = f"https://etherscan.io/address/{u}" if u else ""
+        return o
+
     async def sweep_loop(self):
         while True:
             try:
-                self.bot("sweep", "running", "HF sweep of tracked borrowers")
+                self.bot("sweep", "running", "HF sweep V3 Pool + V4 spoke")
                 borrowers = ll.load_borrowers()
                 await self._run(self._sweep, 180, borrowers)
-                self.state["sweep_total"] = len(borrowers)
                 opps = pe.rank_liq_opps(
                     self.state["opportunities"], edge_bias=self.edge_bias)
                 self.state["opportunities"] = opps
                 self.state["opportunities_meta"] = self._opps_meta(opps)
                 n_opps = len(opps)
+                scanned = (self.state.get("opportunities_meta") or {}).get("scanned")
                 self.bot("sweep", "ok",
-                         f"{len(borrowers)} borrowers, {n_opps} liquidatable"
+                         f"{scanned if scanned is not None else len(borrowers)} scanned, "
+                         f"{n_opps} liquidatable"
                          f"{' [edge-bias]' if self.edge_bias else ''}")
                 if self.broadcast_enabled and n_opps:
                     liq_ok, _, _ = self.refresh_broadcast_ready()
@@ -1401,64 +2104,227 @@ class Dashboard:
                 float((self.state.get("intel") or {}).get("brain", {})
                       .get("cadence_mult") or 1.0)))
 
+    def _arb_inventory_wei(self) -> int:
+        try:
+            bot = (self.state.get("funds") or {}).get("bot") or {}
+            return int(float(bot.get("weth") or 0) * 1e18)
+        except Exception:
+            return 0
+
+    def _poll_pending_swaps(self):
+        """Decode Uni/Sushi/V3 pending swaps. Pending logs fail-open."""
+        txs = (self.state.get("mempool") or {}).get("txs") or []
+        swaps = []
+        try:
+            swaps = mev_bot.decode_swaps_from_txs(txs)
+        except Exception:
+            swaps = []
+        try:
+            pools = ((self._uni or {}).get("pools") if isinstance(self._uni, dict) else None) or []
+            addrs = [p.addr for p in pools[:18]]
+            logs = mev_bot.pending_swap_logs(addrs) if addrs else []
+            for lg in logs:
+                sw = mev_bot.parse_swap_log(lg, pools)
+                if sw:
+                    swaps.append(sw)
+        except Exception:
+            pass
+        # unique by hash
+        seen, out = set(), []
+        for sw in swaps:
+            k = sw.get("hash") or id(sw)
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(sw)
+        self._pending_swaps = out[:24]
+        self._pending_swaps_ok = True
+        return out
+
+    def _eth_backrun_tick(self):
+        """Quote complementary venue after pending live-universe swaps."""
+        swaps = [s for s in (self._pending_swaps or []) if s.get("live_universe")]
+        if not swaps:
+            return {"live": 0, "victim": None, "quoted": 0}
+        if self._uni is None:
+            try:
+                self._uni = mev_bot.build_universe()
+            except Exception:
+                return {"live": 0, "error": "universe"}
+        stats = {}
+        inv = self._arb_inventory_wei()
+        try:
+            opps = mev_bot.scan_backrun(
+                self._uni, swaps, inventory_wei=inv, stats=stats) or []
+        except Exception as e:  # noqa: BLE001
+            return {"live": 0, "error": str(e)[:120]}
+        blk = self.state.get("block")
+        live = [o for o in opps if int(o.get("net_profit") or 0) > 0]
+        self._arb_hot = {
+            "block": blk, "opps": opps, "ts": time.time(),
+            "stats": stats,
+            "victim": stats.get("last_victim"),
+        }
+        victim = stats.get("last_victim")
+        # Push meta immediately so the card isn't stuck on the 45s cyclic scan.
+        try:
+            self._merge_arb_hot_into_state(opps, stats)
+        except Exception:
+            pass
+        to_fire = None
+        eth = float(self.state.get("eth_price_usd") or 0)
+        floor = pe.dynamic_min_arb_profit_usd(
+            self.state.get("gas_gwei"), eth, MIN_ARB_PROFIT_USD)
+        for o in live:
+            net_usd = (int(o["net_profit"]) / 1e18) * eth if eth else 0
+            if pe.eth_arb_plus_ev(net_usd, floor) and not o.get("same_pool"):
+                to_fire = o
+                break
+        if to_fire is not None and self.broadcast_enabled:
+            try:
+                rec = self._broadcast_arb(to_fire, eth)
+                if rec:
+                    self._record_broadcast("arb", rec)
+            except Exception as e:  # noqa: BLE001
+                self._record_broadcast("arb", {"stage": "error", "reason": str(e)[:200]})
+        self._arb_quoted_block = blk
+        return {
+            "live": len(live), "near": max(0, len(opps) - len(live)),
+            "victim": victim, "quoted": stats.get("quoted") or 0,
+        }
+
+    def _merge_arb_hot_into_state(self, opps, stats):
+        eth = float(self.state.get("eth_price_usd") or 0)
+        gas = float(self.state.get("gas_gwei") or 0)
+        floor = pe.dynamic_min_arb_profit_usd(gas, eth, MIN_ARB_PROFIT_USD)
+        rows = [self._arb_row(o, eth, gas, None, floor) for o in (opps or [])]
+        live = [r for r in rows if pe.eth_arb_plus_ev(r.get("net_usd"), floor)
+                and not r.get("same_pool")]
+        near = [r for r in rows if r not in live][:8]
+        arb = self.state.setdefault("arb", {})
+        meta = arb.setdefault("meta", {})
+        last_scan = int(time.time())
+        meta["mode"] = "backrun+lst"
+        meta["last_victim"] = stats.get("last_victim") or meta.get("last_victim")
+        meta["flash_fee_bps"] = stats.get("flash_fee_bps") or mev_bot.AAVE_FLASH_BPS
+        meta["flash_fee_src"] = stats.get("flash_fee_src") or "aave-v3"
+        meta["flash_kind_contract"] = getattr(mev_bot, "ARB_FLASH_KIND", "uni-v2")
+        meta["pending_swaps"] = len(self._pending_swaps or [])
+        if not live:
+            # Don't clobber a completed resting scan with an empty backrun tick.
+            return
+        arb["opps"] = live[:10]
+        if near:
+            arb["near"] = near
+        arb["last_scan"] = last_scan
+        actionable = sum(1 for r in live if r.get("actionable"))
+        meta.update({
+            "quote_src": stats.get("quote_src") or "postswap+eth_call",
+            "live": len(live),
+            "near": len(near),
+            "skipped": stats.get("skipped") or 0,
+            "quoted": stats.get("quoted"),
+            "jobs": stats.get("jobs"),
+            "actionable": actionable,
+            "best_net_usd": live[0]["net_usd"] if live else None,
+            "top_mid": live[0]["mid"] if live else None,
+            "last_scan": last_scan,
+            "scan_block": self.state.get("block"),
+            "scan_kind": "backrun",
+        })
+
+    async def eth_hot_loop(self):
+        """Closest-10 liq plans + pending DEX backrun. Does not block startup."""
+        while True:
+            try:
+                await self._run(self._poll_pending_aave, 12)
+                await self._run(self._poll_pending_swaps, 18)
+                br = await self._run(self._eth_backrun_tick, 35)
+                if br:
+                    n_live = int((br.get("live") or 0))
+                    if n_live or br.get("victim"):
+                        self.bot(
+                            "arb", "ok" if n_live else "running",
+                            f"backrun live={n_live} victim="
+                            f"{(br.get('victim') or '-')[:14]} "
+                            f"quoted={br.get('quoted') or 0}")
+                n = await self._run(self._precompute_closest, 45)
+                fired = await self._run(self._fire_cached_liquidatable, 60)
+                n_fire = len(fired or [])
+                cached = len(self._flash_plans)
+                pend = len(self._pending_aave_users)
+                if n or n_fire or cached:
+                    self.bot(
+                        "broadcast", "ok" if not n_fire else "running",
+                        f"hot plans={cached} new={n or 0} pending={pend}"
+                        f" pend_ok={self._pending_aave_ok}"
+                        f"{f' fired={n_fire}' if n_fire else ''}")
+            except Exception as e:
+                self.bot("broadcast", "error", f"hot: {e}")
+            ev = self._eth_hot_kick
+            if ev is None:
+                await asyncio.sleep(3)
+                continue
+            try:
+                await asyncio.wait_for(ev.wait(), timeout=3.0)
+            except asyncio.TimeoutError:
+                pass
+            else:
+                ev.clear()
+
     def _sweep(self, borrowers):
-        lows = []
-        rows = []
-        def hf(u):
-            try:
-                return u, lb.get_account_data(u)
-            except Exception:
-                return None
-        res = list(self.tx_pool.map(hf, borrowers))
-        for r in res:
-            if not r:
-                continue
-            u, acc = r
-            hfv = acc[2]
-            coll_base = acc[3]
-            avg_cf = acc[1]
-            debt_base = 0
-            if coll_base and hfv < (1 << 250):
-                # HF = collValue * avgCF / debtValue (V4 accounting, Value=USD*1e26)
-                debt_base = coll_base * avg_cf // hfv
-            rows.append({
-                "user": u, "hf": hfv, "coll": coll_base, "debt": debt_base,
-                "avg_cf": avg_cf,
-            })
-            if hfv < lb.HEALTH_THRESHOLD:
-                lows.append(u)
-        rows.sort(key=lambda r: r["hf"])
-        self.state["watchlist"] = [
-            {
-                "user": r["user"],
-                "hf": str(r["hf"]),
-                "coll": str(r["coll"]),
-                "debt": str(r["debt"]),
-                "avg_cf": str(r["avg_cf"]),
-            } for r in rows[:8]
-        ]
+        t0 = time.time()
+        blk = int(self.state.get("block") or 0)
+        harvest = {
+            "users": [], "n_logs": 0, "errors": [],
+            "from_block": None, "to_block": None,
+        }
+        if blk:
+            last = int(self._liq_harvest_block or 0)
+            start = (last + 1) if last else max(1, blk - 4000)
+            end = min(blk, start + 1999)
+            if start <= blk:
+                try:
+                    harvest = lb.harvest_event_users(start, end)
+                    self._liq_harvest_block = end
+                except Exception as e:  # noqa: BLE001
+                    harvest = {
+                        "users": [], "n_logs": 0,
+                        "errors": [str(e)[:160]],
+                        "from_block": start, "to_block": end,
+                    }
+        users = list(borrowers or [])
+        users.extend(harvest.get("users") or [])
+        users.extend(self._contested or [])
+        gas = float(self.state.get("gas_gwei") or 1.0)
+        eth = float(self.state.get("eth_price_usd") or 0.0)
+        recent = pe.recent_competitor_users(self.state.get("competitors") or [])
+        result = lb.sweep_users(
+            users,
+            gas_gwei=gas,
+            eth_usd=eth,
+            contested=self._contested,
+            recent_comp=recent,
+            max_users=140,
+        )
         opps = []
-        for u in lows:
-            try:
-                plan = lb.build_plan(u)
-                if not plan:
-                    continue
-                opps.append({
-                    "user": u,
-                    "hf": plan.get("healthFactor"),
-                    "coll_sym": RESERVE_SYMS.get(plan.get("collateralReserveId"), "?"),
-                    "debt_sym": RESERVE_SYMS.get(plan.get("debtReserveId"), "?"),
-                    "profit_usd": round(int(plan.get("profitUsd", 0)) / 1e18, 2),
-                    "edge": "long-tail" if (
-                        u in _EDGE or pe.is_edge_opp({
-                            "coll_sym": RESERVE_SYMS.get(plan.get("collateralReserveId"), "?"),
-                            "debt_sym": RESERVE_SYMS.get(plan.get("debtReserveId"), "?"),
-                        })
-                    ) else "",
-                })
-            except Exception:
-                continue
+        for o in result.get("opps") or []:
+            opps.append(self._decorate_liq_opp(dict(o)))
+        self.state["watchlist"] = result.get("watch") or []
         self.state["opportunities"] = opps
+        scanned = int(result.get("scanned") or 0)
+        self.state["sweep_total"] = scanned
+        self.state["_liq_sweep_extra"] = {
+            "scanned": scanned,
+            "skipped": result.get("skipped") or {},
+            "n_logs": harvest.get("n_logs") or 0,
+            "from_block": harvest.get("from_block"),
+            "to_block": harvest.get("to_block"),
+            "errors": harvest.get("errors") or [],
+            "scan_ms": int((time.time() - t0) * 1000),
+            "last_scan": int(time.time()),
+            "last_block": blk or None,
+        }
 
     def _opps_meta(self, opps):
         opps = list(opps or [])
@@ -1505,20 +2371,38 @@ class Dashboard:
             except Exception:
                 pass
         avg_hf = round(sum(hfs) / len(hfs), 4) if hfs else None
+        extra = self.state.get("_liq_sweep_extra") or {}
+        skipped = extra.get("skipped") or {}
+        gate, gate_reason = self._liq_submit_gate()
+        actionable = sum(1 for o in opps if o.get("actionable"))
         return {
             "count": n,
             "edge_n": edge_n,
             "best_profit": round(best, 2),
             "sum_profit": round(total, 2),
-            "sweep_total": self.state.get("sweep_total"),
+            "sweep_total": self.state.get("sweep_total") or extra.get("scanned"),
             "watch_n": len(wl),
             "avg_hf": avg_hf,
             "pressure": pressure,
             "pair_mix": pair_mix,
+            "last_scan": extra.get("last_scan"),
+            "last_block": extra.get("last_block") or self.state.get("block"),
+            "scanned": extra.get("scanned") or self.state.get("sweep_total") or 0,
+            "skipped": skipped,
+            "skipped_n": sum(int(v or 0) for v in skipped.values()),
+            "n_logs": extra.get("n_logs") or 0,
+            "from_block": extra.get("from_block"),
+            "to_block": extra.get("to_block"),
+            "scan_ms": extra.get("scan_ms"),
+            "submit_gate": gate,
+            "submit_reason": gate_reason,
+            "actionable": actionable,
+            "plans_cached": len(self._flash_plans),
+            "pending_aave_ok": bool(self._pending_aave_ok),
+            "errors": extra.get("errors") or [],
         }
 
     async def competitor_loop(self):
-        last_scanned = 0
         seen_tx = set()
         while True:
             try:
@@ -1542,56 +2426,77 @@ class Dashboard:
                 if not blk:
                     await asyncio.sleep(15)
                     continue
-                # catch up: scan last ~12 blocks via logs (cheap vs full blocks)
-                start = max(1, (last_scanned + 1) if last_scanned else blk - 12)
+                # Catch up via logs: first pass ~last 1800 blocks (~6h), then incremental.
+                last_scanned = self._comp_last_scanned
+                lookback = 8000  # ~1.1d; empty means none in this window
+                start = max(1, (last_scanned + 1) if last_scanned else blk - lookback)
+                # Cap a cycle so public RPCs finish inside the timeout.
+                end = min(blk, start + 1999)
                 if start <= blk:
-                    await self._run(self._scan_liq_logs, 60, start, blk, seen_tx)
-                    last_scanned = blk
+                    rec = await self._run(self._scan_liq_logs, 150, start, end, seen_tx)
+                    if rec is None:
+                        self._comp_last_scanned = min(blk, start + 399)
+                    else:
+                        self._comp_last_scanned = end
                 while len(seen_tx) > 500:
                     seen_tx.pop()
                 self._refresh_competitor_stats()
+                now = int(time.time())
                 self.state["competitors_meta"]["last_block"] = blk
+                self.state["competitors_meta"]["last_scan"] = now
+                self.state["competitors_meta"]["window"] = (
+                    (end - start + 1) if start else 0)
                 m = self.state["competitors_meta"]
                 self.hist["comp_1h"].append(int(m.get("count_1h") or 0))
                 self.hist["comp_missed"].append(int(m.get("missed_by_us") or 0))
+                scanned_n = m.get("n_logs")
                 self.bot("competitors", "ok",
                          f"{m.get('count_1h', 0)}/1h | "
                          f"{m.get('unique_searchers', 0)} searchers | "
-                         f"{len(self._spokes)} spokes | "
+                         f"v3+{len(self._spokes)} spokes | "
                          f"missed={m.get('missed_by_us', 0)} | "
-                         f"{m.get('pressure', 'idle')}")
+                         f"{m.get('pressure', 'idle')}"
+                         + (f" | logs={scanned_n}" if scanned_n else "")
+                         + f" | blk {start}→{end}")
             except Exception as e:
                 self.bot("competitors", "error", e)
             await asyncio.sleep(15 if pe.is_peak_hour(
                 self.state.get("intel", {}).get("hours") or {}) else 20)
 
     def _scan_liq_logs(self, start, end, seen_tx):
-        """Pull LiquidationCall events across all known spokes via eth_getLogs."""
-        spokes = sorted(self._spokes or {lb.SPOKE.lower()})
-        logs = []
-        for i in range(0, len(spokes), 4):
-            chunk = spokes[i:i + 4]
-            try:
-                got = lb.jrpc(lb.RPC_CALL, "eth_getLogs", [{
-                    "fromBlock": hex(start),
-                    "toBlock": hex(end),
-                    "address": chunk,
-                    "topics": [LIQ_EVENT],
-                }])
-                if got:
-                    logs.extend(got)
-            except Exception as e:
-                self.log("competitor", "info",
-                         f"getLogs {start}-{end} chunk fail: {e}")
-        for lg in logs:
-            txh = (lg.get("transactionHash") or "").lower()
+        """Pull Aave V3 Pool + V4 Spoke LiquidationCall logs via eth_getLogs."""
+        extras = []
+        scanned = lb.scan_liquidation_logs(start, end, extra_addrs=extras)
+        events = scanned.get("events") or []
+        n_new = 0
+        for ev in events:
+            txh = (ev.get("tx") or "").lower()
             if not txh or txh in seen_tx:
                 continue
             seen_tx.add(txh)
+            n_new += 1
+            if n_new > 60:
+                break
             try:
-                self._record_competitor_log(lg)
-            except Exception as e:
+                self._record_competitor_event(ev)
+            except Exception as e:  # noqa: BLE001
                 self.log("competitor", "info", f"record fail: {e}")
+        meta = self.state["competitors_meta"]
+        meta["from_block"] = scanned.get("from_block") or start
+        meta["to_block"] = scanned.get("to_block") or end
+        meta["n_logs"] = int(scanned.get("n_logs") or 0)
+        meta["errors"] = scanned.get("errors") or []
+        if scanned.get("errors") and not events:
+            meta["status"] = "err " + str(scanned["errors"][0])[:80]
+        else:
+            meta["status"] = "ok"
+        return {
+            "n_logs": int(scanned.get("n_logs") or 0),
+            "n_events": len(events),
+            "n_new": n_new,
+            "from_block": start,
+            "to_block": end,
+        }
 
     def _parse_liq_log(self, lg):
         """Decode Spoke.LiquidationCall event.
@@ -1624,53 +2529,66 @@ class Dashboard:
         }
 
     def _record_competitor_log(self, lg):
-        parsed = self._parse_liq_log(lg)
+        topic0 = str((lg.get("topics") or [""])[0] or "").lower()
+        addr = (lg.get("address") or "").lower()
+        ev = None
+        if topic0 == getattr(lb, "V3_LIQ_TOPIC", "").lower() or addr == lb.V3_POOL.lower():
+            ev = lb.parse_v3_liq_log(lg)
+        if not ev:
+            ev = lb.parse_v4_liq_log(lg) or self._parse_liq_log(lg)
+            if ev and "protocol" not in ev:
+                ev["protocol"] = "v4"
+                ev["coll_addr"] = ""
+                ev["debt_addr"] = ""
+                ev["coll_sym"] = RESERVE_SYMS.get(ev.get("coll_rid"), str(ev.get("coll_rid")))
+                ev["debt_sym"] = RESERVE_SYMS.get(ev.get("debt_rid"), "?")
+                ev["debt_to_cover"] = ev.get("debt_restored") or ev.get("debt_to_cover") or 0
+                ev["coll_seized"] = ev.get("coll_to_liq") or ev.get("coll_seized") or 0
+        if ev:
+            self._record_competitor_event(ev)
+
+    def _record_competitor_event(self, parsed):
         if not parsed:
             return
-        user = parsed["user"]
-        searcher = parsed["searcher"]
+        user = (parsed.get("user") or "").lower()
+        searcher = (parsed.get("searcher") or "").lower()
         gas_used = None
         gas_price = None
         status = None
         ts = None
+        txh = parsed.get("tx") or ""
         try:
-            rc = lb.jrpc(lb.RPC_CALL, "eth_getTransactionReceipt", [parsed["tx"]])
+            rc = lb.jrpc(lb.RPC_CALL, "eth_getTransactionReceipt", [txh])
             if rc:
                 gas_used = int(rc.get("gasUsed", "0x0"), 16)
                 status = int(rc.get("status", "0x1"), 16)
-                # EIP-1559 effective gas price when present
                 egp = rc.get("effectiveGasPrice") or rc.get("gasPrice")
                 if egp:
                     gas_price = int(egp, 16) / 1e9
+                if not searcher:
+                    searcher = (rc.get("from") or "").lower()
         except Exception:
             pass
         try:
             blk = lb.jrpc(lb.RPC_CALL, "eth_getBlockByNumber",
-                          [hex(parsed["block"]), False])
+                          [hex(int(parsed.get("block") or 0)), False])
             if blk:
                 ts = int(blk.get("timestamp", "0x0"), 16)
                 if gas_price is None:
-                    # fallback base fee
                     bf = blk.get("baseFeePerGas")
                     if bf:
                         gas_price = int(bf, 16) / 1e9
         except Exception:
             pass
-        # our-model profit + pair labels
-        est = None
-        debt_rid = parsed["debt_rid"]
-        coll_sym = RESERVE_SYMS.get(parsed["coll_rid"], str(parsed["coll_rid"]))
-        debt_sym = RESERVE_SYMS.get(debt_rid, "?") if debt_rid is not None else "?"
-        if user.startswith("0x"):
-            try:
-                p = lb.build_plan(user)
-                if p:
-                    est = round(int(p.get("profitUsd", 0)) / 1e18, 2)
-                    if debt_rid is None:
-                        debt_rid = p.get("debtReserveId")
-                        debt_sym = RESERVE_SYMS.get(debt_rid, "?")
-            except Exception:
-                pass
+        coll_sym = parsed.get("coll_sym") or RESERVE_SYMS.get(
+            parsed.get("coll_rid"), "?")
+        debt_sym = parsed.get("debt_sym") or RESERVE_SYMS.get(
+            parsed.get("debt_rid"), "?")
+        est, coll_usd = None, None
+        try:
+            est, coll_usd = lb.liq_event_profit(parsed)
+        except Exception:
+            est, coll_usd = None, None
         eth = self.state.get("eth_price_usd") or 0
         gas_cost_eth = None
         gas_cost_usd = None
@@ -1678,36 +2596,42 @@ class Dashboard:
             gas_cost_eth = round(gas_used * gas_price * 1e-9, 6)
             if eth:
                 gas_cost_usd = round(gas_cost_eth * eth, 2)
-        # did we have this user in watchlist/opps?
+        net = None
+        if est is not None and gas_cost_usd is not None:
+            net = round(est - gas_cost_usd, 2)
+        elif est is not None:
+            net = est
         watched = {o.get("user", "").lower() for o in self.state.get("opportunities") or []}
         watched |= {w.get("user", "").lower() for w in self.state.get("watchlist") or []}
         missed = user in watched
         edge = pe.is_edge_opp({"coll_sym": coll_sym, "debt_sym": debt_sym})
         rec = {
-            "block": parsed["block"],
+            "block": parsed.get("block"),
             "ts": ts or int(time.time()),
             "user": user,
             "user_short": user[:10],
             "searcher": searcher,
             "searcher_short": searcher[:10],
-            "coll": str(parsed["coll_rid"]),
-            "debt": str(debt_rid) if debt_rid is not None else "?",
+            "coll": parsed.get("coll_addr") or str(parsed.get("coll_rid") or "?"),
+            "debt": parsed.get("debt_addr") or str(parsed.get("debt_rid") or "?"),
             "coll_sym": coll_sym,
             "debt_sym": debt_sym,
-            "debt_to_cover": str(parsed["debt_restored"]),
+            "debt_to_cover": str(parsed.get("debt_to_cover") or 0),
+            "coll_usd": coll_usd,
             "gas_price_gwei": round(gas_price, 2) if gas_price is not None else None,
             "gas_used": gas_used,
             "gas_cost_eth": gas_cost_eth,
             "gas_cost_usd": gas_cost_usd,
             "est_profit_usd": est,
-            "net_est_usd": round(est - gas_cost_usd, 2) if (est is not None and gas_cost_usd is not None) else est,
-            "tx": parsed["tx"],
-            "spoke": parsed["spoke"][:10],
+            "net_est_usd": net,
+            "tx": txh,
+            "etherscan": f"https://etherscan.io/tx/{txh}" if txh else "",
+            "spoke": (parsed.get("spoke") or "")[:12],
+            "protocol": parsed.get("protocol") or "v3",
             "status": status,
             "missed_by_us": missed,
             "edge": "long-tail" if edge else "",
         }
-        # dedupe by tx
         self.state["competitors"] = [
             c for c in self.state["competitors"] if c.get("tx") != rec["tx"]
         ]
@@ -1720,8 +2644,8 @@ class Dashboard:
             pass
         tag = "MISSED" if missed else "comp"
         self.log("competitor", "warn",
-                 f"[{tag}] blk={rec['block']} {coll_sym}→{debt_sym} "
-                 f"user={user[:10]} searcher={searcher[:10]} "
+                 f"[{tag}] {rec.get('protocol')} blk={rec['block']} "
+                 f"{coll_sym}→{debt_sym} user={user[:10]} searcher={searcher[:10]} "
                  f"gas={gas_used} est=${est} net=${rec['net_est_usd']}")
 
     def _refresh_competitor_stats(self):
@@ -1800,71 +2724,67 @@ class Dashboard:
     def _arb_scan(self, stats=None):
         if self._uni is None:
             self._uni = mev_bot.build_universe()
-        # report_all=True but scan itself floors catastrophic negatives.
-        gas = float(self.state.get("gas_gwei") or 1.0)
-        eth = float(self.state.get("eth_price_usd") or 2000.0)
+        eth = float(self.state.get("eth_price_usd") or 0.0)
         cap = float(getattr(mev_bot, "BORROW_CAP_WETH", 5) or 5)
-        try:
-            gas_eth = 500_000 * gas * 1e-9
-            if gas_eth * eth > 8:
-                cap = min(cap, 2.0)
-            elif gas_eth * eth > 3:
-                cap = min(cap, 3.0)
-        except Exception:
-            pass
+        floor = pe.dynamic_min_arb_profit_usd(
+            self.state.get("gas_gwei"), eth, MIN_ARB_PROFIT_USD)
         return mev_bot.scan(
             self._uni, False,
             borrow_cap_weth=cap,
-            min_profit_weth=-0.003,
-            stats=stats, report_all=True, mode="dash",
+            min_profit_weth=-0.05,
+            stats=stats, report_all=True, mode="backrun+lst",
+            min_profit_usd=floor, eth_usd=eth,
+            inventory_wei=self._arb_inventory_wei(),
         )
 
     def _optimize_arb_size(self, o):
-        """Re-quote top opp across size grid; keep max-profit size."""
+        """Re-quote size grid; keep max *net* after gas/fees/slip."""
         try:
-            max_b = int(o.get("borrow") or 0)
+            max_b = int(o.get("capacity") or o.get("borrow") or 0)
             if max_b <= 0:
                 return o
             grid = mev_bot._size_grid(max_b)
             if len(grid) <= 1:
                 return o
-            routes = o.get("routes") or [o["rin"], o["rout"]]
-            fee = int(o["fee"])
+            rin, rout = o["rin"], o["rout"]
+            gas_wei = int(o.get("gas_wei") or 0)
+            if not gas_wei:
+                try:
+                    gas_wei = mev_bot.gas_cost_token_wei()
+                except Exception:
+                    gas_wei = 450_000 * 10**9
             best = o
-            best_p = int(o.get("profit") or 0)
+            best_n = int(o.get("net_profit") or -10**32)
             for b in grid:
                 try:
-                    amt = b
-                    outs = []
-                    for r in routes:
-                        out = r.quote(amt)
-                        if not out:
-                            outs = []
-                            break
-                        outs.append(out)
-                        amt = out
-                    if not outs:
+                    q = mev_bot._quote_roundtrip(rin, rout, b, gas_wei,
+                                                 self._arb_inventory_wei())
+                    if not q:
                         continue
-                    fee_cost = b * fee // 1_000_000
-                    profit = outs[-1] - b - fee_cost
-                    if profit > best_p:
-                        best_p = profit
-                        best = {**o, "borrow": b, "out1": outs[0], "outs": outs,
-                                "profit": profit, "sized": True}
+                    mid_out, back, fee_cost, slip, gross, net = q[:6]
+                    if int(net) > best_n:
+                        best_n = int(net)
+                        best = {**o, "borrow": b, "out1": mid_out, "outs": [mid_out, back],
+                                "profit": int(gross), "net_profit": int(net),
+                                "slip_wei": int(slip), "flash_fee_wei": int(fee_cost),
+                                "sized": True, "quote_src": q[6] if len(q) > 6 else o.get("quote_src")}
                 except Exception:
                     continue
             return best
         except Exception:
             return o
 
-    def _arb_row(self, o, eth, gas_gwei=0.0, preferred=None):
+    def _arb_row(self, o, eth, gas_gwei=0.0, preferred=None, min_usd=0.0):
         routes = o.get("routes") or [o["rin"], o["rout"]]
         rin, rout = routes[0], routes[-1]
         mid = o.get("mid") or mev_bot.ADDR_SYM.get(rin.token_out, "?")
         if isinstance(mid, str) and mid.startswith("0x"):
             mid = mev_bot.ADDR_SYM.get(mid, mid[:8])
         flash = o["flashPool"]
-        fee_pct = o["fee"] / 10000
+        fee_bps = o.get("flash_fee_bps")
+        if fee_bps is None:
+            fee_bps = (o.get("fee") or 0) / 100  # ppm → bps
+        fee_pct = (o.get("fee") or 0) / 10000
         borrow_w = o["borrow"] / 1e18
         profit_w = o["profit"] / 1e18
         profit_usd = round(profit_w * eth, 2) if eth else None
@@ -1886,6 +2806,45 @@ class Dashboard:
         mid_key = str(mid).split("→")[0].upper()
         dexes = o.get("dexes") or sorted({getattr(r, "dex", "uni") for r in routes})
         venue = o.get("venue") or ("+".join(dexes) if len(dexes) > 1 else (dexes[0] if dexes else "uni"))
+        inv = bool(o.get("inventory"))
+        flash_ok = inv or mev_bot.flash_abi_matches()
+        submit, reason = "blocked", "ARB_CONTRACT unset"
+        if ARB_CONTRACT:
+            if not mev_bot.KEYSTORE_PW:
+                submit, reason = "blocked", "KEYSTORE_PW missing"
+            elif not flash_ok:
+                submit, reason = "blocked", (
+                    "ARB_CONTRACT Uni-flash; net Aave-priced — "
+                    "set ARB_FLASH_KIND=aave-v3 after matching deploy")
+            elif self.sim_only:
+                submit, reason = "sim", "sim-only"
+            elif not self.armed:
+                submit, reason = "sim", "not armed"
+            else:
+                submit, reason = "live", ""
+        plan = {
+            "flash": flash,
+            "borrow": str(int(o.get("borrow") or 0)),
+            "mid": mid,
+            "in": f"{getattr(rin, 'dex', '?')}/{getattr(rin, 'kind', '?')}",
+            "out": f"{getattr(rout, 'dex', '?')}/{getattr(rout, 'kind', '?')}",
+            "pool_in": getattr(rin, "addr", ""),
+            "pool_out": getattr(rout, "addr", ""),
+        }
+        same_pool = bool(o.get("same_pool"))
+        plus = (not same_pool) and pe.eth_arb_plus_ev(net_usd, min_usd)
+        skip_reason = ""
+        if same_pool:
+            skip_reason = "same_pool"
+        elif net_usd is None:
+            skip_reason = "no_quote"
+        elif net_usd <= 0:
+            skip_reason = o.get("skip_reason") or "neg_net"
+        elif not plus:
+            skip_reason = "below_floor"
+        gap_usd = None
+        if net_usd is not None:
+            gap_usd = round(net_usd - float(min_usd or 0), 2) if not plus else 0.0
         return {
             "flash": flash[:10],
             "flash_full": flash,
@@ -1897,7 +2856,7 @@ class Dashboard:
             "gas_usd": gas_usd,
             "net_usd": net_usd,
             "roi_bps": round(profit_w / max(borrow_w, 1e-12) * 10_000, 1),
-            "gap_usd": round(min(0.0, net_usd), 2) if net_usd is not None else None,
+            "gap_usd": gap_usd,
             "mid": mid,
             "hops": hops,
             "route": route,
@@ -1907,19 +2866,34 @@ class Dashboard:
             "sized": bool(o.get("sized")),
             "learned": mid_key in preferred,
             "etherscan": f"https://etherscan.io/address/{flash}",
-            "actionable": bool(net_usd is not None and net_usd > 0),
+            "actionable": bool(plus),
+            "same_pool": same_pool,
+            "skip_reason": skip_reason,
+            "min_usd": round(float(min_usd or 0), 2),
+            "quote_src": o.get("quote_src") or o.get("source") or "",
+            "source": o.get("source") or o.get("quote_src") or "",
             "network": "ethereum-mainnet",
+            "submit": submit,
+            "submit_reason": reason,
+            "plan": plan,
+            "mode": o.get("mode") or "resting",
+            "live_universe": bool(o.get("live_universe", True)),
+            "victim_hash": o.get("victim_hash") or "",
+            "bundle_mode": o.get("bundle_mode") or "",
+            "flash_fee_bps": fee_bps,
+            "flash_fee_src": o.get("flash_fee_src") or "aave-v3",
+            "inventory": inv,
         }
 
     async def arb_loop(self):
         while True:
             try:
-                self.bot("arb", "running", "scanning Uni+Sushi DEX routes…")
+                self.bot("arb", "running", "backrun+lst Uni/Sushi stables+LST…")
                 if self._uni is None:
-                    self._uni = await self._run(mev_bot.build_universe, 90)
+                    self._uni = await self._run(mev_bot.build_universe, 140)
                 stats = {}
                 t0 = time.time()
-                res = await self._run(self._arb_scan, 150, stats)
+                res = await self._run(self._arb_scan, 180, stats)
                 scan_ms = int((time.time() - t0) * 1000)
                 if res is None and not stats:
                     self.state["arb"]["error"] = "scan timeout/empty"
@@ -1931,48 +2905,79 @@ class Dashboard:
                 gas = float(self.state.get("gas_gwei") or 0)
                 hints = pe.near_miss_hints()
                 preferred = pe.prefer_learned_mids(hints)
+                live_syms = {s.upper() for _, s, _ in getattr(mev_bot, "_LIVE_MIDS", [])}
+                if live_syms:
+                    preferred = {p for p in preferred if str(p).upper() in live_syms}
+                dyn_floor = pe.dynamic_min_arb_profit_usd(
+                    gas, eth, MIN_ARB_PROFIT_USD)
+                try:
+                    pol = (self.state.get("intel") or {}).get("brain") or {}
+                    dyn_floor *= float(pol.get("min_arb_mult") or 1.0)
+                except Exception:
+                    pass
 
-                # size-optimize top raw candidates before ranking
-                raw_pos = [o for o in res if o["profit"] > 0]
-                raw_near = [o for o in res if o["profit"] <= 0]
-                # bias learned mids upward in near list
-                raw_near.sort(
-                    key=lambda o: (
-                        0 if mev_bot.ADDR_SYM.get(o["rin"].token_out, "?").upper()
-                        in preferred else 1,
-                        -o["profit"],
-                    )
+                # Size-optimize candidates nearest to breakeven / +EV (never same-pool).
+                ranked = sorted(
+                    [o for o in res if not o.get("same_pool")],
+                    key=lambda o: -int(o.get("net_profit") if o.get("net_profit") is not None
+                                       else o.get("profit") or 0),
                 )
                 optimized = []
-                for o in raw_pos[:6]:
+                for o in ranked[:8]:
                     try:
                         optimized.append(
                             await self._run(self._optimize_arb_size, 60, o))
                     except Exception:
                         optimized.append(o)
-                # keep rest without size pass
                 seen = {(x["flashPool"], x["rin"].addr, x["rout"].addr,
                          x["borrow"]) for x in optimized}
-                for o in raw_pos[6:]:
+                for o in ranked[8:]:
                     k = (o["flashPool"], o["rin"].addr, o["rout"].addr,
                          o["borrow"])
                     if k not in seen:
                         optimized.append(o)
 
-                rows_live = pe.rank_arb_opps(
-                    [self._arb_row(o, eth, gas, preferred) for o in optimized],
+                all_rows = pe.rank_arb_opps(
+                    [self._arb_row(o, eth, gas, preferred, dyn_floor)
+                     for o in optimized],
                     gas, eth,
-                )[:10]
-                rows_near = pe.rank_arb_opps(
-                    [self._arb_row(o, eth, gas, preferred)
-                     for o in raw_near[:12]],
-                    gas, eth,
-                )[:10]
+                )
+                plus_rows = [r for r in all_rows if pe.eth_arb_plus_ev(
+                    r.get("net_usd"), dyn_floor) and not r.get("same_pool")]
+                rows_live = plus_rows[:10]
+                plus_ids = {id(r) for r in plus_rows}
+                rows_near = [r for r in all_rows if id(r) not in plus_ids]
+                rows_near.sort(key=lambda r: (
+                    r.get("net_usd") if r.get("net_usd") is not None else -1e18), reverse=True)
+                rows_near = rows_near[:8]
 
-                for n in raw_near[:5]:
-                    mid = mev_bot.ADDR_SYM.get(n["rin"].token_out, "?")
-                    pe.record_near_miss(mid, n["fee"] / 10000,
-                                        n["profit"] / 1e18, gas)
+                hot = self._arb_hot or {}
+                hblk = int(hot.get("block") or 0)
+                nowb = int(self.state.get("block") or 0)
+                last_victim = (hot.get("victim") or None)
+                if hot.get("opps") and (not nowb or abs(nowb - hblk) <= 1):
+                    hot_rows = [
+                        self._arb_row(o, eth, gas, preferred, dyn_floor)
+                        for o in hot["opps"]
+                    ]
+                    hot_live = [
+                        r for r in hot_rows
+                        if pe.eth_arb_plus_ev(r.get("net_usd"), dyn_floor)
+                        and not r.get("same_pool")
+                    ]
+                    if hot_live:
+                        rows_live = (hot_live + [
+                            r for r in rows_live if r.get("mode") != "backrun"
+                        ])[:10]
+                    last_victim = last_victim or (hot.get("stats") or {}).get("last_victim")
+
+                for n in rows_near[:5]:
+                    pe.record_near_miss(
+                        n.get("mid") or "?",
+                        float(n.get("fee") or 0),
+                        float(n.get("profit_weth") or 0),
+                        gas,
+                    )
                 for row in (rows_live[:3] + rows_near[:3]):
                     try:
                         brain.learn_arb_near(self.state, row)
@@ -1985,14 +2990,13 @@ class Dashboard:
                 except Exception:
                     pass
 
+                skipped = int(stats.get("skipped") or 0)
                 actionable = sum(1 for r in rows_live if r.get("actionable"))
-                best_net = rows_live[0]["net_usd"] if rows_live else (
-                    rows_near[0]["net_usd"] if rows_near else None)
-                top_mid = rows_live[0]["mid"] if rows_live else (
-                    rows_near[0]["mid"] if rows_near else None)
-                cross_n = sum(1 for r in rows_live + rows_near if r.get("cross_dex"))
+                best_net = rows_live[0]["net_usd"] if rows_live else None
+                top_mid = rows_live[0]["mid"] if rows_live else None
+                cross_n = sum(1 for r in rows_live if r.get("cross_dex"))
                 venue_counts = {}
-                for r in rows_live + rows_near:
+                for r in rows_live:
                     v = r.get("venue") or "uni"
                     venue_counts[v] = venue_counts.get(v, 0) + 1
                 venue_mix = sorted(
@@ -2002,14 +3006,7 @@ class Dashboard:
                 vtot = sum(x["n"] for x in venue_mix) or 1
                 for x in venue_mix:
                     x["pct"] = round(100.0 * x["n"] / vtot, 1)
-                if actionable > 0:
-                    pressure = "hot"
-                elif rows_live:
-                    pressure = "busy"
-                elif rows_near:
-                    pressure = "quiet"
-                else:
-                    pressure = "idle"
+                pressure = "hot" if actionable else ("busy" if rows_live else "idle")
 
                 stats = dict(stats or {})
                 stats["scan_ms"] = scan_ms
@@ -2018,19 +3015,48 @@ class Dashboard:
                 stats["actionable"] = actionable
                 stats["live"] = len(rows_live)
                 stats["near"] = len(rows_near)
+                stats["skipped"] = skipped
+                stats["min_usd"] = round(dyn_floor, 2)
                 stats["best_net_usd"] = best_net
                 stats["preferred_mids"] = sorted(preferred)[:5]
+                last_scan = int(time.time())
+                uni_obj = self._uni if isinstance(self._uni, dict) else {}
+                uni_meta = {
+                    "pairs": int(stats.get("pairs") or uni_obj.get("n_pairs") or 0),
+                    "venues": list(uni_obj.get("venues") or stats.get("venues")
+                                   or stats.get("dexes") or []),
+                    "tokens": list(uni_obj.get("live_tokens") or [
+                        s for _, s, _ in getattr(mev_bot, "_LIVE_MIDS", [])
+                    ])[:12],
+                    "ts": uni_obj.get("ts") or last_scan,
+                    "flash_pools": int(stats.get("flash_pools") or 0),
+                }
+                if (ARB_CONTRACT and mev_bot.KEYSTORE_PW and not self.sim_only
+                        and self.armed and mev_bot.flash_abi_matches()):
+                    gate = "live"
+                elif ARB_CONTRACT:
+                    gate = "sim"
+                else:
+                    gate = "blocked"
 
                 self.state["arb"]["opps"] = rows_live
                 self.state["arb"]["near"] = rows_near
                 self.state["arb"]["stats"] = stats
                 self.state["arb"]["scan_block"] = self.state["block"]
+                self.state["arb"]["last_scan"] = last_scan
+                self.state["arb"]["universe"] = uni_meta
                 self.state["arb"]["meta"] = {
                     "scan_ms": scan_ms,
                     "scan_block": self.state["block"],
                     "gas_gwei": gas,
                     "live": len(rows_live),
                     "near": len(rows_near),
+                    "skipped": skipped,
+                    "skipped_negative": stats.get("skipped_negative"),
+                    "skipped_same_pool": stats.get("skipped_same_pool"),
+                    "skipped_quote_fail": stats.get("skipped_quote_fail"),
+                    "quote_src": stats.get("quote_src") or "v2-getAmountsOut + v3-quoter",
+                    "min_usd": round(dyn_floor, 2),
                     "actionable": actionable,
                     "best_net_usd": best_net,
                     "top_mid": top_mid,
@@ -2042,42 +3068,58 @@ class Dashboard:
                     "by_kind": stats.get("by_kind") or {},
                     "cross_dex": cross_n or stats.get("cross_dex") or 0,
                     "venue_mix": venue_mix,
-                    "mode": stats.get("mode") or "dash",
+                    "mode": "backrun+lst",
+                    "scan_kind": stats.get("scan_kind") or "resting",
+                    "last_victim": last_victim,
+                    "flash_fee_bps": stats.get("flash_fee_bps") or mev_bot.AAVE_FLASH_BPS,
+                    "flash_fee_src": stats.get("flash_fee_src") or "aave-v3",
+                    "flash_kind_contract": getattr(mev_bot, "ARB_FLASH_KIND", "uni-v2"),
+                    "submit_flash_ok": bool(stats.get("submit_flash_ok")),
                     "jobs": stats.get("jobs"),
                     "screened": stats.get("screened"),
-                    "quoted": stats.get("quoted"),
+                    "quoted": stats.get("quoted") or stats.get("quotes"),
+                    "quotes": stats.get("quotes") or stats.get("quoted"),
                     "flash_pools": stats.get("flash_pools"),
                     "routes": stats.get("routes"),
+                    "pairs": uni_meta["pairs"],
+                    "last_scan": last_scan,
+                    "submit_gate": gate,
+                    "venues": uni_meta["venues"],
+                    "tokens": uni_meta["tokens"],
+                    "pending_swaps": len(self._pending_swaps or []),
                 }
                 self.hist["arb_best_net"].append(
                     float(best_net) if best_net is not None else 0.0)
                 self.hist["arb_actionable"].append(int(actionable))
                 self._arb_quoted_block = self.state["block"]
-                self.state["arb"]["error"] = None
+                self.state["arb"]["error"] = stats.get("error") or None
                 self.state["broadcast"]["near_miss_hints"] = pe.near_miss_hints()
 
-                msg = "no arb found"
-                best = (stats.get("best_profit_weth") or 0) / 1e18
+                qn = stats.get("quoted") or stats.get("quotes") or 0
+                pn = uni_meta["pairs"]
                 if rows_live:
                     top = rows_live[0]
                     net = top.get("net_usd")
-                    msg = (f"{len(rows_live)} live"
+                    msg = (f"{len(rows_live)} live +EV"
                            + (f", {actionable} actionable" if actionable else "")
                            + (f", top net ${net:.2f}" if net is not None else "")
                            + f" via {top.get('mid')} [{top.get('venue')}]")
-                if rows_near:
-                    gap = rows_near[0].get("gap_usd")
-                    msg += f" | +{len(rows_near)} near"
-                    if gap is not None:
-                        msg += f" (gap ${gap:.2f})"
+                else:
+                    msg = (f"no +EV this scan · {pn} pairs · {qn} quotes"
+                           + f" · skip {skipped} · floor ${dyn_floor:.2f}")
                 dexes = ",".join(stats.get("dexes") or [])
-                msg += f" | {dexes or 'dex'} | {scan_ms}ms | best {best:.5f} WETH"
+                msg += f" | {dexes or 'dex'} | {scan_ms}ms"
                 self.bot("arb", "ok", msg)
 
-                # broadcast only net-positive after gas
-                to_fire = next((o for o in optimized
-                                if (o["profit"] * eth / 1e18) -
-                                (500_000 * gas * 1e-9 * eth) > 0), None)
+                to_fire = None
+                for o in optimized:
+                    net_w = o.get("net_profit")
+                    if net_w is None:
+                        continue
+                    net_usd = (int(net_w) / 1e18) * eth if eth else 0
+                    if pe.eth_arb_plus_ev(net_usd, dyn_floor) and not o.get("same_pool"):
+                        to_fire = o
+                        break
                 if self.broadcast_enabled and to_fire is not None:
                     _, arb_ok, _ = self.refresh_broadcast_ready()
                     if arb_ok:
@@ -2105,7 +3147,7 @@ class Dashboard:
                                .get("cadence_mult") or 1.0)
             except Exception:
                 pass
-            await asyncio.sleep(max(55.0, sleep))
+            await asyncio.sleep(max(22.0, min(float(sleep), 40.0)))
 
 
     @staticmethod
@@ -2239,16 +3281,18 @@ class Dashboard:
             await asyncio.sleep(35)
 
     async def sol_mempool_loop(self):
-        """Priority-fee panel — Solana has no ETH-style public mempool dump."""
+        """Priority fees + Solend landing stream (public-RPC mempool twin)."""
         while True:
             try:
-                self.sol_bot("mempool", "running", "priority fees…")
+                self.sol_bot("mempool", "running", "prio + Solend landing…")
                 fees = await self._run(sols.fetch_priority_fees, 25)
                 if not fees:
                     fees = {"ok": False, "error": "priority fee timeout"}
                 sol = self.state["sol"]
                 mp = sol["mempool"]
                 meta = mp.setdefault("meta", {})
+                pressure = "idle"
+                med = None
                 if fees.get("ok"):
                     med = fees.get("median")
                     p90 = fees.get("p90")
@@ -2257,8 +3301,10 @@ class Dashboard:
                     slots_n = fees.get("slots") or 0
                     hist_bins = fees.get("histogram") or []
                     mix = fees.get("mix") or {}
+                    pressure = fees.get("pressure") or "idle"
                     mp["count"] = n
                     mp["queued"] = slots_n
+                    mp["method"] = "landing+prio"
                     meta.update({
                         "pending": n,
                         "queued": slots_n,
@@ -2271,17 +3317,18 @@ class Dashboard:
                         "slots": slots_n,
                         "tps": fees.get("tps"),
                         "nv_tps": fees.get("nv_tps"),
-                        "pressure": fees.get("pressure") or "idle",
+                        "pressure": pressure,
                         "hot_share_pct": round(
                             100.0 * ((mix.get("hot") or 0) + (mix.get("elevated") or 0))
                             / max(n, 1), 1),
                         "histogram": hist_bins,
                         "rpc": fees.get("rpc"),
-                        "note": "getRecentPrioritizationFees · µl/CU",
+                        "note": "Solend landing + Jito tips · µl/CU",
                     })
                     mp["mev_txs"] = [
                         {
                             "cls": f.get("cls") or "quiet",
+                            "kind": "prio",
                             "slot": f.get("slot"),
                             "fee": f.get("fee"),
                             "vs_med": f.get("vs_med"),
@@ -2322,23 +3369,92 @@ class Dashboard:
                     self.hist.setdefault(
                         "sol_tps", deque(maxlen=MAXLEN)).append(
                             fees.get("tps") or 0)
-                    tps_s = fees.get("tps")
-                    self.sol_bot(
-                        "mempool", "ok",
-                        f"n={n} slots={slots_n} med={med} p90={p90} µl"
-                        + (f" tps={tps_s}" if tps_s is not None else ""))
-                    self.log("sol-mempool", "info",
-                             f"prio n={n} med={med} p90={p90} "
-                             f"zero={fees.get('zero_pct')}% "
-                             f"tps={tps_s}")
-                else:
-                    meta["pressure"] = "idle"
-                    mp["mev_txs"] = []
-                    self.sol_bot("mempool", "error", fees.get("error") or "empty")
+                landing = await self._run(
+                    sols.watch_solend_landing, 55, 16,
+                    sol.get("sol_price_usd"), med, pressure)
+                if not landing:
+                    landing = {"ok": False, "hits": [], "opportunities": [],
+                               "liq_n": 0, "mev_n": 0}
+                hits = landing.get("hits") or []
+                liq_hits = [h for h in hits if h.get("kind") == "liq"]
+                mev_hits = [h for h in hits
+                            if h.get("kind") in ("jito", "backrun")]
+                mp["hits"] = hits
+                mp["liq_hits"] = liq_hits
+                mp["mev_hits"] = mev_hits
+                meta["liq_hits"] = int(landing.get("liq_n") or len(liq_hits))
+                meta["mev_hits"] = int(landing.get("mev_n") or len(mev_hits))
+                meta["refresh_n"] = int(landing.get("refresh_n") or 0)
+                meta["jito_bundles"] = int(
+                    (landing.get("jito") or {}).get("bundles") or 0)
+                meta["decoded"] = int(landing.get("decoded") or 0)
+                meta["contested"] = int(landing.get("contested_n") or 0)
+                meta["landing_note"] = landing.get("note") or ""
+                meta["last_slot"] = landing.get("last_slot") or sol.get("slot")
+                meta["last_scan"] = int(time.time())
+                land_watch = landing.get("watch") or []
+                if land_watch:
+                    sols.remember_hydrates(land_watch)
+                    sol["watchlist"] = sols.closest_to_stress(10)
+                if landing.get("liq_n") or landing.get("opportunities"):
+                    meta["pressure"] = "hot"
+                elif landing.get("refresh_n"):
+                    meta["pressure"] = "elevated"
+                self.hist.setdefault(
+                    "sol_mp_liq", deque(maxlen=MAXLEN)).append(
+                        meta.get("liq_hits") or 0)
+                self.hist.setdefault(
+                    "sol_mp_mev", deque(maxlen=MAXLEN)).append(
+                        meta.get("mev_hits") or 0)
+                # Merge mempool-sourced liquidatable into the opp feed
+                land_opps = [self._sol_decorate_liq(dict(o))
+                             for o in (landing.get("opportunities") or [])]
+                if land_opps:
+                    prio = med
+                    for o in land_opps:
+                        o["plan"] = sols.build_liq_plan(
+                            o, prio, meta.get("pressure"))
+                    existing = sol.get("opportunities") or []
+                    merged = [self._sol_decorate_liq(o) for o in
+                              sols.merge_liq_opportunities(existing, land_opps)
+                              if o.get("hf") is not None and o["hf"] < 1.0]
+                    sol["opportunities"] = merged
+                    om = sol.setdefault("opportunities_meta", {})
+                    om["count"] = len(merged)
+                    om["mempool_n"] = len(land_opps)
+                    om["edge_n"] = sum(1 for o in merged if o.get("edge"))
+                    om["best_profit"] = max(
+                        (o.get("profit_usd") or 0) for o in merged) if merged else 0
+                    om["sum_profit"] = round(
+                        sum(o.get("profit_usd") or 0 for o in merged), 4)
+                    om["watch_n"] = len(sol.get("watchlist") or [])
+                    om["last_scan"] = int(time.time())
+                    om["last_slot"] = landing.get("last_slot") or sol.get("slot")
+                    om["last_block"] = om["last_slot"]
+                    if merged:
+                        om["pressure"] = "hot"
+                    # sim / gated submit on best mempool liq
+                    best = next(
+                        (o for o in merged if o.get("actionable")), None)
+                    if best:
+                        self._sol_maybe_submit(
+                            "liq", best, best.get("plan") or {})
+                tps_s = (fees or {}).get("tps") if fees else None
+                self.sol_bot(
+                    "mempool", "ok" if (fees.get("ok") or landing.get("ok"))
+                    else "error",
+                    f"liq={meta.get('liq_hits')} mev={meta.get('mev_hits')} "
+                    f"jito={meta.get('jito_bundles')} med={med}µl"
+                    + (f" tps={tps_s}" if tps_s is not None else ""))
+                self.log("sol-mempool", "info",
+                         f"landing liq={meta.get('liq_hits')} "
+                         f"refresh={meta.get('refresh_n')} "
+                         f"jito={meta.get('jito_bundles')} "
+                         f"{landing.get('note') or ''}")
             except Exception as e:
                 self.sol_bot("mempool", "error", e)
                 self.log("sol-mempool", "error", e)
-            await asyncio.sleep(45)
+            await asyncio.sleep(28)
 
     async def sol_funds_loop(self):
         while True:
@@ -2380,8 +3496,8 @@ class Dashboard:
                     else:
                         perf["grade"] = "A"
                         perf["edge"] = (
-                            "sponsor + bot funded — broadcast still dry-run "
-                            "until programs deploy"
+                            "sponsor + bot funded — arm LIVE to send "
+                            "Jupiter/Solend + Jito bundles"
                         )
                 else:
                     perf["equity_usd"] = None
@@ -2414,56 +3530,89 @@ class Dashboard:
                     }
                 ms = int((time.time() - t0) * 1000)
                 sol = self.state["sol"]
-                wl = data.get("watchlist") or []
-                opps = list(probe.get("opportunities") or [])
-                # Attach dry-run liq plans (never submit)
-                for o in opps:
-                    o["plan"] = sols.build_liq_plan(o)
-                sol["watchlist"] = wl
+                wl_res = data.get("reserves") or data.get("watchlist") or []
+                gpa_opps = [self._sol_decorate_liq(dict(o))
+                            for o in (probe.get("opportunities") or [])]
+                prio = sol.get("priority_fee")
+                pressure = ((sol.get("mempool") or {}).get("meta") or {}).get(
+                    "pressure")
+                px = sol.get("sol_price_usd")
+                for o in gpa_opps:
+                    scored = sols.score_liq_profit(
+                        o, sol_px=px, priority_median=prio, pressure=pressure)
+                    o.update(scored)
+                    o["source"] = o.get("source") or "gpa"
+                    o["kind"] = "liq"
+                    o["plan"] = sols.build_liq_plan(o, prio, pressure)
+                existing = [o for o in (sol.get("opportunities") or [])
+                            if o.get("kind") == "liq" or o.get("hf") is not None]
+                opps = [self._sol_decorate_liq(o) for o in
+                        sols.merge_liq_opportunities(gpa_opps, existing)
+                        if o.get("hf") is not None and o["hf"] < 1.0
+                        and not sols._dust_obligation(o)]
+                sols.remember_hydrates(probe.get("watch") or gpa_opps)
+                wl = probe.get("watch") or sols.closest_to_stress(10)
+                if not wl:
+                    wl = sols.closest_to_stress(10)
+                sol["watchlist"] = wl[:10]
                 sol["opportunities"] = opps
                 mix = {}
-                for w in wl:
-                    sym = w.get("symbol") or "?"
-                    mix[sym] = mix.get(sym, 0) + 1
+                src_mix = opps if opps else wl
+                for w in src_mix:
+                    pair = (
+                        f"{w.get('coll_sym') or w.get('collateral_sym') or '?'}→"
+                        f"{w.get('debt_sym') or '?'}"
+                    )
+                    mix[pair] = mix.get(pair, 0) + 1
                 pair_mix = sorted(
-                    [{"pair": k, "n": v, "pct": round(100 * v / max(len(wl), 1), 1)}
+                    [{"pair": k, "n": v, "pct": round(100 * v / max(len(src_mix), 1), 1)}
                      for k, v in mix.items()],
                     key=lambda x: -x["n"],
                 )
-                pressure = "idle"
+                opp_pressure = "idle"
                 if opps:
-                    pressure = "hot"
-                elif any(w.get("urgency") == "hot" for w in wl):
-                    pressure = "elevated"
-                elif wl:
-                    pressure = "quiet"
+                    opp_pressure = "hot"
+                elif any((w.get("hf") or 99) < 1.05 for w in wl):
+                    opp_pressure = "elevated"
+                elif any((w.get("hf") or 99) < 1.1 for w in wl):
+                    opp_pressure = "quiet"
                 best = max((o.get("profit_usd") or 0) for o in opps) if opps else 0
                 edge_n = sum(1 for o in opps if o.get("edge"))
+                hfs = [w.get("hf") for w in wl if w.get("hf") is not None]
                 note = data.get("hf_note") or ""
                 if probe.get("note"):
                     note = (note + " · " if note else "") + probe["note"]
+                mp_n = sum(1 for o in opps if o.get("source") == "mempool")
+                gate, gate_reason = self._sol_submit_gate("liq")
                 sol["opportunities_meta"] = {
                     "count": len(opps),
                     "edge_n": edge_n,
                     "best_profit": best,
                     "sum_profit": round(sum(o.get("profit_usd") or 0 for o in opps), 4),
-                    "sweep_total": data.get("reserves_n") or len(wl),
+                    "sweep_total": data.get("reserves_n") or len(wl_res),
                     "watch_n": len(wl),
-                    "avg_hf": (sum(w.get("hf") or 0 for w in wl) / len(wl)
-                               if wl else None),
-                    "pressure": pressure,
+                    "scanned": (probe.get("probed") or 0) + (probe.get("hydrated") or 0),
+                    "avg_hf": (sum(hfs) / len(hfs) if hfs else None),
+                    "pressure": opp_pressure,
                     "pair_mix": pair_mix,
                     "protocol": sols.PROTOCOL,
                     "status": "ok" if data.get("ok") else "error",
                     "market": data.get("market"),
                     "scan_ms": ms,
-                    "hf_public": bool(data.get("hf_public")),
+                    "hf_public": bool(probe.get("hydrated")),
                     "obligation_probed": probe.get("probed") or 0,
                     "obligation_hydrated": probe.get("hydrated") or 0,
                     "obligation_method": probe.get("method"),
+                    "mempool_n": mp_n,
+                    "gpa_n": len(gpa_opps),
+                    "submit_gate": gate,
+                    "submit_reason": gate_reason,
+                    "last_scan": int(time.time()),
+                    "last_slot": sol.get("slot"),
+                    "last_block": sol.get("slot"),
                     "note": note,
                 }
-                sol["prices"]["reserves"] = {
+                sol.setdefault("prices", {})["reserves"] = {
                     w["symbol"]: {
                         "util_pct": w.get("util_pct"),
                         "supply_apy": w.get("supply_apy"),
@@ -2471,24 +3620,11 @@ class Dashboard:
                         "ltv": w.get("ltv"),
                         "liq_thresh": w.get("liq_thresh"),
                     }
-                    for w in wl if w.get("symbol")
+                    for w in wl_res if w.get("symbol")
                 }
-                # sim dry-run history when real liquidatable found
-                if opps and self.sol_sim_only:
-                    bc = sol["broadcast"]
-                    plan = opps[0].get("plan") or {}
-                    bc.setdefault("history", []).insert(0, {
-                        "ts": int(time.time()), "kind": "liq",
-                        "stage": "simulated",
-                        "detail": (
-                            f"dry-run liq HF={opps[0].get('hf')} "
-                            f"profit=${opps[0].get('profit_usd')} "
-                            f"jito_tip={plan.get('jito_tip_lamports', 0)}lam"
-                        ),
-                        "plan": plan,
-                    })
-                    bc["history"] = bc["history"][:40]
-                    self.refresh_sol_broadcast_ready()
+                fire = next((o for o in opps if o.get("actionable")), None)
+                if fire:
+                    self._sol_maybe_submit("liq", fire, fire.get("plan") or {})
                 msg = (f"Solend watch={len(wl)} liq={len(opps)} "
                        f"gpa={probe.get('probed')} hyd={probe.get('hydrated')} "
                        f"reserves={data.get('reserves_n')} {ms}ms")
@@ -2508,7 +3644,7 @@ class Dashboard:
         while True:
             try:
                 self.sol_bot("competitors", "running", "decode Solend liq txs…")
-                decoded = await self._run(sols.decode_solend_competitors, 90, 10)
+                decoded = await self._run(sols.decode_solend_competitors, 90, 16)
                 if not decoded:
                     decoded = {"ok": False, "rows": [], "liq_n": 0, "revert_n": 0}
                 sol = self.state["sol"]
@@ -2517,39 +3653,43 @@ class Dashboard:
                 revert_n = int(decoded.get("revert_n") or 0)
                 liq_n = int(decoded.get("liq_n") or 0)
                 searchers = {}
+                now = int(time.time())
                 for r in rows:
-                    if r.get("err"):
-                        revert_n = max(revert_n, revert_n)  # already counted
-                    sk = r.get("searcher") or "—"
-                    if sk and sk != "—":
+                    sk = r.get("searcher") or ""
+                    if sk:
                         searchers[sk] = searchers.get(sk, 0) + 1
                     comps.append({
                         "age": r.get("slot"),
-                        "pair": r.get("pair") or "solend",
+                        "ts": r.get("ts") or now,
+                        "pair": r.get("pair") or "solend-liq",
                         "searcher": sk,
-                        "user": r.get("user") or "—",
-                        "gas_usd": None,
-                        "est": None,
-                        "net": None,
-                        "flags": r.get("flags") or "ok",
-                        "tx": r.get("tx"),
-                        "sig": r.get("sig"),
+                        "user": r.get("user") or "",
+                        "gas_usd": r.get("gas_usd"),
+                        "est": r.get("est"),
+                        "est_profit_usd": r.get("est"),
+                        "net": r.get("net"),
+                        "net_est_usd": r.get("net"),
+                        "flags": r.get("flags") or "liq",
+                        "tx": r.get("tx") or r.get("sig"),
+                        "sig": r.get("sig") or r.get("tx"),
+                        "solscan": r.get("solscan") or (
+                            f"https://solscan.io/tx/{r.get('sig')}"
+                            if r.get("sig") else None),
                         "slot": r.get("slot"),
-                        "missed": False,
-                        "edge": "liq" in str(r.get("flags") or ""),
+                        "missed": True,
+                        "missed_by_us": True,
+                        "edge": True,
                     })
                 top = sorted(
-                    [{"searcher": k, "n": v, "share": round(v / max(len(comps), 1), 3),
+                    [{"searcher": k, "n": v,
+                      "share": round(v / max(len(comps), 1), 3),
                       "sum_est": 0}
                      for k, v in searchers.items()],
                     key=lambda x: -x["n"],
                 )[:8]
-                if not top and comps:
-                    top = [{"searcher": "solend-program", "n": len(comps),
-                            "share": 1, "sum_est": 0}]
                 pair_counts = {}
                 for c in comps:
-                    p = c.get("pair") or "solend"
+                    p = c.get("pair") or "solend-liq"
                     pair_counts[p] = pair_counts.get(p, 0) + 1
                 pair_mix = [
                     {"pair": k, "n": v,
@@ -2557,26 +3697,35 @@ class Dashboard:
                      "share": round(v / max(len(comps), 1), 3)}
                     for k, v in pair_counts.items()
                 ]
+                last_slot = decoded.get("last_slot") or (
+                    comps[0].get("slot") if comps else sol.get("slot"))
+                prev = sol.get("competitors_meta") or {}
+                if not last_slot:
+                    last_slot = prev.get("last_slot")
                 sol["competitors"] = comps
                 sol["competitors_meta"] = {
                     "spokes": 1, "assets": 0,
-                    "status": "ok" if comps else "scanning",
+                    "status": "ok" if decoded.get("ok") else "error",
                     "count_1h": len(comps),
-                    "unique_searchers": len(searchers) or (1 if comps else 0),
+                    "unique_searchers": len(searchers),
                     "avg_gas": None, "sum_est_profit": 0, "sum_net_est": 0,
-                    "missed_by_us": 0, "miss_rate_pct": 0,
+                    "missed_by_us": len(comps),
+                    "miss_rate_pct": 100 if comps else 0,
                     "edge_n": liq_n,
                     "revert_n": revert_n,
-                    "pressure": ("elevated" if liq_n else
-                                 "quiet" if comps else "idle"),
+                    "pressure": ("elevated" if liq_n else "idle"),
                     "top_searchers": top,
                     "pair_mix": pair_mix,
-                    "last_slot": comps[0].get("slot") if comps else None,
+                    "last_slot": last_slot,
+                    "last_block": last_slot,
+                    "last_scan": now,
+                    "scanned": decoded.get("scanned") or 0,
                     "total": len(comps),
                     "liq_labeled": liq_n,
                     "note": (
-                        f"decoded {liq_n} liquidate-like of {len(comps)} recent "
-                        "Solend sigs — PnL not invented"
+                        f"{liq_n} Solend liquidate txs of "
+                        f"{decoded.get('scanned') or 0} recent sigs"
+                        + (f" · slot {last_slot}" if last_slot else "")
                     ),
                 }
                 self.hist["sol_comp_1h"].append(len(comps))
@@ -2592,132 +3741,94 @@ class Dashboard:
     async def sol_arb_loop(self):
         while True:
             try:
-                self.sol_bot("arb", "running", "Jupiter multi-pair quotes…")
+                self.sol_bot("arb", "running", "local pool accounts + Jupiter exec…")
                 t0 = time.time()
-                prio = (self.state["sol"].get("priority_fee")
-                        or ((self.state["sol"].get("mempool") or {})
-                            .get("meta") or {}).get("median_fee"))
-                data = await self._run(
-                    sols.fetch_jupiter_roundtrips, 120, None, prio)
-                if not data:
-                    data = {"ok": False, "opps": [], "near": [],
-                            "error": "jupiter quote timeout"}
-                ms = int((time.time() - t0) * 1000)
                 sol = self.state["sol"]
-                live = data.get("opps") or []
+                prio = (sol.get("priority_fee")
+                        or ((sol.get("mempool") or {})
+                            .get("meta") or {}).get("median_fee"))
+                pressure = ((sol.get("mempool") or {}).get("meta") or {}).get(
+                    "pressure")
+                floor = float(
+                    ((sol.get("broadcast") or {}).get("dyn_min_arb"))
+                    or MIN_SOL_ARB_USD)
+                px = sol.get("sol_price_usd")
+                data = await self._run(
+                    sols.fetch_sol_dex_arbs, 45,
+                    None, prio, floor, pressure, px)
+                ms = int((time.time() - t0) * 1000)
+                if not data:
+                    data = {
+                        "ok": False, "opps": [], "near": [],
+                        "error": "local/jupiter quote timeout",
+                        "quotes": 0, "quoted": 0, "skipped": 0,
+                        "pairs_tried": 0,
+                        "quote_src": "raydium-account+orca-account",
+                        "quote_src_mix": {}, "local_n": 0, "jup_n": 0,
+                        "geyser": False, "pools_decoded": 0,
+                        "universe": sols.arb_universe(),
+                        "sample_route": None, "by_dex": {},
+                    }
+                # Live list is +EV only — never promote debug near-misses.
+                live = [
+                    o for o in (data.get("opps") or [])
+                    if sols.sol_arb_plus_ev(o.get("net_usd"), floor)
+                    and not o.get("same_pool")
+                ]
                 near = data.get("near") or []
-                # Attach dry-run plans
-                for row in live + near:
-                    row["plan"] = sols.build_arb_plan(row, prio)
-                actionable = sum(1 for o in live if o.get("actionable"))
-                best = live[0]["net_usd"] if live else (
-                    near[0]["net_usd"] if near else None)
-                venue_mix = {}
-                mid_mix = {}
-                dex_counts: dict[str, int] = {}
-                for o in live + near:
-                    v = (o.get("venue") or "jup")[:24]
-                    venue_mix[v] = venue_mix.get(v, 0) + 1
-                    m = o.get("mid") or "?"
-                    mid_mix[m] = mid_mix.get(m, 0) + 1
-                    for lab in o.get("labels") or []:
-                        dex_counts[lab] = dex_counts.get(lab, 0) + 1
-                top_mid = (sorted(mid_mix.items(), key=lambda x: -x[1])[0][0]
-                           if mid_mix else None)
-                hints = []
-                for n in near[:5]:
-                    hints.append({
-                        "mid": n.get("mid"), "gap_usd": n.get("gap_usd"),
-                        "path": n.get("path"), "venue": n.get("venue"),
-                    })
-                tot_rows = max(len(live) + len(near), 1)
-                sol["arb"] = {
-                    "opps": live,
-                    "near": near,
-                    "stats": {
-                        "quotes": data.get("quotes") or (len(live) + len(near)),
-                        "pairs_tried": data.get("pairs_tried"),
-                        "venues": list(venue_mix.keys()),
-                        "mids": list(mid_mix.keys()),
-                        "dexes": list(dex_counts.keys()),
-                        "mode": "jup-smart",
-                        "tip_usd": data.get("tip_usd"),
-                    },
-                    "error": data.get("error"),
-                    "meta": {
-                        "scan_ms": ms,
-                        "scan_slot": sol.get("slot"),
-                        "live": len(live),
-                        "near": len(near),
-                        "actionable": actionable,
-                        "best_net_usd": best,
-                        "top_mid": top_mid,
-                        "preferred_mids": [
-                            "SOL-USDC", "SOL-USDT", "SOL-mSOL",
-                            "SOL-JitoSOL", "USDC-USDT", "SOL-BONK",
-                            "SOL-RAY", "SOL-WIF", "SOL-PYTH",
-                        ],
-                        "pressure": (
-                            "hot" if actionable else
-                            "quiet" if (live or near) else "idle"
-                        ),
-                        "dexes": list(dex_counts.keys()) or ["jupiter"],
-                        "by_dex": dex_counts or {"jupiter": len(live) + len(near)},
-                        "cross_dex": sum(1 for o in live if o.get("cross_dex")),
-                        "venue_mix": [
-                            {"venue": k, "n": v,
-                             "pct": round(100 * v / tot_rows, 1)}
-                            for k, v in venue_mix.items()
-                        ],
-                        "mode": "jup-smart",
-                        "tip_usd": data.get("tip_usd"),
-                        "quotes": data.get("quotes") or 0,
-                        "priority_median": prio,
-                    },
-                }
-                bc = sol["broadcast"]
-                bc["near_miss_hints"] = hints
-                self.hist["sol_arb_best_net"].append(best if best is not None else 0)
-                self.hist["sol_arb_actionable"].append(actionable)
+                gate, gate_reason = self._sol_submit_gate("arb")
+                for row in live:
+                    row["kind"] = "mev"
+                    row["quote_src"] = row.get("quote_src") or data.get(
+                        "quote_src") or "jupiter"
+                    row["submit"] = gate
+                    row["submit_reason"] = gate_reason
+                    row["plan"] = sols.build_arb_plan(row, prio, pressure)
+                payload = self._commit_sol_arb(data, live, near, ms, floor)
+                qn = (payload.get("meta") or {}).get("quotes") or 0
+                skip = (payload.get("meta") or {}).get("skipped") or 0
+                src = (payload.get("meta") or {}).get("quote_src") or "—"
+                loc = (payload.get("meta") or {}).get("local_n") or 0
+                jn = (payload.get("meta") or {}).get("jup_n") or 0
+                dec = (payload.get("meta") or {}).get("pools_decoded") or 0
                 self.sol_bot(
                     "arb", "ok" if data.get("ok") else "error",
-                    f"live={len(live)} near={len(near)} best={best} "
-                    f"q={data.get('quotes')} {ms}ms",
+                    f"+EV={len(live)} skip={skip} "
+                    f"best={payload['meta'].get('best_net_usd')} "
+                    f"q={qn} local={loc} jup={jn} pools={dec} {ms}ms",
                 )
                 self.log(
                     "sol-arb", "info" if data.get("ok") else "warn",
-                    f"live={len(live)} near={len(near)} best={best} "
-                    f"tip=${data.get('tip_usd')} mids={list(mid_mix.keys())}",
+                    f"MEV +EV={len(live)} skip={skip} "
+                    f"best={payload['meta'].get('best_net_usd')} floor=${floor} "
+                    f"tip=${data.get('tip_usd')} q={qn} src={src} "
+                    f"local={loc} jup={jn} pools={dec}",
                 )
-                # sim-only history when profitable (never submit)
-                if live and self.sol_sim_only:
-                    plan = live[0].get("plan") or {}
-                    bc.setdefault("history", []).insert(0, {
-                        "ts": int(time.time()), "kind": "arb",
-                        "stage": "simulated",
-                        "detail": (
-                            f"jup {live[0].get('path')} net ${live[0].get('net_usd')} "
-                            f"jito_tip={plan.get('jito_tip_lamports', 0)}lam (sim)"
-                        ),
-                        "plan": plan,
-                    })
-                    bc["history"] = bc["history"][:40]
-                    self.refresh_sol_broadcast_ready()
-                elif near and self.sol_sim_only:
-                    # still record a dry-run skip for closest near-miss
-                    bc.setdefault("skipped", []).insert(0, {
-                        "ts": int(time.time()), "kind": "arb",
-                        "stage": "skip",
-                        "why": f"near-miss gap ${near[0].get('gap_usd')} "
-                               f"{near[0].get('path')}",
-                        "plan": near[0].get("plan"),
-                    })
-                    bc["skipped"] = bc["skipped"][:30]
-                    self.refresh_sol_broadcast_ready()
+                fire = next((o for o in live if o.get("actionable")), None)
+                if fire:
+                    self._sol_maybe_submit("arb", fire, fire.get("plan") or {})
             except Exception as e:
+                try:
+                    self._commit_sol_arb(
+                        {"ok": False, "quotes": 0, "skipped": 0,
+                         "universe": sols.arb_universe(),
+                         "quote_src": "raydium-account+orca-account",
+                         "geyser": False},
+                        [], [], 0, MIN_SOL_ARB_USD, error=str(e)[:200],
+                    )
+                except Exception:
+                    sol = self.state.setdefault("sol", {})
+                    arb = sol.setdefault("arb", {})
+                    arb["error"] = str(e)[:200]
+                    arb["last_scan"] = int(time.time())
+                    meta = arb.setdefault("meta", {})
+                    meta["last_scan"] = arb["last_scan"]
+                    meta["quote_src"] = arb.get("quote_src") or meta.get(
+                        "quote_src")
+                    meta["geyser"] = False
                 self.sol_bot("arb", "error", e)
                 self.log("sol-arb", "error", e)
-            await asyncio.sleep(70)
+            await asyncio.sleep(18)
 
     async def sol_intel_loop(self):
         while True:
@@ -2763,8 +3874,10 @@ class Dashboard:
                     "steps": int((sol.get("intel") or {}).get("steps") or 0) + 1,
                     "brain": {
                         "advice": (
-                            f"Solend watch={len(sol.get('watchlist') or [])} · "
-                            f"jup near={len((sol.get('arb') or {}).get('near') or [])}"
+                            f"liq={len(sol.get('opportunities') or [])} "
+                            f"mempool={(sol.get('mempool') or {}).get('meta', {}).get('liq_hits', 0)} "
+                            f"MEV live={len((sol.get('arb') or {}).get('opps') or [])} "
+                            f"near={len((sol.get('arb') or {}).get('near') or [])}"
                         ),
                         "min_liq_mult": 1.0,
                         "min_arb_mult": 1.0,
@@ -2793,8 +3906,10 @@ class Dashboard:
     # ------------------------------------------------------------ server
     async def start_loops(self):
         self._loop = asyncio.get_running_loop()
+        self._eth_hot_kick = asyncio.Event()
         self.refresh_sol_broadcast_ready()
-        coros = (self.mempool_loop(), self.prices_loop(), self.funds_loop(),
+        coros = (self.mempool_loop(), self.eth_hot_loop(), self.prices_loop(),
+                 self.funds_loop(),
                  self.sweep_loop(), self.competitor_loop(), self.arb_loop(),
                  self.intel_loop(),
                  self.sol_net_loop(), self.sol_mempool_loop(),
@@ -2854,9 +3969,19 @@ class Dashboard:
             "eth_price_usd": s.get("eth_price_usd"),
             "watchlist": len(s.get("watchlist") or []),
             "sweep_total": s.get("sweep_total"),
+            "liq": len(s.get("opportunities") or []),
+            "liq_watch": len(s.get("watchlist") or []),
+            "liq_last_scan": (s.get("opportunities_meta") or {}).get("last_scan"),
+            "liq_last_block": (s.get("opportunities_meta") or {}).get("last_block"),
+            "liq_scanned": (s.get("opportunities_meta") or {}).get("scanned"),
+            "competitors_1h": (s.get("competitors_meta") or {}).get("count_1h"),
+            "competitors_total": len(s.get("competitors") or []),
+            "comp_last_block": (s.get("competitors_meta") or {}).get("last_block"),
+            "comp_last_scan": (s.get("competitors_meta") or {}).get("last_scan"),
             "mempool_count": (s.get("mempool") or {}).get("count"),
             "arb_live": len((s.get("arb") or {}).get("opps") or []),
             "arb_near": len((s.get("arb") or {}).get("near") or []),
+            "arb_skipped": ((s.get("arb") or {}).get("meta") or {}).get("skipped"),
             "intel_records": (s.get("intel") or {}).get("records"),
             "bots": fresh,
             "rpc_pool": list(_RPC_POOL),
@@ -2875,6 +4000,21 @@ class Dashboard:
             body = {}
         chain = (body.get("chain") or "eth").lower()
         if chain == "sol":
+            if body.get("refresh_funds"):
+                try:
+                    funds = await self._run(
+                        sols.fetch_wallet_balances, 20, sols.current_wallets())
+                    if funds:
+                        self.state["sol"]["funds"] = funds
+                        self.state["sol"]["fund_guide"] = sols.fund_guide()
+                    return aiohttp.web.json_response({
+                        "ok": True,
+                        "funds": self.state["sol"].get("funds") or {},
+                        "fund_guide": self.state["sol"].get("fund_guide") or {},
+                    })
+                except Exception as e:  # noqa: BLE001
+                    return aiohttp.web.json_response(
+                        {"ok": False, "error": str(e)[:160]}, status=500)
             if "sim_only" in body:
                 self.sol_sim_only = bool(body["sim_only"])
             if "edge_bias" in body:
@@ -2947,6 +4087,18 @@ class Dashboard:
         if cached:
             return aiohttp.web.json_response(cached[1])
         return aiohttp.web.json_response([])
+
+    async def sol_blockhash_api(self, request):
+        """Recent blockhash for the SOL Funds card (browser wallet transfer)."""
+        try:
+            data = await self._run(sols.latest_blockhash, 8)
+            if not data:
+                return aiohttp.web.json_response(
+                    {"ok": False, "error": "timeout"}, status=504)
+            return aiohttp.web.json_response(data)
+        except Exception as e:  # noqa: BLE001
+            return aiohttp.web.json_response(
+                {"ok": False, "error": str(e)[:160]}, status=502)
 
     async def sol_status_api(self, request):
         """Light Solana public-RPC peek + SOLUSDT spot for the SOL tab shell."""
@@ -3022,6 +4174,29 @@ class Dashboard:
             except Exception as e:
                 out["error"] = f"rpc:{type(e).__name__}"
                 continue
+        # Arb envelope on this endpoint too — UI must bind even if WS lags.
+        arb = ((self.state.get("sol") or {}).get("arb") or {})
+        meta = arb.get("meta") or {}
+        out["arb"] = {
+            "opps": arb.get("opps") or [],
+            "near": arb.get("near") or [],
+            "stats": arb.get("stats") or {},
+            "error": arb.get("error"),
+            "last_scan": arb.get("last_scan") or meta.get("last_scan"),
+            "universe": arb.get("universe") or {},
+            "meta": meta,
+            "live": meta.get("live") or 0,
+            "quotes": meta.get("quotes") or 0,
+            "quoted": meta.get("quoted") or meta.get("quotes") or 0,
+            "skipped": meta.get("skipped") or 0,
+            "quote_src": meta.get("quote_src") or "",
+            "quote_src_mix": meta.get("quote_src_mix") or {},
+            "local_n": meta.get("local_n") or 0,
+            "jup_n": meta.get("jup_n") or 0,
+            "pools_decoded": meta.get("pools_decoded") or 0,
+            "submit_gate": meta.get("submit_gate") or "blocked",
+            "sample_route": meta.get("sample_route"),
+        }
         return aiohttp.web.json_response(out)
 
     async def ticker(self):
@@ -3065,6 +4240,7 @@ def main():
     app.router.add_post("/api/control", dash.control_api)
     app.router.add_get("/api/klines", dash.klines_api)
     app.router.add_get("/api/sol/status", dash.sol_status_api)
+    app.router.add_get("/api/sol/blockhash", dash.sol_blockhash_api)
     app.router.add_get("/ws", dash.ws_handler)
 
     async def startup(app_):
