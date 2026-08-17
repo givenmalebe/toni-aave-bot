@@ -1254,7 +1254,8 @@
     if (st) {
       st.innerHTML =
         `<span>sim <b>${bc.sim_only ? "ON" : "off"}</b></span>` +
-        `<span>armed <b>${bc.armed ? "LIVE" : "no"}</b></span>` +
+        `<span>keep live <b>${bc.keep_live ? "ON" : "off"}</b></span>` +
+        `<span>armed <b>${bc.arm_note || (bc.armed ? "LIVE" : "no")}</b></span>` +
         `<span>liq hist <b>${fmt.num(sum.n_liq, 0)}</b></span>` +
         `<span>MEV hist <b>${fmt.num(sum.n_mev, 0)}</b></span>` +
         (bc.liq_contract ? `<span>liq <b>${String(bc.liq_contract).slice(0, 10)}…</b></span>` : `<span>liq <b>unset</b></span>`) +
@@ -1264,21 +1265,27 @@
     if (pills) {
       pills.innerHTML =
         `<span class="bc-pill ${bc.sim_only ? "on" : ""}">sim ${bc.sim_only ? "ON" : "off"}</span>` +
-        `<span class="bc-pill ${bc.armed ? "live" : ""}">armed ${bc.armed ? "LIVE" : "no"}</span>` +
+        `<span class="bc-pill ${bc.keep_live ? "keep" : ""}">keep live ${bc.keep_live ? "auto-renew" : "off"}</span>` +
+        `<span class="bc-pill ${bc.armed ? "live" : ""}">${bc.arm_note || (bc.armed ? "armed LIVE" : "not armed")}</span>` +
         `<span class="bc-pill ${bc.edge_bias ? "on" : ""}">edge ${bc.edge_bias ? "on" : "off"}</span>` +
         `<span class="bc-pill ${ready.liq ? "on" : "warn"}">liq ${ready.liq ? "ready" : "blocked"}</span>` +
         `<span class="bc-pill ${ready.arb ? "on" : "warn"}">MEV ${ready.arb ? "ready" : "blocked"}</span>`;
     }
     const btnSim = $("sol-btn-sim");
+    const btnKeep = $("sol-btn-keep-live");
     const btnArm = $("sol-btn-arm");
     const btnEdge = $("sol-btn-edge");
     if (btnSim) {
       btnSim.classList.toggle("on-sim", !!bc.sim_only);
       btnSim.textContent = bc.sim_only ? "Sim ON" : "Sim-only";
     }
+    if (btnKeep) {
+      btnKeep.classList.toggle("on-keep", !!bc.keep_live);
+      btnKeep.textContent = bc.keep_live ? "Keep Live ON" : "Keep Live";
+    }
     if (btnArm) {
       btnArm.classList.toggle("on-arm", !!bc.armed);
-      btnArm.textContent = bc.armed ? "Disarm LIVE" : "Arm LIVE 15m";
+      btnArm.textContent = bc.armed ? "Disarm LIVE" : "Arm LIVE";
     }
     if (btnEdge) {
       btnEdge.classList.toggle("on-edge", !!bc.edge_bias);
@@ -1671,7 +1678,8 @@
     if (mode) {
       mode.innerHTML =
         `<span class="bt-pill ${sim ? "sim" : "idle"}">sim ${sim ? "ON" : "off"}</span>` +
-        `<span class="bt-pill ${armed ? "live" : "idle"}">armed ${armed ? "LIVE" : "no"}</span>` +
+        `<span class="bt-pill ${bc.keep_live ? "live" : "idle"}">keep live ${bc.keep_live ? "ON" : "off"}</span>` +
+        `<span class="bt-pill ${armed ? "live" : "idle"}">${bc.arm_note || (armed ? "armed LIVE" : "not armed")}</span>` +
         `<span class="bt-pill ${gates ? "ready" : "blocked"}">${gates ? "gates clear" : "gates blocked"}</span>`;
     }
 
@@ -1995,9 +2003,29 @@
   };
 
   let opFilter = "all";
+  let opProto = "all";
   let opCache = [];
   let opLastMeta = {};
   const OP_PAIR_COLORS = ["#22c55e", "#22d3ee", "#f59e0b", "#a78bfa", "#ef4444", "#3b82f6", "#ec4899", "#14b8a6"];
+
+  const protoId = (o) => {
+    const p = String((o && (o.protocol_id || o.protocol)) || "").toLowerCase();
+    if (!p || p === "v3" || p === "v4" || p === "aave") return "aave";
+    if (p.indexOf("spark") >= 0) return "spark";
+    if (p.indexOf("compound") >= 0 || p === "comet") return "compound";
+    if (p.indexOf("morpho") >= 0) return "morpho";
+    return p;
+  };
+  const protoLabel = (o) => {
+    const map = { aave: "Aave", spark: "Spark", compound: "Compound", morpho: "Morpho" };
+    const lab = String((o && (o.protocol_label || o.protocol)) || "");
+    if (lab && !["v3", "v4", "aave"].includes(lab.toLowerCase())) return lab;
+    return map[protoId(o)] || lab || protoId(o);
+  };
+  const protoPill = (o) => {
+    const id = protoId(o);
+    return `<span class="pill proto proto-${id}">${protoLabel(o)}</span>`;
+  };
 
   const oppHf = (o) => {
     const n = Number(o && o.hf);
@@ -2017,7 +2045,11 @@
       bits.push(`<span class="pill warn" title="mempool or recent competitor">race</span>`);
     if (o.recent_competitor) bits.push(`<span class="pill">comp</span>`);
     if (o.edge) bits.push(`<span class="pill accent">${o.edge}</span>`);
-    if (o.protocol) bits.push(`<span class="pill">${o.protocol}</span>`);
+    if (o.flash_fee_bps != null && Number(o.flash_fee_bps) > 0)
+      bits.push(`<span class="pill" title="${o.flash_note || "Aave V3 flashLoan"}">${fmt.num(o.flash_fee_bps, 0)} bps flash</span>`);
+    if (o.submit === "blocked" && o.live_block_reason)
+      bits.push(`<span class="pill blocked" title="${o.live_block_reason}">venue</span>`);
+    if (o.leftover) bits.push(`<span class="pill" title="${o.leftover}">leftover</span>`);
     const user = o.user || "";
     if (user) {
       bits.push(`<a class="op-link" href="https://etherscan.io/address/${user}" target="_blank" rel="noopener">↗</a>`);
@@ -2027,8 +2059,10 @@
   };
 
   const renderOppsFeed = () => {
-    const rows = opFilter === "all" ? opCache : opCache.filter((o) => {
+    const rows = opCache.filter((o) => {
+      if (opProto !== "all" && protoId(o) !== opProto) return false;
       const hf = oppHf(o);
+      if (opFilter === "all") return true;
       if (opFilter === "edge") return !!o.edge;
       if (opFilter === "profit") return Number(o.net_usd != null ? o.net_usd : o.profit_usd) > 0;
       if (opFilter === "race") return !!(o.race || o.contested || o.recent_competitor);
@@ -2037,7 +2071,7 @@
       return true;
     });
     const note = $("op-feed-note");
-    if (note) note.textContent = `${rows.length}/${opCache.length} · HF<1 · skip dust`;
+    if (note) note.textContent = `${rows.length}/${opCache.length} · multi-protocol · skip dust`;
     const empty = $("opps-empty");
     const body = $("opps-table") && $("opps-table").querySelector("tbody");
     if (!body) return;
@@ -2054,14 +2088,15 @@
         } else if (m.last_scan) {
           empty.classList.remove("err");
           const skipped = m.skipped_n != null ? m.skipped_n : "";
-          empty.textContent = `no HF<1 +EV this scan · ${fmt.num(m.scanned || 0, 0)} users`
+          empty.textContent = `no HF<1 +EV this multi-protocol scan · ${fmt.num(m.scanned || 0, 0)} users`
             + (m.n_logs != null ? ` · ${fmt.num(m.n_logs, 0)} logs` : "")
             + (skipped !== "" ? ` · skip ${fmt.num(skipped, 0)}` : "")
             + (m.last_block ? ` · blk ${m.last_block}` : "")
-            + (m.last_scan ? ` · ${fmt.age(m.last_scan)} ago` : "");
+            + (m.last_scan ? ` · ${fmt.age(m.last_scan)} ago` : "")
+            + (opProto !== "all" ? ` · filter ${opProto}` : "");
         } else {
           empty.classList.remove("err");
-          empty.textContent = "scanning Aave V3 Pool / V4 spoke for HF<1…";
+          empty.textContent = "scanning Aave · Spark · Compound · Morpho for HF<1…";
         }
       }
     }
@@ -2076,6 +2111,7 @@
       const net = o.net_usd != null ? o.net_usd : o.profit_usd;
       const netColor = net == null ? "var(--dim)" : net > 0 ? "var(--green)" : "var(--red)";
       return `<tr>
+        <td>${protoPill(o)}</td>
         <td class="mono copy" data-addr="${user}" title="${user}">${short}</td>
         <td class="${hfClass(hf)}">${hfCell}</td>
         <td><b>${pair}</b>${sizes}</td>
@@ -2110,6 +2146,16 @@
       if (!btn) return;
       opFilter = btn.dataset.f || "all";
       opFilters.querySelectorAll(".op-f").forEach((b) => b.classList.toggle("on", b === btn));
+      renderOppsFeed();
+    });
+  }
+  const opProtoFilters = $("op-proto-filters");
+  if (opProtoFilters) {
+    opProtoFilters.addEventListener("click", (e) => {
+      const btn = e.target.closest(".op-f");
+      if (!btn) return;
+      opProto = btn.dataset.proto || "all";
+      opProtoFilters.querySelectorAll(".op-f").forEach((b) => b.classList.toggle("on", b === btn));
       renderOppsFeed();
     });
   }
@@ -2177,6 +2223,9 @@
         (m.n_logs != null ? `<span>logs <b>${fmt.num(m.n_logs, 0)}</b></span>` : "") +
         (sweepBot.status ? `<span>sweep <b>${sweepBot.status}</b></span>` : "") +
         `<span>gate <b>${gate}</b></span>` +
+        (m.flash_fee_bps != null ? `<span>flash <b>${fmt.num(m.flash_fee_bps, 0)} bps ${m.flash_fee_src || "aave-v3"}</b></span>` : "") +
+        (m.protocol_mix && m.protocol_mix.length
+          ? `<span>venues <b>${m.protocol_mix.map((p) => `${p.id}×${p.n}`).join(" · ")}</b></span>` : "") +
         (m.last_block ? `<span>blk <b>${m.last_block}</b></span>` : "") +
         (m.last_scan ? `<span>${fmt.age(m.last_scan)} ago</span>` : "") +
         (m.avg_hf != null ? `<span>avg HF <b>${Number(m.avg_hf).toFixed(3)}</b></span>` : "");
@@ -2215,6 +2264,20 @@
         : `<span class="dim">no liquidatable pairs</span>`;
     }
 
+    const leftoverEl = $("op-leftover");
+    if (leftoverEl) {
+      if (m.leftovers && m.leftovers.length) {
+        leftoverEl.style.display = "";
+        const bits = m.leftovers.slice(0, 4);
+        leftoverEl.textContent = bits.some((t) => /KIND\(\)|DEPLOY\.md|GenericFlashLiquidator/i.test(String(t)))
+          ? bits.join(" · ")
+          : "leftover · " + bits.join(" · ");
+      } else {
+        leftoverEl.style.display = "none";
+        leftoverEl.textContent = "";
+      }
+    }
+
     renderOppsFeed();
 
     const watchNote = $("watch-note");
@@ -2232,22 +2295,26 @@
         const user = w.user || "";
         const short = user ? `${user.slice(0, 10)}…` : "--";
         return `<tr>
+          <td>${protoPill(w)}</td>
           <td class="mono copy" data-addr="${user}" title="click to copy">${short}</td>
           <td class="${hfClass(hf)}">${hfCell}</td>
           <td>${fmt.usd(collUsd)}</td>
           <td>${fmt.usd(debtUsd)}</td>
           <td><span class="op-urg ${urg.cls}">${urg.label}</span></td>
         </tr>`;
-      }).join("") || `<tr><td colspan="5" class="dim">--</td></tr>`;
+      }).join("") || `<tr><td colspan="6" class="dim">--</td></tr>`;
     }
   };
 
   let cpFilter = "all";
+  let cpProto = "all";
   let cpCache = [];
   let cpLastMeta = {};
 
   const renderCompFeed = () => {
-    const rows = cpFilter === "all" ? cpCache : cpCache.filter((c) => {
+    const rows = cpCache.filter((c) => {
+      if (cpProto !== "all" && protoId(c) !== cpProto) return false;
+      if (cpFilter === "all") return true;
       if (cpFilter === "miss") return !!c.missed_by_us;
       if (cpFilter === "edge") return !!c.edge;
       if (cpFilter === "profit") return (c.net_est_usd != null ? c.net_est_usd : c.est_profit_usd) > 0;
@@ -2272,14 +2339,15 @@
         } else if (m.last_scan || m.last_block) {
           empty.classList.remove("err");
           const from = m.from_block, to = m.to_block || m.last_block;
-          empty.textContent = `no Aave liquidations this window`
+          empty.textContent = `no liquidations this window (Aave · Spark · Compound · Morpho)`
             + (from && to ? ` · blk ${from}→${to}` : (m.last_block ? ` · blk ${m.last_block}` : ""))
             + (m.window ? ` · ${fmt.num(m.window, 0)} blocks` : "")
             + (m.n_logs != null ? ` · ${fmt.num(m.n_logs, 0)} logs` : "")
-            + (m.last_scan ? ` · ${fmt.age(m.last_scan)} ago` : "");
+            + (m.last_scan ? ` · ${fmt.age(m.last_scan)} ago` : "")
+            + (cpProto !== "all" ? ` · filter ${cpProto}` : "");
         } else {
           empty.classList.remove("err");
-          empty.textContent = "scanning Aave V3 LiquidationCall logs…";
+          empty.textContent = "scanning Aave · Spark · Compound · Morpho liquidation logs…";
         }
       }
     }
@@ -2292,7 +2360,6 @@
       const net = c.net_est_usd;
       const netColor = net == null ? "var(--dim)" : net >= 0 ? "var(--green)" : "var(--red)";
       const flags = [];
-      if (c.protocol) flags.push(`<span class="pill">${c.protocol}</span>`);
       if (c.missed_by_us) flags.push(`<span class="cp-flag miss">miss</span>`);
       if (c.edge) flags.push(`<span class="cp-flag edge">edge</span>`);
       if (c.status === 0) flags.push(`<span class="cp-flag revert">revert</span>`);
@@ -2302,6 +2369,7 @@
         : `<span class="dim">--</span>`;
       return `<tr>
         <td class="dim" title="blk ${c.block || "?"}">${fmt.age(c.ts)}</td>
+        <td>${protoPill(c)}</td>
         <td><b>${pair}</b></td>
         <td class="mono copy" data-addr="${searcher}" title="${searcher}">${sShort}</td>
         <td class="mono copy dim" data-addr="${user}" title="${user}">${uShort}</td>
@@ -2321,6 +2389,16 @@
       if (!btn) return;
       cpFilter = btn.dataset.f || "all";
       cpFilters.querySelectorAll(".cp-f").forEach((b) => b.classList.toggle("on", b === btn));
+      renderCompFeed();
+    });
+  }
+  const cpProtoFilters = $("cp-proto-filters");
+  if (cpProtoFilters) {
+    cpProtoFilters.addEventListener("click", (e) => {
+      const btn = e.target.closest(".op-f");
+      if (!btn) return;
+      cpProto = btn.dataset.proto || "all";
+      cpProtoFilters.querySelectorAll(".op-f").forEach((b) => b.classList.toggle("on", b === btn));
       renderCompFeed();
     });
   }
@@ -2889,7 +2967,10 @@
     let label = sum.label;
     if (!pressure) {
       if (!bc.enabled) { pressure = "idle"; label = label || "off"; }
-      else if (bc.armed && (ready.liq || ready.arb)) { pressure = "hot"; label = label || "armed live"; }
+      else if (bc.armed && (ready.liq || ready.arb)) {
+        pressure = "hot";
+        label = label || (bc.keep_live ? "armed · auto-renew" : "armed live");
+      }
       else if (bc.armed) { pressure = "elevated"; label = label || "armed · blocked"; }
       else if (bc.sim_only && (ready.liq || ready.arb)) { pressure = "quiet"; label = label || "sim ready"; }
       else if (bc.sim_only) { pressure = "busy"; label = label || "sim · blocked"; }
@@ -2924,27 +3005,35 @@
       (bc.brain_advice ? `<span>brain <b style="color:var(--cyan)">${bc.brain_advice}</b></span>` : "") +
       `<span>sponsor <b>${fmt.num(bc.sponsor_target_eth, 3)} ETH</b></span>` +
       (bc.liq_contract ? `<span>liq <b>${bc.liq_contract.slice(0, 10)}…</b></span>` : "") +
-      (bc.arb_contract ? `<span>arb <b>${bc.arb_contract.slice(0, 10)}…</b></span>` : "");
+      (bc.arb_contract ? `<span>arb <b>${bc.arb_contract.slice(0, 10)}…</b></span>` : "") +
+      `<span>keep live <b>${bc.keep_live ? "ON" : "off"}</b></span>` +
+      `<span>${bc.arm_note || (bc.armed ? "armed" : "not armed")}</span>`;
 
     const pills = $("bc-mode-pills");
     if (pills) {
       pills.innerHTML =
         `<span class="bc-pill ${bc.sim_only ? "on" : ""}">sim ${bc.sim_only ? "ON" : "off"}</span>` +
-        `<span class="bc-pill ${bc.armed ? "live" : ""}">armed ${bc.armed ? "LIVE" : "no"}</span>` +
+        `<span class="bc-pill ${bc.keep_live ? "keep" : ""}">keep live ${bc.keep_live ? "auto-renew" : "off"}</span>` +
+        `<span class="bc-pill ${bc.armed ? "live" : ""}">${bc.arm_note || (bc.armed ? "armed LIVE" : "not armed")}</span>` +
         `<span class="bc-pill ${bc.edge_bias ? "on" : ""}">edge ${bc.edge_bias ? "on" : "off"}</span>` +
         `<span class="bc-pill ${ready.liq && ready.arb ? "ok" : "warn"}">${ready.liq && ready.arb ? "gates clear" : "gates blocked"}</span>`;
     }
 
     const btnSim = $("btn-sim");
+    const btnKeep = $("btn-keep-live");
     const btnArm = $("btn-arm");
     const btnEdge = $("btn-edge");
     if (btnSim) {
       btnSim.classList.toggle("on-sim", !!bc.sim_only);
       btnSim.textContent = bc.sim_only ? "Sim ON" : "Sim-only";
     }
+    if (btnKeep) {
+      btnKeep.classList.toggle("on-keep", !!bc.keep_live);
+      btnKeep.textContent = bc.keep_live ? "Keep Live ON" : "Keep Live";
+    }
     if (btnArm) {
       btnArm.classList.toggle("on-arm", !!bc.armed);
-      btnArm.textContent = bc.armed ? "Disarm LIVE" : "Arm LIVE 15m";
+      btnArm.textContent = bc.armed ? "Disarm LIVE" : "Arm LIVE";
     }
     if (btnEdge) {
       btnEdge.classList.toggle("on-edge", !!bc.edge_bias);
@@ -3451,7 +3540,7 @@
   const TAB_KEY = "toni-chain-tab";
   const CHAIN_TABS = ["eth", "sol"];
   const TAB_HINT = {
-    eth: "Ethereum workspace · Aave V4 + MEV",
+    eth: "Ethereum workspace · multi-protocol lending + Aave flash",
     sol: "Solana workspace · Solend liq + Jupiter arb",
   };
   let activeTab = "eth";
@@ -4728,16 +4817,21 @@
   setInterval(tickSast, 1000);
 
   const btnSim = $("btn-sim");
+  const btnKeep = $("btn-keep-live");
   const btnArm = $("btn-arm");
   const btnEdge = $("btn-edge");
   if (btnSim) btnSim.addEventListener("click", async () => {
     const cur = window.__lastBcast || {};
     await postControl({sim_only: !cur.sim_only});
   });
+  if (btnKeep) btnKeep.addEventListener("click", async () => {
+    const cur = window.__lastBcast || {};
+    await postControl({keep_live: !cur.keep_live});
+  });
   if (btnArm) btnArm.addEventListener("click", async () => {
     const cur = window.__lastBcast || {};
     if (cur.armed) await postControl({armed: false});
-    else await postControl({armed: true, sim_only: false, arm_minutes: 15});
+    else await postControl({armed: true, sim_only: false, keep_live: true});
   });
   if (btnEdge) btnEdge.addEventListener("click", async () => {
     const cur = window.__lastBcast || {};
@@ -4745,16 +4839,21 @@
   });
 
   const solBtnSim = $("sol-btn-sim");
+  const solBtnKeep = $("sol-btn-keep-live");
   const solBtnArm = $("sol-btn-arm");
   const solBtnEdge = $("sol-btn-edge");
   if (solBtnSim) solBtnSim.addEventListener("click", async () => {
     const cur = window.__lastSolBcast || {};
     await postSolControl({sim_only: !cur.sim_only});
   });
+  if (solBtnKeep) solBtnKeep.addEventListener("click", async () => {
+    const cur = window.__lastSolBcast || {};
+    await postSolControl({keep_live: !cur.keep_live});
+  });
   if (solBtnArm) solBtnArm.addEventListener("click", async () => {
     const cur = window.__lastSolBcast || {};
     if (cur.armed) await postSolControl({armed: false});
-    else await postSolControl({armed: true, sim_only: false, arm_minutes: 15});
+    else await postSolControl({armed: true, sim_only: false, keep_live: true});
   });
   if (solBtnEdge) solBtnEdge.addEventListener("click", async () => {
     const cur = window.__lastSolBcast || {};

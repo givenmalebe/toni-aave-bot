@@ -5,7 +5,7 @@ Streams everything to a WebSocket frontend:
   - mempool (pending txs, decoded Aave V4 Spoke calls, watch addrs)
   - funds (funder / sponsor / BOT EOA ETH + USDC + USDT + WETH balances)
   - Aave oracle reserve prices + ETH price + gas
-  - liquidatable opportunities (HF sweep + flash-liquidation plans)
+  - liquidatable opportunities (multi-protocol HF sweep + Aave flash plans)
   - competitor liquidations in confirmed blocks (with our-model profit estimate)
   - DEX arb round-trip scan (mev_bot)
   - intel / learning (readiness, hour/dow stats, dataset size)
@@ -71,7 +71,35 @@ def _rpc_requests(url, method, params, timeout=10, retries=2):
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_dotenv(path):
+    """Load KEY=VALUE from .env without overriding a real process env. No secrets logged."""
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            raw = f.read()
+    except OSError:
+        return
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        if s.lower().startswith("export "):
+            s = s[7:].strip()
+        k, _, v = s.partition("=")
+        k, v = k.strip(), v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]
+        if k and k not in os.environ:
+            os.environ[k] = v
+
+
+_load_dotenv(os.path.join(HERE, ".env"))
+
 LQ = os.path.join(os.path.dirname(HERE), "aave-v4-liquidation-bot")
+sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "aave-v4-monitor"))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "defi-arb"))
 sys.path.insert(0, LQ)
@@ -90,12 +118,13 @@ import mev_bot  # noqa: E402
 import profit_engine as pe  # noqa: E402
 import profit_brain as brain  # noqa: E402
 import sol_scanner as sols  # noqa: E402
+import eth_lending as elend  # noqa: E402
 # Route every RPC through the fast requests transport (see _rpc_requests).
 avm.rpc = _rpc_requests
 lb.rpc = _rpc_requests
 mev_bot.rpc = _rpc_requests
 
-# Live broadcast knobs. Prefer env, else contracts.json baked by deploy_both_mainnet.sh.
+# Live broadcast knobs. Prefer env, else gitignored contracts.json.
 _CONTRACTS_JSON = os.path.join(HERE, "contracts.json")
 _BAKED = {}
 if os.path.exists(_CONTRACTS_JSON):
@@ -105,10 +134,28 @@ if os.path.exists(_CONTRACTS_JSON):
             _BAKED = _json.load(_f) or {}
     except Exception:
         _BAKED = {}
+for _k in ("LIQ_CONTRACT", "LIQ_GENERIC_CONTRACT", "ARB_CONTRACT",
+           "ARB_FLASH_KIND", "SOL_LIQ_PROGRAM", "SOL_ARB_PROGRAM"):
+    _v = _BAKED.get(_k)
+    if _v and not (os.environ.get(_k) or "").strip():
+        os.environ[_k] = str(_v).strip()
+GENERIC_LIQ = (
+    os.environ.get("LIQ_GENERIC_CONTRACT")
+    or _BAKED.get("LIQ_GENERIC_CONTRACT", "")
+    or ""
+)
 if os.environ.get("LIQ_CONTRACT"):
     ml.CONTRACT = os.environ["LIQ_CONTRACT"]
 elif _BAKED.get("LIQ_CONTRACT"):
     ml.CONTRACT = _BAKED["LIQ_CONTRACT"]
+elif GENERIC_LIQ:
+    ml.CONTRACT = GENERIC_LIQ
+    os.environ.setdefault("LIQ_CONTRACT", GENERIC_LIQ)
+if GENERIC_LIQ:
+    os.environ.setdefault("LIQ_GENERIC_CONTRACT", GENERIC_LIQ)
+_baked_kind = (os.environ.get("ARB_FLASH_KIND") or "").strip().lower()
+if _baked_kind:
+    mev_bot.ARB_FLASH_KIND = _baked_kind
 ARB_CONTRACT = os.environ.get("ARB_CONTRACT") or _BAKED.get("ARB_CONTRACT", "")
 SOL_LIQ_PROGRAM = os.environ.get("SOL_LIQ_PROGRAM") or _BAKED.get("SOL_LIQ_PROGRAM", "")
 SOL_ARB_PROGRAM = os.environ.get("SOL_ARB_PROGRAM") or _BAKED.get("SOL_ARB_PROGRAM", "")
@@ -122,6 +169,31 @@ EDGE_BIAS = os.environ.get("EDGE_BIAS", "1") != "0"
 SIM_ONLY_DEFAULT = os.environ.get("SIM_ONLY", "1") != "0"
 COLD_WALLET = os.environ.get("COLD_WALLET", "")  # optional profit sweep destination
 SOL_SIM_ONLY_DEFAULT = os.environ.get("SOL_SIM_ONLY", "1") != "0"
+ARM_MINUTES_DEFAULT = int(os.environ.get("ARM_MINUTES", "15") or 15)
+_PREFS_PATH = os.path.join(HERE, "broadcast_prefs.json")
+
+
+def _load_broadcast_prefs() -> dict:
+    """Runtime Keep Live flags. No secrets. Gitignored."""
+    if not os.path.isfile(_PREFS_PATH):
+        return {}
+    try:
+        with open(_PREFS_PATH, encoding="utf-8") as f:
+            data = json.load(f) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_broadcast_prefs(keep_live: bool, sol_keep_live: bool) -> None:
+    try:
+        with open(_PREFS_PATH, "w", encoding="utf-8") as f:
+            json.dump({
+                "keep_live": bool(keep_live),
+                "sol_keep_live": bool(sol_keep_live),
+            }, f)
+    except OSError:
+        pass
 
 # AAVE_RPC env var collapses lb.RPC_CALL to a single endpoint; force the full
 # healthy pool so one rate-limited node never blanks a whole loop cycle.
@@ -235,6 +307,11 @@ _MP_LABELS = {
     "0xba12222222228d8ba445958a75a0704d566bf2c8": ("Balancer", "router"),
     "0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f": ("Sushi Router", "router"),
     "0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2": ("Aave V3 Pool", "lending"),
+    "0xc13e21b648a5ee794902342038ff3adab66be987": ("Spark Lend", "lending"),
+    "0xc3d688b66703497daa19211eedff47f25384cdc3": ("Compound cUSDCv3", "lending"),
+    "0xa17581a9e3356d9a858b789d68b4d866e593ae94": ("Compound cWETHv3", "lending"),
+    "0x3afdc9bca9213a35503b077a6072f3d0d5ab0840": ("Compound cUSDTv3", "lending"),
+    "0xbbbbbbbbbb9cc5e90e3b3af64bdaf62c37eeffcb": ("Morpho Blue", "lending"),
     lb.SPOKE.lower(): ("Aave V4 Spoke", "lending"),
 }
 
@@ -423,6 +500,8 @@ class Dashboard:
                 "last_scan": None, "last_block": None,
                 "scanned": 0, "skipped": {}, "submit_gate": "blocked",
                 "from_block": None, "to_block": None, "n_logs": 0,
+                "protocols": ["aave", "spark", "compound", "morpho"],
+                "leftovers": [], "flash_fee_bps": 9, "flash_fee_src": "aave-v3",
             },
             "competitors": [],
             "competitors_meta": {
@@ -435,7 +514,7 @@ class Dashboard:
                 "last_block": None, "last_scan": None,
                 "from_block": None, "to_block": None, "n_logs": 0,
                 "window": 0, "v3_pool": True, "errors": [],
-                "total": 0,
+                "total": 0, "protocols": ["aave", "spark", "compound", "morpho"],
             },
             "arb": {
                 "opps": [], "near": [], "stats": {}, "error": None,
@@ -465,9 +544,11 @@ class Dashboard:
             "broadcast": {
                 "enabled": True,
                 "armed": False,          # must arm for real eth_sendBundle / cast send
+                "keep_live": False,
                 "sim_only": SIM_ONLY_DEFAULT,
                 "edge_bias": EDGE_BIAS,
                 "liq_contract": ml.CONTRACT or "",
+                "liq_generic": GENERIC_LIQ or "",
                 "arb_contract": ARB_CONTRACT,
                 "min_liq_profit_usd": MIN_LIQ_PROFIT_USD,
                 "min_arb_profit_usd": MIN_ARB_PROFIT_USD,
@@ -525,11 +606,12 @@ class Dashboard:
         self._uni = None
         self._spokes = {lb.SPOKE.lower()}
         self._spokes_fut = None
-        self._liq_alerted = {}  # user -> block of last submit attempt
-        self._liq_landed = {}  # user -> block of last landed/sent submit
-        self._flash_plans = {}  # user -> {block, plan, ts}
+        self._liq_alerted = {}  # plan-key -> block of last submit attempt
+        self._liq_landed = {}  # plan-key -> block of last landed/sent submit
+        self._flash_plans = {}  # plan-key -> {block, plan, ts}
         self._liq_fire_lock = threading.Lock()
         self._liq_inflight = set()
+        self._generic_liq_cached = None  # (ts, addr, ok)
         self._pending_aave_users = set()
         self._pending_aave_ok = False
         self._pending_swaps = []
@@ -540,14 +622,23 @@ class Dashboard:
         self._comp_last_scanned = 0
         self.broadcast_enabled = True
         self.armed = False
+        self.keep_live = False
         self.sim_only = SIM_ONLY_DEFAULT
         self.edge_bias = EDGE_BIAS
         self._price_moved = False
         self._arb_quoted_block = None
         self._contested = set()
         self.sol_armed = False
+        self.sol_keep_live = False
         self.sol_sim_only = SOL_SIM_ONLY_DEFAULT
         self.sol_edge_bias = True
+        self._eth_arm_gen = 0
+        self._sol_arm_gen = 0
+        self._eth_disarm_task = None
+        self._sol_disarm_task = None
+        self._arm_until = None
+        self._sol_arm_until = None
+        self._restore_keep_live()
 
     @staticmethod
     def _sol_funds_seed() -> tuple:
@@ -668,6 +759,7 @@ class Dashboard:
             "broadcast": {
                 "enabled": True,
                 "armed": False,
+                "keep_live": False,
                 "sim_only": SOL_SIM_ONLY_DEFAULT,
                 "edge_bias": True,
                 "liq_contract": SOL_LIQ_PROGRAM,
@@ -752,6 +844,151 @@ class Dashboard:
         b["last"] = int(time.time())
         b["msg"] = str(msg)[:200]
 
+    def _eth_keep_live_ready(self):
+        """True when a keystore (or sponsor) is configured — not a fresh clone."""
+        ks = getattr(lb, "KEYSTORE_PATH", "") or ""
+        sp = getattr(ll, "SPONSOR_KEYSTORE", "") or ""
+        pw = bool(getattr(lb, "KEYSTORE_PW", "") or getattr(ll, "SPONSOR_PW", ""))
+        has_file = (ks and os.path.isfile(ks)) or (sp and os.path.isfile(sp))
+        return bool(pw and has_file)
+
+    def _sol_keep_live_ready(self):
+        env = os.environ.get("SOL_KEYPAIR") or ""
+        path = getattr(sols, "BOT_KEY_PATH", "") or ""
+        return bool((env and os.path.isfile(env)) or (path and os.path.isfile(path)))
+
+    def _restore_keep_live(self):
+        prefs = _load_broadcast_prefs()
+        if prefs.get("keep_live"):
+            self.keep_live = True
+            if self._eth_keep_live_ready():
+                self.sim_only = False
+                self.armed = True
+                self._arm_until = None
+        if prefs.get("sol_keep_live"):
+            self.sol_keep_live = True
+            if self._sol_keep_live_ready():
+                self.sol_sim_only = False
+                self.sol_armed = True
+                self._sol_arm_until = None
+
+    def _persist_keep_live(self):
+        _save_broadcast_prefs(self.keep_live, self.sol_keep_live)
+
+    def _cancel_eth_disarm(self):
+        self._eth_arm_gen += 1
+        t = self._eth_disarm_task
+        self._eth_disarm_task = None
+        if t is not None:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+
+    def _cancel_sol_disarm(self):
+        self._sol_arm_gen += 1
+        t = self._sol_disarm_task
+        self._sol_disarm_task = None
+        if t is not None:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+
+    def _schedule_eth_disarm(self, mins):
+        self._cancel_eth_disarm()
+        if self.keep_live or int(mins or 0) <= 0:
+            self._arm_until = None
+            return
+        gen = self._eth_arm_gen
+        self._arm_until = time.time() + int(mins) * 60
+
+        async def _disarm():
+            try:
+                await asyncio.sleep(int(mins) * 60)
+            except asyncio.CancelledError:
+                return
+            if gen != self._eth_arm_gen or self.keep_live:
+                return
+            self.armed = False
+            self._arm_until = None
+            self.log("broadcast", "warn", f"auto-disarmed after {mins}m")
+            self.refresh_broadcast_ready()
+
+        try:
+            self._eth_disarm_task = asyncio.get_running_loop().create_task(_disarm())
+        except RuntimeError:
+            self._eth_disarm_task = None
+
+    def _schedule_sol_disarm(self, mins):
+        self._cancel_sol_disarm()
+        if self.sol_keep_live or int(mins or 0) <= 0:
+            self._sol_arm_until = None
+            return
+        gen = self._sol_arm_gen
+        self._sol_arm_until = time.time() + int(mins) * 60
+
+        async def _disarm():
+            try:
+                await asyncio.sleep(int(mins) * 60)
+            except asyncio.CancelledError:
+                return
+            if gen != self._sol_arm_gen or self.sol_keep_live:
+                return
+            self.sol_armed = False
+            self._sol_arm_until = None
+            self.log("sol-broadcast", "warn", f"sol auto-disarmed after {mins}m")
+            self.refresh_sol_broadcast_ready()
+
+        try:
+            self._sol_disarm_task = asyncio.get_running_loop().create_task(_disarm())
+        except RuntimeError:
+            self._sol_disarm_task = None
+
+    def _arm_note(self, keep, armed, until):
+        if keep and armed:
+            return "armed · auto-renew"
+        if armed and until:
+            left = int(until - time.time())
+            if left > 0:
+                m, s = divmod(left, 60)
+                return f"armed {m}m{s:02d}s"
+            return "arm expired"
+        if armed:
+            return "armed"
+        return "not armed"
+
+    def _enforce_keep_live(self):
+        """Re-arm if Keep Live is on and keys exist (beats stale 15m timers)."""
+        changed = False
+        if self.keep_live and self._eth_keep_live_ready():
+            if self.sim_only or not self.armed:
+                self.sim_only = False
+                self.armed = True
+                self._cancel_eth_disarm()
+                self._arm_until = None
+                changed = True
+                self.log("broadcast", "ok", "keep-live re-armed")
+        if self.sol_keep_live and self._sol_keep_live_ready():
+            if self.sol_sim_only or not self.sol_armed:
+                self.sol_sim_only = False
+                self.sol_armed = True
+                self._cancel_sol_disarm()
+                self._sol_arm_until = None
+                changed = True
+                self.log("sol-broadcast", "ok", "sol keep-live re-armed")
+        if changed:
+            self.refresh_broadcast_ready()
+            self.refresh_sol_broadcast_ready()
+
+    async def keep_live_loop(self):
+        while True:
+            try:
+                self._enforce_keep_live()
+            except Exception as e:  # noqa: BLE001
+                self.log("broadcast", "info", f"keep-live: {e}")
+            await asyncio.sleep(30)
+
     def refresh_sol_broadcast_ready(self):
         sol = self.state.setdefault("sol", {})
         bc = sol.setdefault("broadcast", {})
@@ -763,10 +1000,12 @@ class Dashboard:
         arb_ok = (not arb_blockers) and funded
         reasons = []
         seen = set()
+        if self.sol_keep_live and not self._sol_keep_live_ready():
+            reasons.append("Keep Live on but no SOL bot keypair — staying sim")
         if self.sol_sim_only:
-            reasons.append("sol sim_only ON — arm LIVE from Broadcast to submit")
+            reasons.append("sol sim_only ON — hunter still runs; Keep Live / Arm to submit")
         if not self.sol_armed:
-            reasons.append("sol not armed (Broadcast → Arm LIVE 15m)")
+            reasons.append("sol not armed (Broadcast → Keep Live / Arm LIVE)")
         if not funded:
             reasons.extend(fund_rs)
         for r in arb_blockers:
@@ -787,6 +1026,10 @@ class Dashboard:
         bc.update({
             "enabled": True,
             "armed": self.sol_armed,
+            "keep_live": self.sol_keep_live,
+            "arm_until": self._sol_arm_until,
+            "arm_note": self._arm_note(self.sol_keep_live, self.sol_armed,
+                                       self._sol_arm_until),
             "sim_only": self.sol_sim_only,
             "edge_bias": self.sol_edge_bias,
             "liq_contract": SOL_LIQ_PROGRAM,
@@ -806,7 +1049,8 @@ class Dashboard:
         pressure = "idle"
         label = "idle"
         if self.sol_armed and (liq_ok or arb_ok):
-            pressure, label = "hot", "armed live"
+            pressure, label = "hot", (
+                "armed · auto-renew" if self.sol_keep_live else "armed live")
         elif self.sol_sim_only:
             pressure, label = "quiet", "sim only"
         elif reasons:
@@ -834,6 +1078,8 @@ class Dashboard:
             reasons.extend(fund_rs)
         if reasons:
             return "blocked", reasons[0]
+        if self.sol_keep_live:
+            return "live", "keep-live auto-renew"
         return "live", "jupiter+jito" if kind != "liq" else "solend+jito"
 
     def _commit_sol_arb(self, data: dict, live: list, near: list,
@@ -1122,6 +1368,41 @@ class Dashboard:
         except Exception:
             return False
 
+    def _liq_pid(self, o):
+        pid = str((o or {}).get("protocol_id") or (o or {}).get("protocol") or "aave").lower()
+        if pid in ("v3", "v4", "aave", ""):
+            return "aave"
+        if "spark" in pid:
+            return "spark"
+        if "compound" in pid or pid == "comet":
+            return "compound"
+        if "morpho" in pid:
+            return "morpho"
+        return pid or "aave"
+
+    def _plan_key(self, pid, user):
+        return f"{(pid or 'aave').lower()}:{(user or '').lower()}"
+
+    def _generic_executor_addr(self):
+        for a in (GENERIC_LIQ, ml.CONTRACT):
+            if a and str(a).startswith("0x"):
+                try:
+                    if elend.executor.contract_is_generic(a):
+                        return a
+                except Exception:
+                    continue
+        return ""
+
+    def _generic_liq_ok(self):
+        now = time.time()
+        hit = self._generic_liq_cached
+        if hit and now - hit[0] < 60:
+            return bool(hit[2])
+        addr = self._generic_executor_addr()
+        ok = bool(addr)
+        self._generic_liq_cached = (now, addr, ok)
+        return ok
+
     def refresh_broadcast_ready(self):
         reasons = []
         liq_ok = False
@@ -1141,10 +1422,15 @@ class Dashboard:
         if not self.broadcast_enabled:
             reasons.append("broadcast disabled (--no-broadcast)")
         else:
+            if self.keep_live and not self._eth_keep_live_ready():
+                reasons.append(
+                    "Keep Live on but no keystore — staying sim until funded")
             if not self.armed and not self.sim_only:
-                reasons.append("not armed (POST /api/control {\"armed\":true})")
+                reasons.append("not armed (Broadcast → Keep Live / Arm LIVE)")
             if not ml.CONTRACT:
-                reasons.append("LIQ_CONTRACT unset — fund sponsor + deploy_both_mainnet.sh")
+                reasons.append(
+                    "LIQ_CONTRACT / LIQ_GENERIC_CONTRACT unset — "
+                    "deploy GenericFlashLiquidator (contracts/DEPLOY.md)")
             elif not self._contract_has_code(ml.CONTRACT):
                 reasons.append(
                     f"LIQ_CONTRACT {ml.CONTRACT[:10]}… has no code on mainnet")
@@ -1153,7 +1439,9 @@ class Dashboard:
             else:
                 liq_ok = True
             if not ARB_CONTRACT:
-                reasons.append("ARB_CONTRACT unset — fund sponsor + deploy_both_mainnet.sh")
+                reasons.append(
+                    "ARB_CONTRACT unset — ETH arb submit blocked "
+                    "(not needed for Spark/Compound/Morpho liq)")
             elif not self._contract_has_code(ARB_CONTRACT):
                 reasons.append(f"ARB_CONTRACT {ARB_CONTRACT[:10]}… has no code")
             elif not mev_bot.KEYSTORE_PW:
@@ -1177,7 +1465,8 @@ class Dashboard:
         if not self.broadcast_enabled:
             pressure, label = "idle", "off"
         elif self.armed and (liq_ok or arb_ok):
-            pressure, label = "hot", "armed live"
+            pressure, label = "hot", (
+                "armed · auto-renew" if self.keep_live else "armed live")
         elif self.armed:
             pressure, label = "elevated", "armed · blocked"
         elif self.sim_only and (liq_ok or arb_ok):
@@ -1201,9 +1490,13 @@ class Dashboard:
         self.state["broadcast"].update({
             "enabled": self.broadcast_enabled,
             "armed": self.armed,
+            "keep_live": self.keep_live,
+            "arm_until": self._arm_until,
+            "arm_note": self._arm_note(self.keep_live, self.armed, self._arm_until),
             "sim_only": self.sim_only,
             "edge_bias": self.edge_bias,
             "liq_contract": ml.CONTRACT or "",
+            "liq_generic": self._generic_executor_addr() or GENERIC_LIQ or "",
             "arb_contract": ARB_CONTRACT,
             "min_liq_profit_usd": MIN_LIQ_PROFIT_USD,
             "min_arb_profit_usd": MIN_ARB_PROFIT_USD,
@@ -1263,20 +1556,24 @@ class Dashboard:
                  "ok" if stage in ("sent", "ok", "simulated") else "error",
                  f"{kind}:{stage}")
 
-    def _broadcast_liquidation(self, user, profit_usd):
+    def _broadcast_liquidation(self, user, profit_usd, opp=None):
         """Sign + (sim|submit) a flash-liquidation bundle for `user`.
 
-        Race path is in-memory: cached plan → sign → eth_sendBundle spray.
+        Race path is in-memory: cached/adapter plan → sign → eth_sendBundle spray.
         Contested users still submit when sim net ≥ floor (higher tip).
         """
+        pid = self._liq_pid(opp) if opp else "aave"
         uk = (user or "").lower()
+        key = self._plan_key(pid, uk)
         block = self.state["block"] or ll.latest_block()
-        landed = self._liq_landed.get(uk, 0)
+        landed = self._liq_landed.get(key, 0)
         if landed and block - landed < LIQ_LANDED_COOLDOWN_BLOCKS:
-            return {"stage": "skip", "reason": "landed-cooldown", "user": user}
-        last = self._liq_alerted.get(uk, 0)
+            return {"stage": "skip", "reason": "landed-cooldown", "user": user,
+                    "protocol": pid}
+        last = self._liq_alerted.get(key, 0)
         if last and block - last < LIQ_COOLDOWN_BLOCKS:
-            return {"stage": "skip", "reason": "cooldown", "user": user}
+            return {"stage": "skip", "reason": "cooldown", "user": user,
+                    "protocol": pid}
         min_p = pe.dynamic_min_liq_profit_usd(
             self.state.get("gas_gwei"), MIN_LIQ_PROFIT_USD)
         try:
@@ -1287,7 +1584,7 @@ class Dashboard:
         if profit_usd is not None and profit_usd < min_p:
             return {"stage": "skip",
                     "reason": f"profit ${profit_usd} < dyn min ${min_p:.2f}",
-                    "user": user}
+                    "user": user, "protocol": pid}
         skip, why = pe.should_skip_user(
             user, self._contested,
             pe.recent_competitor_users(self.state.get("competitors") or []),
@@ -1296,30 +1593,76 @@ class Dashboard:
             self.state["broadcast"]["skipped"].insert(
                 0, {"ts": int(time.time()), "user": user[:12], "why": why})
             self.state["broadcast"]["skipped"] = self.state["broadcast"]["skipped"][:30]
-            return {"stage": "skip", "reason": why, "user": user}
+            return {"stage": "skip", "reason": why, "user": user, "protocol": pid}
         with self._liq_fire_lock:
-            if uk in self._liq_inflight:
-                return {"stage": "skip", "reason": "inflight", "user": user}
-            self._liq_inflight.add(uk)
+            if key in self._liq_inflight:
+                return {"stage": "skip", "reason": "inflight", "user": user,
+                        "protocol": pid}
+            self._liq_inflight.add(key)
         try:
             return self._broadcast_liquidation_locked(
-                user, uk, profit_usd, min_p, why, block)
+                user, uk, profit_usd, min_p, why, block, opp=opp, pid=pid, key=key)
         finally:
-            self._liq_inflight.discard(uk)
+            self._liq_inflight.discard(key)
 
-    def _broadcast_liquidation_locked(self, user, uk, profit_usd, min_p, why, block):
-        out = self._cached_flash_plan(uk, block, need_liquidatable=True)
-        cached = bool(out)
+    def _materialize_liq_plan(self, out, pid):
+        """Attach executor contract + ABI args the signer consumes."""
+        out = dict(out)
+        out.setdefault("protocol_id", pid)
+        if pid == "aave":
+            out.setdefault("protocol", "Aave")
+            out.setdefault("live_ok", True)
+        fp = out.get("flash_plan") or {}
+        if fp.get("liq_sig") and not out.get("liq_sig"):
+            out["liq_sig"] = fp["liq_sig"]
+            out["liq_args"] = list(fp.get("liq_args") or [])
+        if not out.get("collateralAsset"):
+            out["collateralAsset"] = out.get("coll_addr") or fp.get("coll") or ""
+        if not out.get("debtAsset"):
+            out["debtAsset"] = out.get("debt_addr") or fp.get("flash_asset") or ""
+        if pid == "aave" and not out.get("liq_args"):
+            out["contract"] = out.get("contract") or ml.CONTRACT or ""
+            out["liq_sig"] = out.get("liq_sig") or getattr(ml, "LIQ_SIG", None) or (
+                "flashLiquidate(address,address,address,uint256)")
+        else:
+            gen = self._generic_executor_addr()
+            out["contract"] = gen or out.get("contract") or ""
+        if fp.get("gas_limit"):
+            out["gas_limit"] = fp["gas_limit"]
+        if fp.get("flash_amount") and not out.get("debtToCover"):
+            out["debtToCover"] = fp["flash_amount"]
+        return out
+
+    def _broadcast_liquidation_locked(self, user, uk, profit_usd, min_p, why, block,
+                                      opp=None, pid="aave", key=""):
+        out = None
+        cached = False
+        if opp and (opp.get("liq_args") or ((opp.get("flash_plan") or {}).get("liq_args"))):
+            out = dict(opp)
         if out is None:
+            out = self._cached_flash_plan(uk, block, need_liquidatable=True, pid=pid)
+            cached = bool(out)
+        if out is None and pid == "aave":
             out = ml.build_full_plan(
                 user,
                 gas_gwei=self.state.get("gas_gwei"),
                 eth_usd=self.state.get("eth_price_usd"),
                 allow_near=False)
         if out is None:
-            return {"stage": "refuse", "reason": "no flash plan", "user": user}
-        if not out.get("liquidatable", True):
-            return {"stage": "skip", "reason": "not liquidatable", "user": user}
+            return {"stage": "refuse", "reason": "no flash plan", "user": user,
+                    "protocol": pid}
+        if not out.get("liquidatable", True) and pid == "aave":
+            if not opp:
+                return {"stage": "skip", "reason": "not liquidatable", "user": user}
+        out = self._materialize_liq_plan(out, pid)
+        if not self._liq_live_ok(out):
+            return {
+                "stage": "skip",
+                "reason": out.get("live_block_reason")
+                or "executor cannot hit this venue",
+                "user": user,
+                "protocol": out.get("protocol"),
+            }
         net = out.get("net_usd")
         if net is None:
             net = profit_usd
@@ -1331,15 +1674,19 @@ class Dashboard:
             return {"stage": "skip",
                     "reason": f"net ${net_f:.2f} < dyn min ${min_p:.2f}",
                     "user": user}
-        out = dict(out)
         out["gas_gwei"] = float(self.state.get("gas_gwei") or out.get("gas_gwei") or 2)
-        out["contract"] = out.get("contract") or ml.CONTRACT or ""
+        if pid == "aave":
+            out["contract"] = out.get("contract") or ml.CONTRACT or ""
         prio_mult = pe.race_prio_mult(why)
         do_sim_only = self.sim_only or not self.armed
         if not out.get("contract"):
-            return {"stage": "refuse", "reason": "LIQ_CONTRACT unset",
+            reason = (
+                "LIQ_CONTRACT unset" if pid == "aave"
+                else "LIQ_GENERIC_CONTRACT unset — deploy GenericFlashLiquidator "
+                "(contracts/DEPLOY.md)")
+            return {"stage": "refuse", "reason": reason,
                     "user": user, "profit_usd": profit_usd,
-                    "race": why, "sim_only": True}
+                    "race": why, "sim_only": True, "protocol": pid}
 
         signed_hex = None
         signer = None
@@ -1349,15 +1696,16 @@ class Dashboard:
         except Exception as e:
             if not do_sim_only:
                 return {"stage": "error", "reason": f"sign: {e}"[:200],
-                        "user": user, "race": why, "cached_plan": cached}
+                        "user": user, "race": why, "cached_plan": cached,
+                        "protocol": pid}
             # sim still records the attempt with economics
-            self._liq_alerted[uk] = block
+            self._liq_alerted[key or uk] = block
             return {
                 "stage": "simulated",
                 "reason": f"sim — sign skipped ({e})"[:200],
                 "user": user, "profit_usd": profit_usd,
                 "race": why, "prio_mult": prio_mult,
-                "cached_plan": cached, "sim_only": True,
+                "cached_plan": cached, "sim_only": True, "protocol": pid,
             }
 
         sponsor_hex = None
@@ -1384,14 +1732,17 @@ class Dashboard:
         result["prio_mult"] = prio_mult
         result["cached_plan"] = cached
         result["signer"] = (signer[:10] + "…") if signer else None
-        self._liq_alerted[uk] = block
+        result["protocol"] = pid
+        self._liq_alerted[key or uk] = block
         stage = (result.get("stage") or "").lower()
         if stage in ("sent", "ok"):
-            self._liq_landed[uk] = block
+            self._liq_landed[key or uk] = block
         return result
 
-    def _cached_flash_plan(self, user, block, need_liquidatable=False):
-        rec = self._flash_plans.get((user or "").lower())
+    def _cached_flash_plan(self, user, block, need_liquidatable=False, pid="aave"):
+        rec = self._flash_plans.get(self._plan_key(pid, user))
+        if not rec:
+            rec = self._flash_plans.get((user or "").lower())
         if not rec:
             return None
         pb = int(rec.get("block") or 0)
@@ -1400,7 +1751,7 @@ class Dashboard:
             return None
         if need_liquidatable:
             # liquidatable calldata is reusable for the next block
-            if not plan.get("liquidatable", True):
+            if not plan.get("liquidatable", True) and pid == "aave":
                 return None
             if not block or (int(block) - pb) > 1:
                 return None
@@ -1414,14 +1765,16 @@ class Dashboard:
         uk = (user or "").lower()
         if not uk.startswith("0x") or not plan:
             return
-        self._flash_plans[uk] = {
+        pid = self._liq_pid(plan)
+        key = self._plan_key(pid, uk)
+        self._flash_plans[key] = {
             "block": int(block or 0), "plan": plan, "ts": time.time(),
         }
-        if len(self._flash_plans) > 48:
+        if len(self._flash_plans) > 64:
             oldest = sorted(
                 self._flash_plans.items(),
                 key=lambda kv: kv[1].get("ts") or 0)
-            for k, _ in oldest[: len(self._flash_plans) - 40]:
+            for k, _ in oldest[: len(self._flash_plans) - 48]:
                 self._flash_plans.pop(k, None)
 
     def _invalidate_stale_plans(self, block):
@@ -1487,7 +1840,13 @@ class Dashboard:
             "gas_usd": plan.get("gas_usd"),
             "profit_usd": plan.get("profit_usd") or plan.get("net_usd"),
             "net_usd": plan.get("net_usd"),
-            "protocol": plan.get("protocol") or "v3",
+            "protocol": plan.get("protocol") or "Aave",
+            "protocol_id": plan.get("protocol_id") or "aave",
+            "protocol_label": plan.get("protocol_label") or "Aave",
+            "live_ok": plan.get("live_ok", True),
+            "flash_fee_bps": plan.get("flash_fee_bps"),
+            "flash_fee_usd": plan.get("flash_fee_usd"),
+            "flash_note": plan.get("flash_note") or "Aave V3 flashLoan",
             "contested": uk in self._contested,
             "recent_competitor": False,
             "race": uk in self._contested,
@@ -1495,8 +1854,11 @@ class Dashboard:
             "plan_cached": True,
         }
         rec = self._decorate_liq_opp(rec)
+        pid = rec.get("protocol_id") or "aave"
         opps = list(self.state.get("opportunities") or [])
-        opps = [o for o in opps if (o.get("user") or "").lower() != uk]
+        opps = [o for o in opps if not (
+            (o.get("user") or "").lower() == uk
+            and (o.get("protocol_id") or "aave") == pid)]
         opps.append(rec)
         self.state["opportunities"] = pe.rank_liq_opps(
             opps, edge_bias=self.edge_bias)
@@ -1511,7 +1873,10 @@ class Dashboard:
         eth = self.state.get("eth_price_usd")
         users = []
         seen = set()
-        for w in (self.state.get("watchlist") or [])[:10]:
+        for w in (self.state.get("watchlist") or [])[:16]:
+            pid = str(w.get("protocol_id") or w.get("protocol") or "aave").lower()
+            if pid not in ("aave", "v3", "v4", ""):
+                continue
             u = (w.get("user") or "").lower()
             if u.startswith("0x") and u not in seen:
                 seen.add(u)
@@ -1532,6 +1897,24 @@ class Dashboard:
                 continue
             if not plan:
                 continue
+            plan = dict(plan)
+            plan["protocol_id"] = "aave"
+            plan["protocol"] = "Aave"
+            plan["protocol_label"] = "Aave"
+            plan["live_ok"] = True
+            cover = float(plan.get("cover_usd") or plan.get("debt_usd") or 0)
+            try:
+                extra = elend.util.apply_flash_fee(
+                    cover, float(plan.get("bonus_usd") or 0), 0.0, 0.0)
+                plan["flash_fee_bps"] = extra["flash_fee_bps"]
+                plan["flash_fee_usd"] = extra["flash_fee_usd"]
+                plan["flash_note"] = extra["flash_note"]
+                if plan.get("net_usd") is not None:
+                    plan["net_usd"] = round(
+                        float(plan["net_usd"]) - extra["flash_fee_usd"], 2)
+                    plan["profit_usd"] = plan["net_usd"]
+            except Exception:
+                pass
             self._put_flash_plan(u, block, plan)
             n += 1
             self._touch_watch_hf(u, plan)
@@ -1569,11 +1952,18 @@ class Dashboard:
                 continue
             if not plan.get("liquidatable"):
                 continue
+            if not self._liq_live_ok(plan):
+                continue
             net = plan.get("net_usd")
             if net is None or float(net) < min_p:
                 continue
             try:
-                out = self._broadcast_liquidation(uk, float(net))
+                user = (plan.get("user") or "")
+                if not user and ":" in str(uk):
+                    user = str(uk).split(":", 1)[-1]
+                elif not user:
+                    user = uk
+                out = self._broadcast_liquidation(user, float(net), plan)
             except Exception as e:  # noqa: BLE001
                 out = {"stage": "error", "reason": str(e)[:200], "user": uk}
             if out:
@@ -2031,17 +2421,50 @@ class Dashboard:
 
     def _liq_submit_gate(self):
         if not ml.CONTRACT:
-            return "blocked", "LIQ_CONTRACT unset"
+            return "blocked", "LIQ_CONTRACT / LIQ_GENERIC_CONTRACT unset"
         if not lb.KEYSTORE_PW:
             return "blocked", "no liq keystore"
         if self.sim_only:
             return "sim", "sim-only"
         if not self.armed:
             return "sim", "not armed"
+        if self.keep_live:
+            return "live", "keep-live auto-renew"
         return "live", "armed"
+
+    def _liq_live_ok(self, o):
+        """True when the executor bytecode can actually hit this venue."""
+        if not o:
+            return False
+        pid = self._liq_pid(o)
+        blocked = o.get("live_ok") is False
+        reason = str(o.get("live_block_reason") or o.get("leftover") or "")
+        only_generic = "GenericFlashLiquidator" in reason or "KIND()" in reason
+        if blocked and not (pid in ("spark", "compound", "morpho") and only_generic):
+            return False
+        if pid in ("spark", "compound", "morpho"):
+            if not self._generic_liq_ok():
+                return False
+            fp = o.get("flash_plan") or {}
+            if not (o.get("liq_args") or fp.get("liq_args")):
+                return False
+            return not blocked or only_generic
+        if pid == "aave":
+            return True
+        return bool(o.get("live_ok"))
 
     def _decorate_liq_opp(self, o):
         submit, reason = self._liq_submit_gate()
+        pid = self._liq_pid(o)
+        if pid in ("spark", "compound", "morpho") and not self._generic_liq_ok():
+            o["live_ok"] = False
+            o["live_block_reason"] = elend.executor.LIVE_BLOCK_NEED_GENERIC
+            submit = "blocked"
+            reason = o["live_block_reason"]
+        elif not self._liq_live_ok(o):
+            submit = "blocked"
+            reason = (o.get("live_block_reason")
+                      or "executor cannot hit this venue")
         o["submit"] = submit
         o["submit_reason"] = reason
         net = o.get("net_usd")
@@ -2057,14 +2480,22 @@ class Dashboard:
             o["edge"] = ""
         u = o.get("user") or ""
         o["etherscan"] = f"https://etherscan.io/address/{u}" if u else ""
+        if not o.get("protocol_id"):
+            p = str(o.get("protocol") or "aave").lower()
+            if p in ("v3", "v4", "aave"):
+                o["protocol_id"] = "aave"
+                o["protocol"] = "Aave"
+                o["protocol_label"] = "Aave"
+        o.setdefault("flash_fee_src", "aave-v3")
+        o.setdefault("flash_note", "Aave V3 flashLoan")
         return o
 
     async def sweep_loop(self):
         while True:
             try:
-                self.bot("sweep", "running", "HF sweep V3 Pool + V4 spoke")
+                self.bot("sweep", "running", "HF sweep Aave / Spark / Compound / Morpho")
                 borrowers = ll.load_borrowers()
-                await self._run(self._sweep, 180, borrowers)
+                await self._run(self._sweep, 260, borrowers)
                 opps = pe.rank_liq_opps(
                     self.state["opportunities"], edge_bias=self.edge_bias)
                 self.state["opportunities"] = opps
@@ -2079,10 +2510,12 @@ class Dashboard:
                     liq_ok, _, _ = self.refresh_broadcast_ready()
                     if liq_ok:
                         for o in opps[:5]:
+                            if not self._liq_live_ok(o):
+                                continue
                             try:
                                 rec = await self._run(
                                     self._broadcast_liquidation, 240,
-                                    o["user"], o.get("profit_usd"))
+                                    o["user"], o.get("profit_usd"), o)
                                 if rec:
                                     self._record_broadcast("liq", rec)
                             except Exception as e:
@@ -2275,41 +2708,37 @@ class Dashboard:
     def _sweep(self, borrowers):
         t0 = time.time()
         blk = int(self.state.get("block") or 0)
-        harvest = {
-            "users": [], "n_logs": 0, "errors": [],
-            "from_block": None, "to_block": None,
-        }
+        start = end = None
         if blk:
             last = int(self._liq_harvest_block or 0)
             start = (last + 1) if last else max(1, blk - 4000)
             end = min(blk, start + 1999)
             if start <= blk:
-                try:
-                    harvest = lb.harvest_event_users(start, end)
-                    self._liq_harvest_block = end
-                except Exception as e:  # noqa: BLE001
-                    harvest = {
-                        "users": [], "n_logs": 0,
-                        "errors": [str(e)[:160]],
-                        "from_block": start, "to_block": end,
-                    }
+                self._liq_harvest_block = end
         users = list(borrowers or [])
-        users.extend(harvest.get("users") or [])
         users.extend(self._contested or [])
         gas = float(self.state.get("gas_gwei") or 1.0)
         eth = float(self.state.get("eth_price_usd") or 0.0)
         recent = pe.recent_competitor_users(self.state.get("competitors") or [])
-        result = lb.sweep_users(
-            users,
-            gas_gwei=gas,
-            eth_usd=eth,
-            contested=self._contested,
-            recent_comp=recent,
-            max_users=140,
-        )
+        result = elend.scan_all({
+            "from_block": start or 0,
+            "to_block": end or 0,
+            "gas_gwei": gas,
+            "eth_usd": eth,
+            "contested": self._contested,
+            "recent_comp": recent,
+            "borrowers": users,
+        })
         opps = []
         for o in result.get("opps") or []:
-            opps.append(self._decorate_liq_opp(dict(o)))
+            rec = self._decorate_liq_opp(dict(o))
+            opps.append(rec)
+            try:
+                if rec.get("user"):
+                    rec.setdefault("liquidatable", True)
+                    self._put_flash_plan(rec["user"], blk, rec)
+            except Exception:
+                pass
         self.state["watchlist"] = result.get("watch") or []
         self.state["opportunities"] = opps
         scanned = int(result.get("scanned") or 0)
@@ -2317,13 +2746,18 @@ class Dashboard:
         self.state["_liq_sweep_extra"] = {
             "scanned": scanned,
             "skipped": result.get("skipped") or {},
-            "n_logs": harvest.get("n_logs") or 0,
-            "from_block": harvest.get("from_block"),
-            "to_block": harvest.get("to_block"),
-            "errors": harvest.get("errors") or [],
+            "n_logs": result.get("n_logs") or 0,
+            "from_block": start,
+            "to_block": end,
+            "errors": result.get("errors") or [],
             "scan_ms": int((time.time() - t0) * 1000),
             "last_scan": int(time.time()),
             "last_block": blk or None,
+            "leftovers": result.get("leftovers") or [],
+            "adapters": result.get("adapters") or [],
+            "pills": result.get("pills") or [],
+            "flash_fee_bps": result.get("flash_fee_bps") or 9,
+            "flash_fee_src": result.get("flash_fee_src") or "aave-v3",
         }
 
     def _opps_meta(self, opps):
@@ -2375,6 +2809,21 @@ class Dashboard:
         skipped = extra.get("skipped") or {}
         gate, gate_reason = self._liq_submit_gate()
         actionable = sum(1 for o in opps if o.get("actionable"))
+        proto_counts = {}
+        for o in opps:
+            k = (o.get("protocol_id") or o.get("protocol") or "aave").lower()
+            if k in ("v3", "v4"):
+                k = "aave"
+            proto_counts[k] = proto_counts.get(k, 0) + 1
+        proto_mix = [
+            {"id": p, "n": c, "pct": round(100 * c / max(n, 1))}
+            for p, c in sorted(proto_counts.items(), key=lambda x: -x[1])
+        ]
+        leftovers = list(extra.get("leftovers") or [])
+        if not self._generic_liq_ok():
+            msg = elend.executor.LIVE_BLOCK_NEED_GENERIC
+            if msg not in leftovers:
+                leftovers.insert(0, msg)
         return {
             "count": n,
             "edge_n": edge_n,
@@ -2400,6 +2849,12 @@ class Dashboard:
             "plans_cached": len(self._flash_plans),
             "pending_aave_ok": bool(self._pending_aave_ok),
             "errors": extra.get("errors") or [],
+            "leftovers": leftovers,
+            "adapters": extra.get("adapters") or [],
+            "pills": extra.get("pills") or list(elend.PILLS),
+            "flash_fee_bps": extra.get("flash_fee_bps") or 9,
+            "flash_fee_src": extra.get("flash_fee_src") or "aave-v3",
+            "protocol_mix": proto_mix,
         }
 
     async def competitor_loop(self):
@@ -2433,7 +2888,7 @@ class Dashboard:
                 # Cap a cycle so public RPCs finish inside the timeout.
                 end = min(blk, start + 1999)
                 if start <= blk:
-                    rec = await self._run(self._scan_liq_logs, 150, start, end, seen_tx)
+                    rec = await self._run(self._scan_liq_logs, 180, start, end, seen_tx)
                     if rec is None:
                         self._comp_last_scanned = min(blk, start + 399)
                     else:
@@ -2453,7 +2908,7 @@ class Dashboard:
                 self.bot("competitors", "ok",
                          f"{m.get('count_1h', 0)}/1h | "
                          f"{m.get('unique_searchers', 0)} searchers | "
-                         f"v3+{len(self._spokes)} spokes | "
+                         f"Aave+Spark+Compound+Morpho | "
                          f"missed={m.get('missed_by_us', 0)} | "
                          f"{m.get('pressure', 'idle')}"
                          + (f" | logs={scanned_n}" if scanned_n else "")
@@ -2464,9 +2919,9 @@ class Dashboard:
                 self.state.get("intel", {}).get("hours") or {}) else 20)
 
     def _scan_liq_logs(self, start, end, seen_tx):
-        """Pull Aave V3 Pool + V4 Spoke LiquidationCall logs via eth_getLogs."""
+        """Pull liquidation event logs across ETH lending adapters."""
         extras = []
-        scanned = lb.scan_liquidation_logs(start, end, extra_addrs=extras)
+        scanned = elend.scan_all_logs(start, end, extra_addrs=extras)
         events = scanned.get("events") or []
         n_new = 0
         for ev in events:
@@ -2627,7 +3082,10 @@ class Dashboard:
             "tx": txh,
             "etherscan": f"https://etherscan.io/tx/{txh}" if txh else "",
             "spoke": (parsed.get("spoke") or "")[:12],
-            "protocol": parsed.get("protocol") or "v3",
+            "protocol": parsed.get("protocol") or "Aave",
+            "protocol_id": parsed.get("protocol_id") or (
+                "aave" if str(parsed.get("protocol") or "").lower() in ("v3", "v4", "aave", "")
+                else str(parsed.get("protocol") or "").lower()),
             "status": status,
             "missed_by_us": missed,
             "edge": "long-tail" if edge else "",
@@ -3907,11 +4365,14 @@ class Dashboard:
     async def start_loops(self):
         self._loop = asyncio.get_running_loop()
         self._eth_hot_kick = asyncio.Event()
+        self._enforce_keep_live()
+        self.refresh_broadcast_ready()
         self.refresh_sol_broadcast_ready()
         coros = (self.mempool_loop(), self.eth_hot_loop(), self.prices_loop(),
                  self.funds_loop(),
                  self.sweep_loop(), self.competitor_loop(), self.arb_loop(),
                  self.intel_loop(),
+                 self.keep_live_loop(),
                  self.sol_net_loop(), self.sol_mempool_loop(),
                  self.sol_funds_loop(), self.sol_sweep_loop(),
                  self.sol_competitor_loop(), self.sol_arb_loop(),
@@ -3990,9 +4451,11 @@ class Dashboard:
         return aiohttp.web.json_response(body, status=200 if body["ok"] else 503)
 
     async def control_api(self, request):
-        """Arm / sim-only / edge-bias toggles for live profit mode.
-        POST JSON: {"armed": bool, "sim_only": bool, "edge_bias": bool,
-                    "arm_minutes": int, "chain": "eth"|"sol"}
+        """Arm / sim-only / Keep Live / edge-bias toggles for live profit mode.
+        POST JSON: {"armed": bool, "sim_only": bool, "keep_live": bool,
+                    "edge_bias": bool, "arm_minutes": int, "chain": "eth"|"sol"}
+        Arm once auto-enables Keep Live (process-lifetime + persist).
+        Sim ON is the panic switch: Keep Live off, no sends.
         """
         try:
             body = await request.json()
@@ -4015,46 +4478,96 @@ class Dashboard:
                 except Exception as e:  # noqa: BLE001
                     return aiohttp.web.json_response(
                         {"ok": False, "error": str(e)[:160]}, status=500)
+            persist = False
             if "sim_only" in body:
                 self.sol_sim_only = bool(body["sim_only"])
+                if self.sol_sim_only:
+                    self.sol_keep_live = False
+                    self.sol_armed = False
+                    self._cancel_sol_disarm()
+                    persist = True
+            if "keep_live" in body:
+                want = bool(body["keep_live"])
+                self.sol_keep_live = want
+                persist = True
+                if want:
+                    self.sol_sim_only = False
+                    if self._sol_keep_live_ready():
+                        self.sol_armed = True
+                    self._cancel_sol_disarm()
+                    self._sol_arm_until = None
+                elif self.sol_armed:
+                    mins = int(body.get("arm_minutes") or ARM_MINUTES_DEFAULT)
+                    self._schedule_sol_disarm(mins)
             if "edge_bias" in body:
                 self.sol_edge_bias = bool(body["edge_bias"])
             if "armed" in body:
-                self.sol_armed = bool(body["armed"])
-                mins = int(body.get("arm_minutes") or 15)
-                if self.sol_armed and mins > 0:
-                    async def _disarm_sol():
-                        await asyncio.sleep(mins * 60)
-                        self.sol_armed = False
-                        self.log("sol-broadcast", "warn",
-                                 f"sol auto-disarmed after {mins}m")
-                        self.refresh_sol_broadcast_ready()
-                    asyncio.create_task(_disarm_sol())
+                want_arm = bool(body["armed"])
+                if want_arm:
+                    self.sol_armed = True
+                    self.sol_sim_only = False
+                    self.sol_keep_live = True
+                    persist = True
+                    self._cancel_sol_disarm()
+                    self._sol_arm_until = None
+                else:
+                    self.sol_armed = False
+                    self.sol_keep_live = False
+                    persist = True
+                    self._cancel_sol_disarm()
+                    self._sol_arm_until = None
+            if persist:
+                self._persist_keep_live()
             self.refresh_sol_broadcast_ready()
             self.log("sol-broadcast", "info",
-                     f"control armed={self.sol_armed} sim_only={self.sol_sim_only} "
-                     f"edge_bias={self.sol_edge_bias}")
+                     f"control armed={self.sol_armed} keep_live={self.sol_keep_live} "
+                     f"sim_only={self.sol_sim_only} edge_bias={self.sol_edge_bias}")
             return aiohttp.web.json_response(self.state["sol"]["broadcast"])
 
+        persist = False
         if "sim_only" in body:
             self.sim_only = bool(body["sim_only"])
+            if self.sim_only:
+                self.keep_live = False
+                self.armed = False
+                self._cancel_eth_disarm()
+                persist = True
+        if "keep_live" in body:
+            want = bool(body["keep_live"])
+            self.keep_live = want
+            persist = True
+            if want:
+                self.sim_only = False
+                if self._eth_keep_live_ready():
+                    self.armed = True
+                self._cancel_eth_disarm()
+                self._arm_until = None
+            elif self.armed:
+                mins = int(body.get("arm_minutes") or ARM_MINUTES_DEFAULT)
+                self._schedule_eth_disarm(mins)
         if "edge_bias" in body:
             self.edge_bias = bool(body["edge_bias"])
         if "armed" in body:
-            self.armed = bool(body["armed"])
-            mins = int(body.get("arm_minutes") or 15)
-            if self.armed and mins > 0:
-                async def _disarm():
-                    await asyncio.sleep(mins * 60)
-                    self.armed = False
-                    self.log("broadcast", "warn",
-                             f"auto-disarmed after {mins}m")
-                    self.refresh_broadcast_ready()
-                asyncio.create_task(_disarm())
+            want_arm = bool(body["armed"])
+            if want_arm:
+                self.armed = True
+                self.sim_only = False
+                self.keep_live = True
+                persist = True
+                self._cancel_eth_disarm()
+                self._arm_until = None
+            else:
+                self.armed = False
+                self.keep_live = False
+                persist = True
+                self._cancel_eth_disarm()
+                self._arm_until = None
+        if persist:
+            self._persist_keep_live()
         self.refresh_broadcast_ready()
         self.log("broadcast", "info",
-                 f"control armed={self.armed} sim_only={self.sim_only} "
-                 f"edge_bias={self.edge_bias}")
+                 f"control armed={self.armed} keep_live={self.keep_live} "
+                 f"sim_only={self.sim_only} edge_bias={self.edge_bias}")
         return aiohttp.web.json_response(self.state["broadcast"])
 
     async def klines_api(self, request):
@@ -4248,8 +4761,9 @@ def main():
         asyncio.create_task(dash.ticker())
         mode = "BROADCAST ON" if dash.broadcast_enabled else "monitor-only"
         print(f"[dash] listening on http://{args.host}:{args.port} "
-              f"[{mode} sim_only={dash.sim_only} armed={dash.armed}] "
-              f"liq={ml.CONTRACT or '-'} arb={ARB_CONTRACT or '-'}",
+              f"[{mode} sim_only={dash.sim_only} armed={dash.armed} "
+              f"keep_live={dash.keep_live}] "
+              f"liq={ml.CONTRACT or '-'} generic={GENERIC_LIQ or '-'} arb={ARB_CONTRACT or '-'}",
               flush=True)
         ready = dash.state["broadcast"]["ready"]
         if ready["reasons"]:

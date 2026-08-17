@@ -12,3 +12,6 @@ near_miss_learning.json
 contracts.json
 solana/target/
 *.log
+broadcast_prefs.json
+contracts/out/
+contracts/cache/

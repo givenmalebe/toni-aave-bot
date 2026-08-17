@@ -770,6 +770,22 @@ button.primary:disabled { opacity: .4; cursor: not-allowed; }
 .op-f.on[data-f="hf095"], .op-f.on[data-f="hf1"] {
   color: var(--amber); border-color: rgba(245,158,11,.45); background: rgba(245,158,11,.08);
 }
+.proto-pills { margin-bottom: 4px; }
+.op-f.proto-aave.on, .pill.proto-aave {
+  color: #c4b5fd; border-color: rgba(167,139,250,.5); background: rgba(167,139,250,.12);
+}
+.op-f.proto-spark.on, .pill.proto-spark {
+  color: #fbbf24; border-color: rgba(245,158,11,.5); background: rgba(245,158,11,.12);
+}
+.op-f.proto-compound.on, .pill.proto-compound {
+  color: #86efac; border-color: rgba(34,197,94,.5); background: rgba(34,197,94,.12);
+}
+.op-f.proto-morpho.on, .pill.proto-morpho {
+  color: #67e8f9; border-color: rgba(34,211,238,.5); background: rgba(34,211,238,.12);
+}
+.pill.proto {
+  padding: 1px 6px; font-size: 9px; text-transform: uppercase; letter-spacing: .04em;
+}
 .op-scroll {
   max-height: 320px; overflow: auto;
   border: 1px solid var(--line); border-radius: 8px; background: rgba(0,0,0,.15);
@@ -1013,8 +1029,8 @@ button.primary:disabled { opacity: .4; cursor: not-allowed; }
 .bc-controls button.on-sim {
   border-color: rgba(34,211,238,.55); box-shadow: 0 0 0 1px rgba(34,211,238,.2);
 }
-.bc-controls button.on-arm {
-  border-color: rgba(239,68,68,.6); background: rgba(239,68,68,.15); color: #fecaca;
+.bc-controls button.on-keep {
+  border-color: rgba(34,197,94,.65); background: rgba(34,197,94,.15); color: #bbf7d0;
 }
 .bc-controls button.on-edge {
   border-color: rgba(167,139,250,.5); box-shadow: 0 0 0 1px rgba(167,139,250,.2);
@@ -1025,7 +1041,7 @@ button.primary:disabled { opacity: .4; cursor: not-allowed; }
   border: 1px solid var(--line); color: var(--dim); background: rgba(0,0,0,.2);
 }
 .bc-pill.on { color: var(--cyan); border-color: rgba(34,211,238,.4); }
-.bc-pill.live { color: var(--red); border-color: rgba(239,68,68,.45); background: rgba(239,68,68,.1); }
+.bc-pill.keep { color: var(--green); border-color: rgba(34,197,94,.5); background: rgba(34,197,94,.1); }
 .bc-pill.ok { color: var(--green); border-color: rgba(34,197,94,.4); }
 .bc-pill.warn { color: var(--amber); border-color: rgba(245,158,11,.4); }
 .bc-summary-strip {

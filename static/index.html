@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TONI // BOT CONTROL &mdash; Aave V4 + MEV Live</title>
+<title>TONI // BOT CONTROL &mdash; Multi-protocol ETH + SOL</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.8/lib/index.iife.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
-<link rel="stylesheet" href="/static/style.css?v=ethsol1">
+<link rel="stylesheet" href="/static/style.css?v=keeplive1">
 </head>
 <body>
 <header id="topbar">
@@ -18,7 +18,7 @@
     <span class="logo">&#9650;</span>
     <div>
       <h1>TONI <span>// BOT CONTROL</span></h1>
-      <p class="sub">Aave V4 Liquidator &middot; DEX Arb &middot; Mempool Intel &middot; Live Broadcast</p>
+      <p class="sub">Multi-protocol liquidator &middot; Aave flash &middot; DEX Arb &middot; Live Broadcast</p>
     </div>
   </div>
   <div class="pills">
@@ -35,7 +35,7 @@
 <nav id="chain-tabs" class="chain-tabs" role="tablist" aria-label="Chain workspace">
   <button type="button" class="chain-tab on" role="tab" data-tab="eth" id="tab-btn-eth" aria-selected="true" aria-controls="tab-eth">ETH</button>
   <button type="button" class="chain-tab sol" role="tab" data-tab="sol" id="tab-btn-sol" aria-selected="false" aria-controls="tab-sol">SOL</button>
-  <span class="chain-tabs-hint dim" id="chain-tabs-hint">Ethereum workspace · Aave V4 + MEV</span>
+  <span class="chain-tabs-hint dim" id="chain-tabs-hint">Ethereum workspace · multi-protocol lending + Aave flash</span>
 </nav>
 
 <main>
@@ -189,7 +189,7 @@
 
     <!-- Opportunities -->
     <div class="card span-6" id="card-opps">
-      <h2>Liquidatable Opportunities <span class="tag">Aave V3/V4 · HF &lt; 1 · +EV after gas</span></h2>
+      <h2>Liquidatable Opportunities <span class="tag">Aave · Spark · Compound · Morpho · HF&lt;1 · +EV after Aave flash</span></h2>
 
       <div class="op-hero">
         <div class="op-hero-left">
@@ -229,11 +229,19 @@
         <div class="op-mix-track" id="op-mix-track"></div>
         <div id="op-mix-keys" class="kv op-mix-keys"></div>
       </div>
+      <div class="dim" id="op-leftover" style="display:none;font-size:10px;margin:4px 0 8px"></div>
 
       <div class="op-grid">
         <div class="op-col">
           <div class="op-section-head">
             <h3 class="watch">Feed <span class="tag" id="op-feed-note">HF&lt;1 · skip dust</span></h3>
+            <div class="op-filters proto-pills" id="op-proto-filters">
+              <button type="button" data-proto="all" class="op-f on">All</button>
+              <button type="button" data-proto="aave" class="op-f proto-aave">Aave</button>
+              <button type="button" data-proto="spark" class="op-f proto-spark">Spark</button>
+              <button type="button" data-proto="compound" class="op-f proto-compound">Compound</button>
+              <button type="button" data-proto="morpho" class="op-f proto-morpho">Morpho</button>
+            </div>
             <div class="op-filters" id="op-filters">
               <button type="button" data-f="all" class="op-f on">all</button>
               <button type="button" data-f="edge" class="op-f">edge</button>
@@ -245,11 +253,11 @@
           <div class="op-scroll">
             <table id="opps-table" class="mini">
               <thead><tr>
-                <th>user</th><th>hf</th><th>coll → debt</th><th>bonus</th><th>net $</th><th>flags</th>
+                <th>proto</th><th>user</th><th>hf</th><th>coll → debt</th><th>bonus</th><th>net $</th><th>flags</th>
               </tr></thead>
               <tbody></tbody>
             </table>
-            <div class="empty" id="opps-empty">scanning Aave V3 Pool / V4 spoke for HF&lt;1…</div>
+            <div class="empty" id="opps-empty">scanning Aave · Spark · Compound · Morpho for HF&lt;1…</div>
           </div>
         </div>
         <div class="op-col">
@@ -258,7 +266,7 @@
           </div>
           <div class="op-scroll">
             <table id="watch-table" class="mini">
-              <thead><tr><th>user</th><th>hf</th><th>coll</th><th>debt</th><th>urg</th></tr></thead>
+              <thead><tr><th>proto</th><th>user</th><th>hf</th><th>coll</th><th>debt</th><th>urg</th></tr></thead>
               <tbody></tbody>
             </table>
           </div>
@@ -268,7 +276,7 @@
 
     <!-- Competitors -->
     <div class="card span-6" id="card-competitors">
-      <h2>Competitor Liquidations <span class="tag">Aave V3 Pool · confirmed logs</span></h2>
+      <h2>Competitor Liquidations <span class="tag">Aave · Spark · Compound · Morpho · confirmed logs</span></h2>
 
       <div class="cp-hero">
         <div class="cp-hero-left">
@@ -314,6 +322,13 @@
         <div class="cp-col">
           <div class="cp-section-head">
             <h3 class="watch">Live feed <span class="tag" id="cp-feed-note">newest first</span></h3>
+            <div class="op-filters proto-pills" id="cp-proto-filters">
+              <button type="button" data-proto="all" class="op-f on">All</button>
+              <button type="button" data-proto="aave" class="op-f proto-aave">Aave</button>
+              <button type="button" data-proto="spark" class="op-f proto-spark">Spark</button>
+              <button type="button" data-proto="compound" class="op-f proto-compound">Compound</button>
+              <button type="button" data-proto="morpho" class="op-f proto-morpho">Morpho</button>
+            </div>
             <div class="cp-filters" id="cp-filters">
               <button type="button" data-f="all" class="cp-f on">all</button>
               <button type="button" data-f="miss" class="cp-f">missed</button>
@@ -325,12 +340,12 @@
           <div class="cp-scroll">
             <table id="comp-table" class="mini">
               <thead><tr>
-                <th>age</th><th>pair</th><th>liquidator</th><th>user</th>
+                <th>age</th><th>proto</th><th>pair</th><th>liquidator</th><th>user</th>
                 <th>gas $</th><th>est</th><th>net</th><th>flags</th><th>tx</th>
               </tr></thead>
               <tbody></tbody>
             </table>
-            <div class="empty" id="comp-empty">scanning Aave V3 LiquidationCall logs…</div>
+            <div class="empty" id="comp-empty">scanning Aave · Spark · Compound · Morpho liquidation logs…</div>
           </div>
         </div>
         <div class="cp-col">
@@ -446,7 +461,7 @@
 
     <!-- Broadcast -->
     <div class="card span-6" id="card-bcast">
-      <h2>Broadcast <span class="tag">profit engine · submit gate</span></h2>
+      <h2>Broadcast <span class="tag">hunter always runs · Keep Live auto-sends +EV</span></h2>
 
       <div class="bc-hero">
         <div class="bc-hero-left">
@@ -477,10 +492,11 @@
         </div>
         <div class="bc-hero-right">
           <div class="bc-controls-panel">
-            <div class="bc-controls-label">submit mode</div>
+            <div class="bc-controls-label">submit mode — hunter always runs; Keep Live auto-sends +EV when funded; Sim ON = dry-run</div>
             <div class="fund-actions bc-controls" id="bcast-controls">
               <button id="btn-sim" class="primary">Sim-only</button>
-              <button id="btn-arm" class="wallet">Arm LIVE 15m</button>
+              <button id="btn-keep-live" class="wallet" title="Stay armed. Auto-renew. Persist across restart.">Keep Live</button>
+              <button id="btn-arm" class="wallet">Arm LIVE</button>
               <button id="btn-edge" class="wallet">Edge bias</button>
             </div>
             <div class="bc-mode-pills" id="bc-mode-pills"></div>
@@ -1154,7 +1170,7 @@
 
     <!-- Broadcast -->
     <div class="card span-6" id="sol-card-bcast">
-      <h2>Broadcast <span class="tag sol-tag">sim-only until armed · liq vs MEV</span></h2>
+      <h2>Broadcast <span class="tag sol-tag">hunter always runs · Keep Live auto-sends +EV</span></h2>
 
       <div class="bc-hero">
         <div class="bc-hero-left">
@@ -1185,10 +1201,11 @@
         </div>
         <div class="bc-hero-right">
           <div class="bc-controls-panel">
-            <div class="bc-controls-label">submit mode</div>
+            <div class="bc-controls-label">submit mode — hunter always runs; Keep Live auto-sends +EV when funded; Sim ON = dry-run</div>
             <div class="fund-actions bc-controls" id="sol-bcast-controls">
               <button id="sol-btn-sim" class="primary">Sim-only</button>
-              <button id="sol-btn-arm" class="wallet">Arm LIVE 15m</button>
+              <button id="sol-btn-keep-live" class="wallet" title="Stay armed. Auto-renew. Persist across restart.">Keep Live</button>
+              <button id="sol-btn-arm" class="wallet">Arm LIVE</button>
               <button id="sol-btn-edge" class="wallet">Edge bias</button>
             </div>
             <div class="bc-mode-pills" id="sol-bc-mode-pills"></div>
@@ -1461,6 +1478,6 @@
   <span>TONI dashboard &mdash; broadcast ON when LIQ/ARB contracts + keys ready. ETH: MetaMask EVM → sponsor · SOL: MetaMask Solana (Phantom fallback) → sponsor.</span>
   <span id="sys-info"></span>
 </footer>
-<script src="/static/app.js?v=ethsol1"></script>
+<script src="/static/app.js?v=keeplive1"></script>
 </body>
 </html>
