@@ -3509,7 +3509,7 @@
     const el = $("eth-candles");
     if (!el) return;
     el.querySelector(".lwc-msg")?.remove();
-    const h = el.clientHeight || 320;
+    const h = el.clientHeight || 340;
     ethChart = LightweightCharts.createChart(el, {
       width: el.clientWidth || 600, height: h,
       layout: { background: { type: "solid", color: "transparent" }, textColor: "#64748b", fontFamily: "JetBrains Mono, monospace" },
@@ -3532,7 +3532,7 @@
     const resize = () => {
       const box = $("eth-candles");
       if (!box || !ethChart) return;
-      ethChart.applyOptions({ width: box.clientWidth || 600, height: box.clientHeight || 320 });
+      ethChart.applyOptions({ width: box.clientWidth || 600, height: box.clientHeight || 340 });
     };
     window.addEventListener("resize", resize);
     requestAnimationFrame(resize);
@@ -3578,7 +3578,16 @@
 
     if (paper.position) {
       const p = paper.position;
-      if (pos) pos.textContent = `${p.direction.toUpperCase()} ${fmt.num(p.qty, 4)} ${paper.asset} @ $${fmt.num(p.entry_price, 2)} | TP1 $${fmt.num(p.entry_price + (p.direction === "long" ? 1 : -1) * p.range_height * 1.5, 2)} trail $${fmt.num(p.trail_stop || 0, 2)}`;
+      const dir = p.direction === "long" ? "long" : "short";
+      const tp1 = p.entry_price + (dir === "long" ? 1 : -1) * p.range_height * 1.5;
+      const sl = dir === "long" ? p.range_low : p.range_high;
+      if (pos) pos.textContent = `${dir.toUpperCase()} ${fmt.num(p.qty, 4)} ${paper.asset} @ $${fmt.num(p.entry_price, 2)}`;
+      const tpEl = $(prefix + "-paper-tp");
+      if (tpEl) { tpEl.textContent = `$${fmt.num(tp1, 2)}`; tpEl.style.color = "var(--cyan)"; }
+      const trailEl = $(prefix + "-paper-trail");
+      if (trailEl) { trailEl.textContent = `$${fmt.num(p.trail_stop || 0, 2)}`; trailEl.style.color = "var(--amber)"; }
+      const slEl = $(prefix + "-paper-sl");
+      if (slEl) { slEl.textContent = `$${fmt.num(sl, 2)}`; slEl.style.color = "var(--red)"; }
       if (open) open.style.display = "block";
     } else {
       if (open) open.style.display = "none";
@@ -3730,13 +3739,13 @@
   const resizeEthChart = () => {
     const box = $("eth-candles");
     if (!box || !ethChart) return;
-    ethChart.applyOptions({ width: box.clientWidth || 600, height: box.clientHeight || 320 });
+    ethChart.applyOptions({ width: box.clientWidth || 600, height: box.clientHeight || 340 });
   };
 
   const resizeSolChart = () => {
     const box = $("sol-candles");
     if (!box || !solChart) return;
-    solChart.applyOptions({ width: box.clientWidth || 600, height: box.clientHeight || 320 });
+    solChart.applyOptions({ width: box.clientWidth || 600, height: box.clientHeight || 340 });
   };
 
   const setSolChg = (pct) => {
@@ -3768,7 +3777,7 @@
     const el = $("sol-candles");
     if (!el || solChart || !window.LightweightCharts) return;
     el.querySelector(".lwc-msg")?.remove();
-    const h = el.clientHeight || 320;
+    const h = el.clientHeight || 340;
     solChart = LightweightCharts.createChart(el, {
       width: el.clientWidth || 600, height: h,
       layout: { background: { type: "solid", color: "transparent" }, textColor: "#64748b", fontFamily: "JetBrains Mono, monospace" },

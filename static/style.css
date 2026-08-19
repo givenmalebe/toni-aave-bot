@@ -1057,6 +1057,7 @@ button.primary:disabled { opacity: .4; cursor: not-allowed; }
   border: 1px solid var(--line); background: var(--panel2); color: var(--dim);
   border-radius: 6px; padding: 4px 10px; font: inherit; font-size: 11px;
   cursor: pointer; text-transform: uppercase; letter-spacing: .4px;
+  transition: all .15s;
 }
 .mc-f:hover { color: var(--text); border-color: #334155; }
 .mc-f.on {
@@ -1070,10 +1071,11 @@ button.primary:disabled { opacity: .4; cursor: not-allowed; }
   padding: 8px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: rgba(10,14,20,.45);
+  background: linear-gradient(180deg, rgba(10,14,20,.6), rgba(10,14,20,.3));
+  box-shadow: 0 2px 12px rgba(0,0,0,.2);
 }
 .candles { position: relative; }
-.mc-candles { height: 320px; min-height: 260px; width: 100%; }
+.mc-candles { height: 340px; min-height: 260px; width: 100%; }
 .candles .lwc-msg {
   position: absolute; inset: 0; display: flex; align-items: center;
   justify-content: center; color: var(--dim); font-size: 11px;
@@ -1461,7 +1463,7 @@ footer {
 .paper-panel {
   margin-top: 10px; padding: 10px 12px;
   border: 1px solid var(--line); border-radius: 10px;
-  background: var(--panel2);
+  background: linear-gradient(180deg, rgba(34,211,238,.03), transparent);
 }
 .paper-head {
   display: flex; align-items: center; justify-content: space-between;
@@ -1491,13 +1493,23 @@ footer {
   font-family: var(--mono);
 }
 .paper-open {
-  margin-top: 6px; padding: 5px 8px;
+  margin-top: 6px; padding: 8px 10px;
   border-radius: 6px; background: rgba(34,211,238,.06);
   border: 1px solid rgba(34,211,238,.15);
-  font-size: 11px; color: var(--text);
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+}
+.paper-pos-row { display: flex; flex-direction: column; gap: 2px; }
+.paper-pos-label {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .5px;
+  color: var(--dim);
+}
+.paper-pos-val {
+  font-size: 12px; font-weight: 600; color: var(--text);
   font-family: var(--mono);
 }
-.paper-open-label { color: var(--dim); font-size: 10px; }
+.paper-pos-val.tp { color: var(--cyan); }
+.paper-pos-val.trail { color: var(--amber); }
+.paper-pos-val.sl { color: var(--red); }
 
 /* card-head — section title */
 .card-head {
