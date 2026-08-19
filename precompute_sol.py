@@ -36,6 +36,44 @@ def cache_stats() -> dict:
     }
 
 
+def build_entry(
+    obligation: str,
+    kind: str,
+    repay_reserve: str,
+    withdraw_reserve: str,
+    repay_mint: str,
+    withdraw_mint: str,
+    debt_amount: int,
+    hf: float,
+    compute_units: int,
+    priority_fee_ul: int,
+    jito_tip_lamports: int,
+    instruction_sequence: list,
+    account_metas: list,
+    jupiter_route: dict | None,
+    estimated_profit_usd: float,
+) -> dict:
+    """Build a cache entry for a single SOL obligation."""
+    return {
+        "obligation": obligation,
+        "kind": kind,
+        "repay_reserve": repay_reserve,
+        "withdraw_reserve": withdraw_reserve,
+        "repay_mint": repay_mint,
+        "withdraw_mint": withdraw_mint,
+        "debt_amount": debt_amount,
+        "hf": hf,
+        "compute_units": compute_units,
+        "priority_fee_ul": priority_fee_ul,
+        "jito_tip_lamports": jito_tip_lamports,
+        "instruction_sequence": instruction_sequence,
+        "account_metas": account_metas,
+        "jupiter_route": jupiter_route,
+        "estimated_profit_usd": estimated_profit_usd,
+        "updated_slot": _last_slot,
+    }
+
+
 def evict_stale(max_slots_old: int = 30) -> int:
     """Remove entries not refreshed in max_slots_old slots. Returns count evicted."""
     global _cache
