@@ -1,6 +1,7 @@
 """SOL pre-compute cache — builds instruction sequences for hot obligations on every slot."""
 
 import asyncio
+import json
 import logging
 import time
 from typing import Optional
@@ -85,3 +86,87 @@ def evict_stale(max_slots_old: int = 30) -> int:
         del _cache[k]
         evicted += 1
     return evicted
+
+
+async def refresh(hot_obligations: list[dict], rpc_url: str) -> None:
+    """Refresh cache for all hot obligations. Called on each new slot."""
+    global _cache, _last_slot
+
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            payload = {"jsonrpc": "2.0", "id": 1, "method": "getSlot", "params": []}
+            async with session.post(rpc_url, json=payload, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                data = await resp.json()
+                _last_slot = data["result"]
+    except Exception as e:
+        log.warning("Failed to get slot: %s", e)
+        return
+
+    for obl in hot_obligations:
+        addr = obl.get("obligation", "")
+        if not addr:
+            continue
+        try:
+            entry = build_entry(
+                obligation=addr,
+                kind=obl.get("kind", "liq"),
+                repay_reserve=obl.get("debt_reserve", ""),
+                withdraw_reserve=obl.get("coll_reserve", ""),
+                repay_mint=obl.get("repay_mint", ""),
+                withdraw_mint=obl.get("withdraw_mint", ""),
+                debt_amount=obl.get("debt_amount", 0),
+                hf=obl.get("hf", 0),
+                compute_units=obl.get("compute_units", 400000),
+                priority_fee_ul=obl.get("priority_fee_ul", 50000),
+                jito_tip_lamports=obl.get("jito_tip_lamports", 50000),
+                instruction_sequence=obl.get("instruction_sequence", []),
+                account_metas=obl.get("account_metas", []),
+                jupiter_route=obl.get("jupiter_route"),
+                estimated_profit_usd=obl.get("expected_profit_usd", 0),
+            )
+            _cache[addr] = entry
+        except Exception as e:
+            log.warning("Failed to pre-compute for %s: %s", addr, e)
+
+    evict_stale()
+    log.info("SOL pre-compute refresh: %d positions, slot %d", len(_cache), _last_slot)
+
+
+_listener_task: Optional[asyncio.Task] = None
+
+
+async def _slot_loop(rpc_url: str, get_hot_obligations) -> None:
+    """Background loop that listens for slot updates and refreshes cache."""
+    global _listener_task
+    import websockets
+
+    ws_url = rpc_url.replace("https://", "wss://").replace("http://", "ws://")
+
+    while True:
+        try:
+            async with websockets.connect(ws_url, ping_interval=30) as ws:
+                sub = {"jsonrpc": "2.0", "id": 1, "method": "slotSubscribe", "params": []}
+                await ws.send(json.dumps(sub))
+                await ws.recv()
+
+                async for msg in ws:
+                    try:
+                        data = json.loads(msg)
+                        if "params" in data:
+                            hot = get_hot_obligations()
+                            await refresh(hot, rpc_url)
+                    except Exception as e:
+                        log.warning("Slot listener error: %s", e)
+        except Exception as e:
+            log.warning("WebSocket disconnected, reconnecting in 5s: %s", e)
+            await asyncio.sleep(5)
+
+
+def start_slot_listener(rpc_url: str, get_hot_obligations) -> asyncio.Task:
+    """Start the background slot listener."""
+    global _listener_task
+    if _listener_task and not _listener_task.done():
+        return _listener_task
+    _listener_task = asyncio.ensure_future(_slot_loop(rpc_url, get_hot_obligations))
+    return _listener_task

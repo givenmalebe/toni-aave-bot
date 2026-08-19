@@ -1,3 +1,7 @@
+import asyncio
+
+import aiohttp
+
 import precompute_sol as ps
 
 
@@ -51,3 +55,48 @@ def test_build_sol_entry():
     assert entry["debt_amount"] == 844200000
     assert entry["estimated_profit_usd"] == 42.0
     assert len(entry["instruction_sequence"]) == 1
+
+
+class _MockResponse:
+    def __init__(self, slot):
+        self._slot = slot
+    async def json(self):
+        return {"result": self._slot}
+
+
+class _MockCtxMgr:
+    def __init__(self, slot):
+        self._slot = slot
+    async def __aenter__(self):
+        return _MockResponse(self._slot)
+    async def __aexit__(self, *a):
+        pass
+
+
+class MockSolSession:
+    def __init__(self, slot=440333000):
+        self._slot = slot
+    async def __aenter__(self):
+        return self
+    async def __aexit__(self, *a):
+        pass
+    def post(self, url, json=None, timeout=None):
+        return _MockCtxMgr(self._slot)
+
+
+def test_sol_refresh_updates_cache(monkeypatch):
+    ps._cache.clear()
+    ps._last_slot = 0
+    monkeypatch.setattr(aiohttp, "ClientSession", MockSolSession)
+
+    obl = {
+        "obligation": "obligation_abc", "kind": "liq", "debt_reserve": "repay",
+        "coll_reserve": "withdraw", "repay_mint": "USDC", "withdraw_mint": "SOL",
+        "debt_amount": 844200000, "hf": 1.0, "compute_units": 400000,
+        "priority_fee_ul": 50000, "jito_tip_lamports": 50000,
+        "instruction_sequence": [], "account_metas": [], "jupiter_route": None,
+        "expected_profit_usd": 42.0,
+    }
+    asyncio.get_event_loop().run_until_complete(ps.refresh([obl], "http://mock"))
+    assert ps._last_slot == 440333000
+    assert "obligation_abc" in ps._cache
