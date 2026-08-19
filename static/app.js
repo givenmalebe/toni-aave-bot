@@ -190,6 +190,10 @@
   let liqHealthSeries = null;
   let liqVolumeChart = null;
   let liqVolumeSeries = null;
+  let solLiqHealthChart = null;
+  let solLiqHealthSeries = null;
+  let solLiqVolumeChart = null;
+  let solLiqVolumeSeries = null;
   function initLiqCharts() {
     const healthEl = $("liq-health-chart");
     if (healthEl && window.LightweightCharts) {
@@ -219,10 +223,114 @@
       });
       liqVolumeChart.applyOptions({ width: volEl.clientWidth });
     }
+
+    const solHealthEl = $("sol-liq-health-chart");
+    if (solHealthEl && window.LightweightCharts) {
+      solLiqHealthChart = LightweightCharts.createChart(solHealthEl, {
+        layout: { background: { color: "transparent" }, textColor: "#8b8fa3" },
+        grid: { vertLines: { color: "rgba(42,46,64,.4)" }, horzLines: { color: "rgba(42,46,64,.4)" } },
+        rightPriceScale: { visible: false },
+        timeScale: { visible: false, rightOffset: 0 },
+        crosshair: { mode: 0 },
+      });
+      solLiqHealthSeries = solLiqHealthChart.addBarSeries({
+        priceLineVisible: false, lastValueVisible: false,
+      });
+      solLiqHealthChart.applyOptions({ width: solHealthEl.clientWidth });
+    }
+    const solVolEl = $("sol-liq-volume-chart");
+    if (solVolEl && window.LightweightCharts) {
+      solLiqVolumeChart = LightweightCharts.createChart(solVolEl, {
+        layout: { background: { color: "transparent" }, textColor: "#8b8fa3" },
+        grid: { vertLines: { color: "rgba(42,46,64,.4)" }, horzLines: { color: "rgba(42,46,64,.4)" } },
+        rightPriceScale: { visible: false },
+        timeScale: { visible: false, rightOffset: 0 },
+        crosshair: { mode: 0 },
+      });
+      solLiqVolumeSeries = solLiqVolumeChart.addLineSeries({
+        color: "#22d3ee", lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
+      });
+      solLiqVolumeChart.applyOptions({ width: solVolEl.clientWidth });
+    }
   }
   initLiqCharts();
 
   /* ======================== SOL twin renderers ======================== */
+  const solGauge = mkChart("sol-gauge", {
+    type: "doughnut",
+    data: { datasets: [{ data: [0, 100], backgroundColor: ["#22c55e", "#1e293b"], borderWidth: 0 }] },
+    options: {
+      responsive: true, animation: false, maintainAspectRatio: false,
+      cutout: "78%", plugins: { legend: { display: false }, tooltip: { enabled: false } },
+    },
+  });
+  const solChartHours = mkChart("sol-chart-hours", {
+    type: "bar",
+    data: {
+      labels: Array.from({ length: 24 }, (_, h) => String(h).padStart(2, "0")),
+      datasets: [{
+        data: Array(24).fill(0),
+        backgroundColor: Array(24).fill("#22d3ee66"),
+        borderColor: "#22d3ee",
+        borderWidth: 1,
+        borderRadius: 2,
+      }],
+    },
+    options: {
+      responsive: true, animation: false, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { display: false },
+        y: { beginAtZero: true, ticks: { font: { size: 8 }, color: "#64748b", maxTicksLimit: 4 },
+          grid: { color: "#1e293b55" } },
+      },
+    },
+  });
+  const solChartDows = mkChart("sol-chart-dows", {
+    type: "bar",
+    data: {
+      labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+      datasets: [{
+        data: [0, 0, 0, 0, 0, 0, 0],
+        backgroundColor: Array(7).fill("#a78bfa66"),
+        borderColor: "#a78bfa",
+        borderWidth: 1,
+        borderRadius: 2,
+      }],
+    },
+    options: {
+      responsive: true, animation: false, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { display: false },
+        y: { beginAtZero: true, ticks: { font: { size: 8 }, color: "#64748b", maxTicksLimit: 4 },
+          grid: { color: "#1e293b55" } },
+      },
+    },
+  });
+  const solChartIntelTrend = mkChart("sol-chart-intel-trend", {
+    type: "line",
+    data: {
+      labels: [],
+      datasets: [{
+        data: [], borderColor: "#22d3ee", backgroundColor: "#22d3ee22",
+        pointRadius: 0, borderWidth: 2, tension: .35, fill: true,
+      }],
+    },
+    options: {
+      responsive: true, animation: false, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { display: false },
+        y: {
+          min: 0, max: 1,
+          ticks: { font: { size: 8 }, color: "#64748b", maxTicksLimit: 3,
+            callback: (v) => (v * 100).toFixed(0) + "%" },
+          grid: { color: "#1e293b55" },
+        },
+      },
+    },
+  });
   const solChartTx = mkChart("sol-chart-tx", {
     type: "line",
     data: { labels: [], datasets: [
@@ -1489,6 +1597,7 @@
     updateSolCompetitors(sol, s.hist);
     updateSolBroadcast(sol);
     updateSolIntel(sol);
+    updateLiqIntel(s, "sol");
     updateSolPrices(sol);
     updateSolLog(s);
     if (solSeries) solSeries.setMarkers(buildTradeMarkers(s.paper_sol && s.paper_sol.recent_trades));
@@ -2663,7 +2772,7 @@
     return (s != null && !Number.isNaN(+s)) ? +s : 0;
   };
 
-  const updateIntel = (s) => {
+  const updateTradingIntel = (s) => {
     const i = s.intel || {};
     const b = i.brain || {};
     const ready = Number(i.readiness) || 0;
@@ -2784,12 +2893,13 @@
     }
   };
 
-  const updateLiqIntel = (s) => {
+  const updateLiqIntel = (s, prefix) => {
     const li = s.intel && s.intel.liq_intel;
     if (!li) return;
 
+    const pfx = prefix ? prefix + "-" : "";
     const vol = li.volume_24h || 0;
-    const el = (id) => $(id);
+    const el = (id) => $(pfx + id);
     const fmtK = (v) => v >= 1000 ? "$" + (v / 1000).toFixed(1) + "k" : "$" + v.toFixed(0);
     const fmtD = (v) => "$" + v.toFixed(2);
 
@@ -2815,10 +2925,11 @@
       if (protoLabels) protoLabels.innerHTML = labelHtml;
     }
 
-    if (liqHealthSeries && li.health_dist) {
+    const healthSeries = prefix === "sol" ? solLiqHealthSeries : liqHealthSeries;
+    if (healthSeries && li.health_dist) {
       const hd = li.health_dist;
       const time = Math.floor(Date.now() / 1000);
-      liqHealthSeries.setData([
+      healthSeries.setData([
         { time: time - 3, open: 0, high: hd["<1.0"] || 0, low: 0, close: hd["<1.0"] || 0, color: "#ef4444" },
         { time: time - 2, open: 0, high: hd["1.0-1.05"] || 0, low: 0, close: hd["1.0-1.05"] || 0, color: "#f59e0b" },
         { time: time - 1, open: 0, high: hd["1.05-1.1"] || 0, low: 0, close: hd["1.05-1.1"] || 0, color: "#22c55e" },
@@ -2831,9 +2942,10 @@
     const rEl = el("liq-comp-rate"); if (rEl) rEl.textContent = ((comp.success_rate || 0) * 100).toFixed(0) + "%";
     const mEl = el("liq-comp-missed"); if (mEl) mEl.textContent = comp.missed || 0;
 
-    if (liqVolumeSeries && li.volume_history && li.volume_history.length) {
+    const volumeSeries = prefix === "sol" ? solLiqVolumeSeries : liqVolumeSeries;
+    if (volumeSeries && li.volume_history && li.volume_history.length) {
       const series = li.volume_history.map(h => ({ time: h.ts, value: h.volume }));
-      liqVolumeSeries.setData(series);
+      volumeSeries.setData(series);
     }
   };
 
@@ -3913,7 +4025,7 @@
         const s = window.__lastState;
         updateHeader(s);
         updateBots(s); updateFunds(s); updateMempool(s);
-        updateOpps(s); updateCompetitors(s); updateIntel(s); updateBroadcast(s); updatePrices(s);
+        updateOpps(s); updateCompetitors(s); updateTradingIntel(s); updateLiqIntel(s); updateBroadcast(s); updatePrices(s);
       }
       requestAnimationFrame(() => {
         resizeEthChart();
@@ -3977,7 +4089,7 @@
     }
     /* Heavy ETH card DOM only while ETH tab is visible — WS stays connected */
     updateBots(s); updateFunds(s); updateMempool(s);
-    updateOpps(s); updateCompetitors(s); updateIntel(s); updateBroadcast(s); updatePrices(s);
+    updateOpps(s); updateCompetitors(s); updateTradingIntel(s); updateLiqIntel(s); updateBroadcast(s); updatePrices(s);
     if (!window.__logInit) { updateLog(s, s.log); window.__logInit = true; }
     if (ethSeries) ethSeries.setMarkers(buildTradeMarkers(s.paper_eth && s.paper_eth.recent_trades));
     updateRangeLines(ethChart, ethRangeHigh, ethRangeLow, s.paper_eth);
