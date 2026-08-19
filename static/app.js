@@ -1405,6 +1405,42 @@
     if (solAlAutoscroll && feed) feed.scrollTop = feed.scrollHeight;
   };
 
+  const buildTradeMarkers = (trades) => {
+    if (!trades || !trades.length) return [];
+    const markers = [];
+    for (const t of trades) {
+      if (t.entry_ts) {
+        markers.push({
+          time: Math.floor(t.entry_ts / 1000),
+          position: t.direction === "long" ? "belowBar" : "aboveBar",
+          color: t.direction === "long" ? "#22c55e" : "#ef4444",
+          shape: t.direction === "long" ? "arrowUp" : "arrowDown",
+          text: `${t.direction.toUpperCase()} @ $${fmt.num(t.entry_price, 2)}`,
+        });
+      }
+      if (t.leg1_exit_price && t.leg1_exit_ts) {
+        markers.push({
+          time: Math.floor(t.leg1_exit_ts / 1000),
+          position: "aboveBar",
+          color: "#22d3ee",
+          shape: "circle",
+          text: `TP1 ${t.leg1_pnl > 0 ? "+" : ""}$${fmt.num(t.leg1_pnl, 2)}`,
+        });
+      }
+      if (t.leg2_exit_price && t.leg2_exit_ts) {
+        markers.push({
+          time: Math.floor(t.leg2_exit_ts / 1000),
+          position: "aboveBar",
+          color: t.exit_reason === "stop_loss" ? "#ef4444" : "#22d3ee",
+          shape: "cross",
+          text: `${t.exit_reason === "stop_loss" ? "SL" : "TRAIL"} ${t.leg2_pnl > 0 ? "+" : ""}$${fmt.num(t.leg2_pnl, 2)}`,
+        });
+      }
+    }
+    markers.sort((a, b) => a.time - b.time);
+    return markers;
+  };
+
   const renderSol = (s) => {
     const sol = s.sol || {};
     window.__lastSolBcast = sol.broadcast || {};
@@ -1418,6 +1454,7 @@
     updateSolIntel(sol);
     updateSolPrices(sol);
     updateSolLog(s);
+    if (solSeries) solSeries.setMarkers(buildTradeMarkers(s.paper_sol && s.paper_sol.recent_trades));
     updateRangeLines(solChart, solRangeHigh, solRangeLow, s.paper_sol);
   };
 
@@ -3763,6 +3800,7 @@
     updateBots(s); updateFunds(s); updateMempool(s);
     updateOpps(s); updateCompetitors(s); updateIntel(s); updateBroadcast(s); updatePrices(s);
     if (!window.__logInit) { updateLog(s, s.log); window.__logInit = true; }
+    if (ethSeries) ethSeries.setMarkers(buildTradeMarkers(s.paper_eth && s.paper_eth.recent_trades));
     updateRangeLines(ethChart, ethRangeHigh, ethRangeLow, s.paper_eth);
   };
 
