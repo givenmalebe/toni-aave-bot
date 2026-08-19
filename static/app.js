@@ -107,36 +107,6 @@
       },
     },
   });
-  const chartArb = mkChart("chart-arb", {
-    type: "line",
-    data: {
-      labels: [],
-      datasets: [
-        { label: "best net", data: [], borderColor: "#22c55e", backgroundColor: "#22c55e33",
-          pointRadius: 0, borderWidth: 2, tension: .35, fill: true, yAxisID: "y" },
-        { label: "actionable", data: [], borderColor: "#22d3ee", backgroundColor: "transparent",
-          pointRadius: 0, borderWidth: 1.5, tension: .35, yAxisID: "y1" },
-      ],
-    },
-    options: {
-      responsive: true, animation: false, maintainAspectRatio: false,
-      interaction: { mode: "index", intersect: false },
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { display: false },
-        y: {
-          ticks: { font: { size: 8 }, color: "#64748b", maxTicksLimit: 4 },
-          grid: { color: "#1e293b55" },
-        },
-        y1: {
-          position: "right",
-          beginAtZero: true,
-          ticks: { font: { size: 8 }, color: "#22d3ee", maxTicksLimit: 3 },
-          grid: { drawOnChartArea: false },
-        },
-      },
-    },
-  });
   const chartHours = mkChart("chart-hours", {
     type: "bar",
     data: {
@@ -257,91 +227,47 @@
       },
     },
   });
-  const solChartArb = mkChart("sol-chart-arb", {
-    type: "line",
-    data: { labels: [], datasets: [
-      { label: "best net", data: [], borderColor: "#22c55e", backgroundColor: "#22c55e33",
-        pointRadius: 0, borderWidth: 2, tension: .35, fill: true, yAxisID: "y" },
-      { label: "actionable", data: [], borderColor: "#a78bfa", backgroundColor: "transparent",
-        pointRadius: 0, borderWidth: 1.5, tension: .35, yAxisID: "y1" },
-    ]},
-    options: {
-      responsive: true, animation: false, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { display: false },
-        y: { ticks: { font: { size: 8 }, color: "#64748b", maxTicksLimit: 4 }, grid: { color: "#1e293b55" } },
-        y1: { position: "right", beginAtZero: true,
-          ticks: { font: { size: 8 }, color: "#a78bfa", maxTicksLimit: 3 },
-          grid: { drawOnChartArea: false } },
-      },
-    },
-  });
-  const solChartHours = mkChart("sol-chart-hours", {
-    type: "bar",
-    data: {
-      labels: Array.from({ length: 24 }, (_, h) => String(h).padStart(2, "0")),
-      datasets: [{ data: Array(24).fill(0), backgroundColor: Array(24).fill("#a78bfa66"),
-        borderColor: "#a78bfa", borderWidth: 1, borderRadius: 2 }],
-    },
-    options: {
-      responsive: true, animation: false, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { font: { size: 8 }, color: "#64748b", maxRotation: 0, autoSkip: true, maxTicksLimit: 12 },
-          grid: { color: "#1e293b55" } },
-        y: { beginAtZero: true, ticks: { font: { size: 9 }, color: "#64748b", maxTicksLimit: 4 },
-          grid: { color: "#1e293b55" } },
-      },
-    },
-  });
-  const solChartDows = mkChart("sol-chart-dows", {
-    type: "bar",
-    data: {
-      labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-      datasets: [{ data: [0, 0, 0, 0, 0, 0, 0], backgroundColor: Array(7).fill("#c084fc66"),
-        borderColor: "#c084fc", borderWidth: 1, borderRadius: 2 }],
-    },
-    options: {
-      responsive: true, animation: false, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { font: { size: 9 }, color: "#64748b" }, grid: { color: "#1e293b55" } },
-        y: { beginAtZero: true, ticks: { font: { size: 9 }, color: "#64748b", maxTicksLimit: 4 },
-          grid: { color: "#1e293b55" } },
-      },
-    },
-  });
-  const solGauge = mkChart("sol-gauge", {
-    type: "doughnut",
-    data: { datasets: [{ data: [0, 100], backgroundColor: ["#a78bfa", "#1e293b"], borderWidth: 0 }] },
-    options: {
-      responsive: true, animation: false, maintainAspectRatio: false,
-      cutout: "78%", plugins: { legend: { display: false }, tooltip: { enabled: false } },
-    },
-  });
-  const solChartIntelTrend = mkChart("sol-chart-intel-trend", {
-    type: "line",
-    data: { labels: [], datasets: [{
-      data: [], borderColor: "#a78bfa", backgroundColor: "#a78bfa22",
-      pointRadius: 0, borderWidth: 2, tension: .35, fill: true,
-    }]},
-    options: {
-      responsive: true, animation: false, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { display: false },
-        y: { min: 0, max: 1,
-          ticks: { font: { size: 8 }, color: "#64748b", maxTicksLimit: 3,
-            callback: (v) => Math.round(v * 100) + "%" },
-          grid: { color: "#1e293b55" } },
-      },
-    },
-  });
   const solIntelTrendHist = [];
-  let solMpFilter = "all", solOpFilter = "all", solArFilter = "all", solBcFilter = "all", solCpFilter = "all";
-  let solMpLiveCache = [], solOpCache = [], solArCache = [], solBcRowsCache = [], solCpCache = [];
+  let solMpFilter = "all", solOpFilter = "all", solBcFilter = "all", solCpFilter = "all";
+  let solMpLiveCache = [], solOpCache = [], solBcRowsCache = [], solCpCache = [];
+  let solWatchCache = [];
   let solOpLastMeta = {}, solCpLastMeta = {};
+  const leftoverTxt = (o) => {
+    if (!o) return "";
+    if (Array.isArray(o.leftover)) return o.leftover.filter(Boolean).join(" · ");
+    return String(o.leftover || "");
+  };
+  const GATE_TITLE_ETH = "Live send off until Sim off + Keep Live + LIQ_CONTRACT / GenericFlashLiquidator KIND. Hunt still works.";
+  const GATE_TITLE_ETH_LIVE = "Aave sendable. Spark/Compound/Morpho stay blocked until GenericFlashLiquidator KIND. Hunt still works.";
+  const GATE_TITLE_SOL = "Live send off until Sim off + Keep Live. Hunt still works.";
+  const GATE_TITLE_SOL_LIVE = "Keep Live / armed — sendable when funded. Hunt still works.";
+  const paintOpGate = (id, meta, chain) => {
+    const el = $(id);
+    if (!el) return;
+    const gate = String((meta && meta.submit_gate) || "blocked");
+    let label = "send off";
+    let cls = "blocked";
+    if (gate === "live") { label = "sendable"; cls = "live"; }
+    else if (gate === "sim") { label = "sim only"; cls = "sim"; }
+    const base = chain === "sol"
+      ? (gate === "live" ? GATE_TITLE_SOL_LIVE : GATE_TITLE_SOL)
+      : (gate === "live" ? GATE_TITLE_ETH_LIVE : GATE_TITLE_ETH);
+    const reason = String((meta && meta.submit_reason) || "");
+    el.textContent = label;
+    el.className = "op-gate-chip " + cls;
+    el.title = (reason && gate !== "live") ? `${base} (${reason})` : base;
+  };
+  const oppUsd = (row, key) => {
+    if (!row) return null;
+    const usd = row[key + "_usd"];
+    if (usd != null && usd !== "") {
+      const n = Number(usd);
+      if (Number.isFinite(n)) return n;
+    }
+    const raw = Number(row[key]);
+    if (!Number.isFinite(raw) || raw === 0) return null;
+    return raw > 1e12 ? raw / 1e26 : raw;
+  };
   const solHfUrgency = (hf) => {
     if (hf == null || hf >= 100) return { cls: "ok", label: "—" };
     if (hf < 1.0) return { cls: "crit", label: "liq" };
@@ -361,6 +287,180 @@
     const s = pk || "";
     if (!s) return "--";
     return s.length > 12 ? `${s.slice(0, 6)}…${s.slice(-4)}` : s;
+  };
+  const honestUsd = (v) => {
+    if (v == null || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  const fmtHonestUsd = (v) => {
+    const n = honestUsd(v);
+    return n == null ? "—" : fmt.usd(n);
+  };
+  const rowEstUsd = (c) => honestUsd(
+    c && (c.est_profit_usd != null ? c.est_profit_usd : c.est));
+  const rowNetUsd = (c) => honestUsd(
+    c && (c.net_est_usd != null ? c.net_est_usd : c.net));
+  const feedWindowNote = (shown, feedN, hourN, filtered) => {
+    const feed = Number(feedN) || 0;
+    const hour = hourN == null ? 0 : Number(hourN) || 0;
+    if (filtered && shown !== feed)
+      return `${shown}/${feed} shown · ${hour} in last hour`;
+    return `${feed} in feed · ${hour} in last hour`;
+  };
+  const cpScanLine = (meta, feedN, lastHit) => {
+    const m = meta || {};
+    const windowN = m.n_logs != null ? Number(m.n_logs) : null;
+    const feed = feedN != null ? Number(feedN) : Number(m.total) || 0;
+    const hit = lastHit || m.last_hit_ts;
+    const bits = [];
+    if (windowN != null && Number.isFinite(windowN))
+      bits.push(`this window <b>${fmt.num(windowN, 0)}</b>`);
+    bits.push(`feed <b>${fmt.num(feed, 0)}</b>`);
+    if (hit) bits.push(`last hit <b>${fmt.age(hit)} ago</b>`);
+    return bits.join(" · ");
+  };
+  const cpLeftoverBits = (c) => [].concat(c && c.leftover || []).filter(Boolean);
+  const HOUR_S = 3600;
+  const SOL_SLOTS_PER_HOUR = 9000;
+  const rowUnixTs = (c) => {
+    let ts = Number(c && c.ts);
+    if (!Number.isFinite(ts) || ts <= 0) return 0;
+    if (ts > 1e12) ts = Math.floor(ts / 1000);
+    return ts;
+  };
+  const inLastHour = (c, now, lastSlot) => {
+    const ts = rowUnixTs(c);
+    if (ts >= 1e9) return (now - ts) <= HOUR_S && (now - ts) >= -60;
+    const slot = Number(c && c.slot);
+    const tip = Number(lastSlot);
+    if (Number.isFinite(slot) && slot > 0 && Number.isFinite(tip) && tip > 0)
+      return (tip - slot) >= 0 && (tip - slot) <= SOL_SLOTS_PER_HOUR;
+    return true;
+  };
+  const lastHitTs = (meta, rows) => {
+    if (meta && meta.last_hit_ts) return meta.last_hit_ts;
+    let mx = 0;
+    for (const c of rows || []) {
+      const ts = rowUnixTs(c);
+      if (ts > mx) mx = ts;
+    }
+    return mx || null;
+  };
+  const pairMixFromRows = (rows, now, lastSlot) => {
+    const hour = (rows || []).filter((c) => inLastHour(c, now, lastSlot));
+    const src = hour.length ? hour : (rows || []);
+    const pairCounts = {};
+    for (const c of src) {
+      const pair = c.pair || `${c.coll_sym || "?"}\u2192${c.debt_sym || "?"}`;
+      pairCounts[pair] = (pairCounts[pair] || 0) + 1;
+    }
+    const total = Object.values(pairCounts).reduce((a, b) => a + b, 0) || 1;
+    return Object.entries(pairCounts)
+      .map(([pair, n]) => ({ pair, n, pct: Math.round((1000 * n) / total) / 10, share: n / total }))
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 10);
+  };
+  const searcherShareFromRows = (rows, now, lastSlot) => {
+    const hour = (rows || []).filter((c) => inLastHour(c, now, lastSlot));
+    const by = {};
+    for (const c of hour) {
+      const addr = String(c.searcher || c.liquidator || "").trim();
+      if (!addr) continue;
+      const slot = by[addr] || {
+        addr, searcher: addr, short: addr.slice(0, 10), n: 0, est: 0, sum_est: 0,
+      };
+      slot.n += 1;
+      const est = rowEstUsd(c);
+      if (est != null) {
+        slot.est += est;
+        slot.sum_est += est;
+      }
+      by[addr] = slot;
+    }
+    const n = hour.length;
+    return Object.values(by)
+      .map((v) => ({
+        ...v,
+        est: Math.round(v.est * 100) / 100,
+        sum_est: Math.round(v.sum_est * 100) / 100,
+        share: n ? v.n / n : 0,
+        pct: n ? Math.round((1000 * v.n) / n) / 10 : 0,
+      }))
+      .sort((a, b) => b.n - a.n || b.est - a.est)
+      .slice(0, 10);
+  };
+  const searcherShareAllTime = (rows) => {
+    const by = {};
+    for (const c of (rows || [])) {
+      const addr = String(c.searcher || c.liquidator || "").trim();
+      if (!addr) continue;
+      const slot = by[addr] || {
+        addr, searcher: addr, short: addr.slice(0, 10), n: 0, est: 0, sum_est: 0,
+      };
+      slot.n += 1;
+      const est = rowEstUsd(c);
+      if (est != null) {
+        slot.est += est;
+        slot.sum_est += est;
+      }
+      by[addr] = slot;
+    }
+    const n = (rows || []).length;
+    return Object.values(by)
+      .map((v) => ({
+        ...v,
+        est: Math.round(v.est * 100) / 100,
+        sum_est: Math.round(v.sum_est * 100) / 100,
+        share: n ? v.n / n : 0,
+        pct: n ? Math.round((1000 * v.n) / n) / 10 : 0,
+      }))
+      .sort((a, b) => b.n - a.n || b.est - a.est)
+      .slice(0, 10);
+  };
+  const resolveTopSearchers = (meta, rows, lastSlot) => {
+    const now = Math.floor(Date.now() / 1000);
+    const computed = searcherShareFromRows(rows, now, lastSlot);
+    if (computed.length) return { tops: computed, label: "1h" };
+    const allTime = searcherShareAllTime(rows);
+    if (allTime.length) return { tops: allTime, label: "all time" };
+    const metaTops = (meta && meta.top_searchers) || [];
+    return { tops: metaTops, label: metaTops.length ? "1h" : "" };
+  };
+  const renderTopSearchers = ({ tableId, emptyId, tops, meta, shortFn, label }) => {
+    const body = $(tableId) && $(tableId).querySelector("tbody");
+    const empty = $(emptyId);
+    const scanned = !!(meta && (
+      meta.last_scan || meta.last_slot || meta.last_block || meta.status === "ok"
+      || (meta.total != null && Number(meta.total) > 0)
+    ));
+    if (empty) {
+      if (tops.length) {
+        empty.style.display = "none";
+      } else {
+        empty.style.display = "block";
+        empty.classList.remove("err");
+        empty.textContent = scanned
+          ? "no searcher share yet"
+          : "waiting for liquidations\u2026";
+      }
+    }
+    if (!body) return;
+    body.innerHTML = tops.map((t, i) => {
+      const addr = t.addr || t.searcher || "";
+      const pct = t.pct != null ? Number(t.pct) : Math.round((Number(t.share) || 0) * 100);
+      const est = t.est != null ? t.est : t.sum_est;
+      const lbl = shortFn ? shortFn(addr) : (addr ? `${addr.slice(0, 6)}\u2026${addr.slice(-4)}` : "--");
+      return `<tr>
+        <td class="dim">${i + 1}</td>
+        <td class="mono copy" title="${addr}" data-addr="${addr}">${lbl}</td>
+        <td><div class="cp-bar-track"><div class="cp-bar" style="width:${Math.min(100, Math.max(0, pct || 0))}%"></div></div></td>
+        <td>${fmt.num(t.n, 0)}</td>
+        <td style="color:var(--amber)">${fmtHonestUsd(est)}</td>
+      </tr>`;
+    }).join("");
+    const tagEl = body.closest(".cp-col") && body.closest(".cp-col").querySelector("h3 .tag");
+    if (tagEl && label) tagEl.textContent = label + " share";
   };
   const solLiqFlagBits = (o) => {
     const bits = [];
@@ -409,11 +509,10 @@
     const bcastEl = $("p-bcast");
     if (bcastEl) {
       if (!bc.enabled) bcastEl.textContent = "off";
-      else if (ready.liq || ready.arb) bcastEl.textContent =
-        (ready.liq ? "liq" : "") + (ready.liq && ready.arb ? "+" : "") + (ready.arb ? "arb" : "");
+      else if (ready.liq) bcastEl.textContent = "liq";
       else bcastEl.textContent = "blocked";
       bcastEl.style.color = (!bc.enabled ? "var(--amber)"
-        : (ready.liq || ready.arb) ? "var(--green)" : "var(--red)");
+        : ready.liq ? "var(--green)" : "var(--red)");
     }
   };
 
@@ -430,11 +529,11 @@
       labels: {
         mempool: "Priority Fee Watcher", prices: "Slot / SOL Price", funds: "SOL Funds",
         sweep: "Solend Opportunity Sweep", competitors: "Solend Program Watch",
-        arb: "Jupiter Arb Scanner", intel: "SOL Learning / Intel", broadcast: "SOL Broadcast",
+        intel: "SOL Learning / Intel", broadcast: "SOL Broadcast",
       },
       roles: {
         mempool: "landing", prices: "oracle", funds: "wallets", sweep: "HF",
-        competitors: "liq", arb: "Jup", intel: "learn", broadcast: "submit",
+        competitors: "liq", intel: "learn", broadcast: "submit",
       },
       funds,
       wallets: (sol || {}).wallets || {
@@ -454,7 +553,12 @@
     const perf = sol.performance || {};
     const set = (id, v) => { const e = $(id); if (e) e.textContent = v; };
     set("sol-fp-grade", perf.grade || "—");
-    set("sol-fp-verdict", perf.verdict || "—");
+    const totalSol = ((funds.sponsor || {}).sol || 0) + ((funds.bot || {}).sol || 0);
+    const totalShort = ((funds.sponsor || {}).shortfall_sol || 0) + ((funds.bot || {}).shortfall_sol || 0);
+    const verdText = totalShort > 0
+      ? `${fmt.num(totalSol, 4)} SOL funded · ${fmt.num(totalShort, 2)} short`
+      : (perf.verdict || "—");
+    set("sol-fp-verdict", verdText);
     set("sol-fp-equity", perf.equity_usd != null ? fmt.usd(perf.equity_usd) : "--");
     set("sol-fp-pnl", perf.session_pnl != null ? fmt.usd(perf.session_pnl) : "--");
     set("sol-fp-realized", perf.realized != null ? fmt.usd(perf.realized) : "--");
@@ -501,18 +605,21 @@
     const tb = g.bot_target_sol != null ? g.bot_target_sol : 0.25;
     const check = $("sol-fund-checklist");
     if (check) {
-      const row = (label, amt, pk, note) => {
+      const sponsorOk = ((funds.sponsor || {}).sol || 0) >= ts;
+      const botOk = ((funds.bot || {}).sol || 0) >= tb;
+      const row = (label, amt, pk, note, ok) => {
         const short = pk ? `${pk.slice(0, 4)}…${pk.slice(-4)}` : "unset";
-        return `<div class="sol-fund-row"><span class="dim">${label}</span><b>${amt}</b>` +
+        const icon = ok ? "✓" : "○";
+        return `<div class="sol-fund-row"><span class="dim">${icon} ${label}</span><b>${amt}</b>` +
           (pk
             ? `<span class="mono copy" data-addr="${pk}" title="${pk}">${short}</span>`
             : `<span class="mono dim">unset</span>`) +
           `<span class="dim">${note}</span></div>`;
       };
       check.innerHTML =
-        `<div class="sol-fund-h">send from funder <span class="mono copy" data-addr="${fd}">${fd ? fd.slice(0,4)+"…"+fd.slice(-4) : "—"}</span></div>` +
-        row("sponsor", ts + " SOL", sp, "Jito + prio") +
-        row("bot", tb + " SOL", bt, "CU + inventory");
+        `<div class="sol-fund-h">from funder <span class="mono copy" data-addr="${fd}">${fd ? fd.slice(0,4)+"…"+fd.slice(-4) : "—"}</span></div>` +
+        row("sponsor", ts + " SOL", sp, "Jito + prio", sponsorOk) +
+        row("bot", tb + " SOL", bt, "CU + inventory", botOk);
     }
     const amtEl = $("sol-fund-amt");
     if (amtEl && amtEl.dataset.dirty !== "1") {
@@ -555,7 +662,7 @@
           if (solMpFilter === "hot") return t.cls === "hot" || k === "liq";
           return k === solMpFilter || t.cls === solMpFilter;
         });
-    if (note) note.textContent = `${live.length}/${solMpLiveCache.length} · landing`;
+    if (note) note.textContent = `${live.length}/${solMpLiveCache.length} · decoded`;
     if (empty) empty.style.display = live.length ? "none" : "block";
     body.innerHTML = live.slice(0, 50).map((t) => {
       const slot = t.slot != null ? String(t.slot) : "--";
@@ -565,15 +672,16 @@
           (t.sig || t.tx ? ` <span class="mono copy op-link" data-addr="${t.sig || t.tx}" title="${t.sig || t.tx}">copy</span>` : "")
         : `<span class="mono dim">${slot.slice(-8)}</span>`;
       const pair = t.pair || t.searcher || "";
-      const hf = t.hf != null ? fmt.num(t.hf, 3) : (t.fee != null ? fmtUl(t.fee) : "—");
-      const net = t.profit_usd != null ? fmt.usd(t.profit_usd, 3)
-        : (t.vs_med != null ? fmt.num(t.vs_med, 1) + "×" : "—");
+      const feeVal = t.fee != null ? t.fee : (t.fee_lamports != null ? Math.round(t.fee_lamports / 1_000_000_000 * 1e6) : null);
+      const fee = feeVal != null ? fmtUl(feeVal) : (t.hf != null ? fmt.num(t.hf, 3) : "—");
+      const vsMed = t.vs_med != null ? fmt.num(t.vs_med, 1) + "×"
+        : (t.profit_usd != null ? fmt.usd(t.profit_usd, 3) : "—");
       return `<tr>
         <td><span class="sol-kind ${kind}">${kind}</span></td>
         <td class="mono" title="${slot}">${slot}</td>
         <td>${pair}</td>
-        <td>${hf}</td>
-        <td class="${Number(t.profit_usd) > 0 ? "green" : "dim"}">${net}</td>
+        <td>${fee}</td>
+        <td class="${Number(t.vs_med) > 2 ? "green" : "dim"}">${vsMed}</td>
         <td>${link}</td>
       </tr>`;
     }).join("");
@@ -590,7 +698,8 @@
     set("sol-mp-count", fmt.num(meta.liq_hits != null ? meta.liq_hits : 0));
     set("sol-mp-queued", fmt.num(meta.mev_hits != null ? meta.mev_hits : (meta.jito_bundles || 0)), "dim");
     set("sol-mp-mev-live-n", meta.median_fee != null ? fmtUl(meta.median_fee) : "--", "amber");
-    set("sol-mp-mev-share", meta.p90_fee != null ? fmtUl(meta.p90_fee) : "--", "dim");
+    const nvTps = meta.nv_tps != null ? Math.round(meta.nv_tps) : (meta.tps != null ? Math.round(meta.tps) : null);
+    set("sol-mp-mev-share", nvTps != null ? fmt.num(nvTps, 0) : "--", "dim");
     const badge = $("sol-mp-pressure");
     if (badge) {
       badge.textContent = meta.pressure || "idle";
@@ -598,15 +707,13 @@
     }
     const metaEl = $("sol-mp-meta");
     if (metaEl) {
-      const tps = meta.tps != null ? fmt.num(meta.tps, 0) : "--";
       metaEl.innerHTML =
-        `<span>p99 <b>${fmtUl(meta.p99_fee)}</b></span>` +
-        `<span>decoded <b>${fmt.num(meta.decoded, 0)}</b></span>` +
-        `<span>refresh <b>${fmt.num(meta.refresh_n, 0)}</b></span>` +
-        `<span>jito <b>${fmt.num(meta.jito_bundles, 0)}</b></span>` +
-        `<span>race <b>${fmt.num(meta.contested, 0)}</b></span>` +
-        `<span>TPS <b>${tps}</b></span>` +
-        `<span class="dim">${meta.landing_note || "landing + µl/CU"}</span>`;
+        (meta.scanned != null ? `<span>decoded <b>${fmt.num(meta.decoded, 0)}</b></span>` : "") +
+        (meta.refresh_n != null ? `<span>refresh <b>${fmt.num(meta.refresh_n, 0)}</b></span>` : "") +
+        (meta.jito_bundles != null ? `<span>jito <b>${fmt.num(meta.jito_bundles, 0)}</b></span>` : "") +
+        (meta.contested != null ? `<span>race <b>${fmt.num(meta.contested, 0)}</b></span>` : "") +
+        (meta.zero_pct != null ? `<span>zero <b>${fmt.num(meta.zero_pct, 0)}%</b></span>` : "") +
+        `<span class="dim">${meta.landing_note || "Solend landing · priority fees"}</span>`;
     }
     const track = $("sol-mp-mix-track");
     const keys = $("sol-mp-mev");
@@ -664,9 +771,10 @@
     const contested = $("sol-mp-contested");
     if (contested) {
       contested.innerHTML = meta.tps != null
-        ? `<span>cluster TPS <b>${fmt.num(meta.tps, 0)}</b></span>` +
+        ? `<span>cluster <b>${fmt.num(meta.tps, 0)}</b> TPS</span>` +
           (meta.nv_tps != null ? `<span>non-vote <b>${fmt.num(meta.nv_tps, 0)}</b></span>` : "") +
-          `<span>hot share <b>${fmt.num(meta.hot_share_pct, 0)}%</b></span>`
+          `<span>hot <b>${fmt.num(meta.hot_share_pct, 0)}%</b></span>` +
+          (meta.zero_pct != null ? `<span>zero-fee <b>${fmt.num(meta.zero_pct, 0)}%</b></span>` : "")
         : "";
     }
     const feeMed = (hist && hist.sol_fee_median) || [];
@@ -692,7 +800,14 @@
     else if (solOpFilter === "race") rows = rows.filter((o) => o.race || o.contested);
     else if (solOpFilter === "hf1") rows = rows.filter((o) => o.hf != null && o.hf < 1);
     const note = $("sol-op-feed-note");
-    if (note) note.textContent = `${rows.length}/${solOpCache.length} · HF<1 · skip dust`;
+    const watchN = (solOpLastMeta && solOpLastMeta.watch_n) != null
+      ? solOpLastMeta.watch_n
+      : solWatchCache.length;
+    if (note) {
+      note.textContent = solOpCache.length
+        ? `${rows.length}/${solOpCache.length} in feed · HF<1 +EV`
+        : `0 in feed · ${fmt.num(watchN, 0)} in watch`;
+    }
     if (empty) {
       if (rows.length) {
         empty.style.display = "none";
@@ -700,18 +815,20 @@
       } else {
         empty.style.display = "block";
         const m = solOpLastMeta || {};
-        if (m.status && String(m.status).startsWith("err")) {
+        const fatal = m.status === "error" && !(m.last_scan && (m.scanned || m.obligation_hydrated || m.obligation_probed));
+        if (fatal || (m.status === "error" && !m.last_scan)) {
           empty.classList.add("err");
-          empty.textContent = "sweep error: " + m.status;
+          empty.textContent = "sweep error: " + (m.note || m.status);
+        } else if (solOpFilter !== "all") {
+          empty.classList.remove("err");
+          empty.textContent = `no HF<1 +EV match this filter · ${solOpFilter} · ${solOpCache.length} in feed · ${fmt.num(watchN, 0)} in watch`;
         } else if (m.last_scan || m.last_slot) {
           empty.classList.remove("err");
-          empty.textContent = `no HF<1 +EV this scan · ${fmt.num(m.scanned || m.obligation_hydrated || 0, 0)} hydrates`
-            + (m.obligation_probed != null ? ` · ${fmt.num(m.obligation_probed, 0)} GPA` : "")
-            + (m.last_slot ? ` · slot ${m.last_slot}` : "")
-            + (m.last_scan ? ` · ${fmt.age(m.last_scan)} ago` : "");
+          empty.textContent = `no HF<1 +EV this sweep · watch ${fmt.num(watchN, 0)}`
+            + (m.last_scan ? ` · last scan ${fmt.age(m.last_scan)} ago` : "");
         } else {
           empty.classList.remove("err");
-          empty.textContent = "scanning Solend obligations for HF<1…";
+          empty.textContent = "scanning Solend obligations for HF<1 +EV…";
         }
       }
     }
@@ -721,8 +838,9 @@
       const hf = o.hf;
       const hfCell = hf == null ? "--" : (hf >= 100 ? "∞" : Number(hf).toFixed(3));
       const pair = `${o.coll_sym || o.collateral_sym || "?"} → ${o.debt_sym || "?"}`;
+      const repay = o.repay_usd != null ? o.repay_usd : o.cover_usd;
       const sizes = (o.coll_usd != null || o.debt_usd != null)
-        ? `<div class="dim">${fmt.usd(o.coll_usd)} / ${fmt.usd(o.debt_usd)}</div>` : "";
+        ? `<div class="dim">${fmt.usd(o.coll_usd)} / ${fmt.usd(o.debt_usd)}${repay != null ? ` · repay ${fmt.usd(repay)}` : ""}</div>` : "";
       const net = o.net_usd != null ? o.net_usd : o.profit_usd;
       const netColor = net == null ? "var(--dim)" : net > 0 ? "var(--green)" : "var(--red)";
       return `<tr>
@@ -740,7 +858,7 @@
     const meta = sol.opportunities_meta || {};
     solOpLastMeta = meta;
     const opps = (sol.opportunities || []).filter((o) => !o.proxy && o.hf != null && o.hf < 1);
-    const wl = (sol.watchlist || []).filter((w) => !w.proxy && w.hf != null);
+    const wl = (sol.watchlist || []).filter((w) => !w.proxy && w.hf != null).slice(0, 50);
     const set = (id, v, cls) => {
       const e = $(id); if (!e) return;
       e.textContent = v;
@@ -748,9 +866,9 @@
     };
     const count = meta.count != null ? meta.count : opps.length;
     set("sol-op-count", fmt.num(count, 0));
-    set("sol-op-best", meta.best_profit ? fmt.usd(meta.best_profit) : "--", "green");
+    set("sol-op-best", meta.best_profit ? fmt.usd(meta.best_profit) : "—", "green");
     set("sol-op-edge-n", fmt.num(meta.edge_n, 0), "amber");
-    set("sol-op-sweep", fmt.num(meta.scanned != null ? meta.scanned : (meta.obligation_hydrated || 0), 0), "dim");
+    set("sol-op-sweep", fmt.num(meta.watch_n != null ? meta.watch_n : wl.length, 0), "dim");
     const badge = $("sol-op-pressure");
     if (badge) {
       badge.textContent = meta.pressure || "idle";
@@ -784,20 +902,16 @@
         `<div class="op-urg-bar"><i style="width:${Math.round(100 * b.n / maxN)}%"></i></div>` +
         `<span>${b.n}</span></div>`).join("");
     }
+    paintOpGate("sol-op-gate", meta, "sol");
     const metaEl = $("sol-op-meta");
     if (metaEl) {
       const sweepBot = (sol.bots || {}).sweep || {};
-      const gate = meta.submit_gate || "blocked";
       metaEl.innerHTML =
-        `<span>Σ net <b style="color:var(--green)">${fmt.usd(meta.sum_profit)}</b></span>` +
-        `<span>watch <b>${fmt.num(wl.length, 0)}</b></span>` +
         (meta.scanned != null ? `<span>scanned <b>${fmt.num(meta.scanned, 0)}</b></span>` : "") +
         (meta.obligation_hydrated != null ? `<span>hyd <b>${fmt.num(meta.obligation_hydrated, 0)}</b></span>` : "") +
         (sweepBot.status ? `<span>sweep <b>${sweepBot.status}</b></span>` : "") +
-        `<span>gate <b>${gate}</b></span>` +
         (meta.last_slot ? `<span>slot <b>${meta.last_slot}</b></span>` : "") +
-        (meta.last_scan ? `<span>${fmt.age(meta.last_scan)} ago</span>` : "") +
-        (meta.avg_hf != null ? `<span>avg HF <b>${Number(meta.avg_hf).toFixed(3)}</b></span>` : "");
+        (meta.last_scan ? `<span>${fmt.age(meta.last_scan)} ago</span>` : "");
     }
     const mix = (meta.pair_mix && meta.pair_mix.length) ? meta.pair_mix : [];
     const track = $("sol-op-mix-track");
@@ -813,27 +927,56 @@
     if (keys) {
       keys.innerHTML = mix.length
         ? mix.map((m) => `<span>${m.pair} <b>${m.n}</b></span>`).join("")
-        : `<span class="dim">no liquidatable pairs</span>`;
+        : `<span class="dim">no liquidatable pairs · see watch →</span>`;
+    }
+    const leftoverEl = $("sol-op-leftover");
+    if (leftoverEl) {
+      const bits = (meta.leftovers || []).filter(Boolean);
+      if (bits.length) {
+        leftoverEl.style.display = "";
+        leftoverEl.textContent = "leftover · " + bits.slice(0, 4).join(" · ");
+      } else if (meta.note && !opps.length && /GPA|blocked|SOLANA_RPC/i.test(String(meta.note))) {
+        leftoverEl.style.display = "";
+        leftoverEl.textContent = "leftover · " + String(meta.note).slice(0, 180);
+      } else {
+        leftoverEl.style.display = "none";
+        leftoverEl.textContent = "";
+      }
     }
     solOpCache = opps.slice(0, 80);
+    solWatchCache = wl;
     renderSolOpps();
     const wnote = $("sol-watch-note");
-    if (wnote) wnote.textContent = `${Math.min(wl.length, 10)} tracked · lowest HF`;
+    if (wnote) wnote.textContent = `${Math.min(wl.length, 50)}/50 · up to 50 lowest HF`;
+    const wempty = $("sol-watch-empty");
+    if (wempty) {
+      if (wl.length) wempty.style.display = "none";
+      else {
+        wempty.style.display = "block";
+        wempty.textContent = meta.last_scan
+          ? "no closest HF this sweep"
+          : "waiting for lowest-HF hydrates…";
+      }
+    }
     const wbody = $("sol-watch-table") && $("sol-watch-table").querySelector("tbody");
     if (wbody) {
-      wbody.innerHTML = wl.slice(0, 10).map((w) => {
-        const hf = Number(w.hf);
-        const hfCell = hf >= 100 ? "∞" : hf.toFixed(3);
+      wbody.innerHTML = wl.slice(0, 50).map((w) => {
+        const hf = w.hf == null ? null : Number(w.hf);
+        const hfCell = hf == null || !Number.isFinite(hf) ? "—" : (hf >= 100 ? "∞" : hf.toFixed(3));
         const urg = solHfUrgency(hf);
         const user = w.user || w.obligation || "";
+        const left = leftoverTxt(w);
+        const urgCell = left
+          ? `<span class="op-urg ${urg.cls}">${urg.label}</span> <span class="pill blocked" title="${String(left).replace(/"/g, "'")}">leftover</span>`
+          : `<span class="op-urg ${urg.cls}">${urg.label}</span>`;
         return `<tr>
           <td class="mono copy" data-addr="${user}" title="click to copy">${solShortPk(user)}</td>
           <td class="${solHfClass(hf)}">${hfCell}</td>
-          <td>${fmt.usd(w.coll_usd)}</td>
-          <td>${fmt.usd(w.debt_usd)}</td>
-          <td><span class="op-urg ${urg.cls}">${urg.label}</span></td>
+          <td>${w.coll_usd != null ? fmt.usd(w.coll_usd) : "—"}</td>
+          <td>${w.debt_usd != null ? fmt.usd(w.debt_usd) : "—"}</td>
+          <td>${urgCell}</td>
         </tr>`;
-      }).join("") || `<tr><td colspan="5" class="dim">waiting for Solend obligation hydrates…</td></tr>`;
+      }).join("");
     }
   };
 
@@ -844,29 +987,36 @@
     let rows = solCpCache;
     if (solCpFilter === "miss") rows = rows.filter((r) => r.missed || r.missed_by_us);
     else if (solCpFilter === "edge") rows = rows.filter((r) => r.edge);
-    else if (solCpFilter === "profit") rows = rows.filter((r) => Number(r.net != null ? r.net : r.est) > 0);
+    else if (solCpFilter === "profit") rows = rows.filter((r) => rowEstUsd(r) != null || rowNetUsd(r) != null);
     else if (solCpFilter === "revert") rows = rows.filter((r) => /revert/i.test(r.flags || ""));
+    const m = solCpLastMeta || {};
     const note = $("sol-cp-feed-note");
-    if (note) note.textContent = `${rows.length}/${solCpCache.length} · newest first`;
+    if (note) note.textContent = feedWindowNote(
+      rows.length, solCpCache.length, m.count_1h, solCpFilter !== "all");
     if (empty) {
       if (rows.length) {
         empty.style.display = "none";
         empty.classList.remove("err");
       } else {
         empty.style.display = "block";
-        const m = solCpLastMeta || {};
-        if (m.status && String(m.status).startsWith("err")) {
+        const st = String(m.status || "");
+        const isErr = st.startsWith("err") || st === "error" || (m.errors && m.errors.length && !m.last_scan);
+        if (isErr && st && st !== "ok") {
           empty.classList.add("err");
-          empty.textContent = "scan error: " + m.status;
+          empty.textContent = "scan error: " + (m.error || st.replace(/^err\s*/i, "") || "RPC failed");
+        } else if (solCpFilter !== "all") {
+          empty.classList.remove("err");
+          empty.textContent = `no rows match filter ${solCpFilter} · ${solCpCache.length} in feed · ${fmt.num(m.count_1h, 0)} in last hour`;
         } else if (m.last_scan || m.last_slot) {
           empty.classList.remove("err");
-          empty.textContent = `no Solend liquidations this window`
+          empty.textContent = `no confirmed liquidations in feed yet`
+            + (m.n_logs != null ? ` · this window ${fmt.num(m.n_logs, 0)}` : "")
             + (m.scanned != null ? ` · ${fmt.num(m.scanned, 0)} sigs` : "")
             + (m.last_slot ? ` · slot ${m.last_slot}` : "")
             + (m.last_scan ? ` · ${fmt.age(m.last_scan)} ago` : "");
         } else {
           empty.classList.remove("err");
-          empty.textContent = "scanning Solend liquidate signatures…";
+          empty.textContent = "scanning Solend main-market liquidate signatures…";
         }
       }
     }
@@ -874,13 +1024,18 @@
       const searcher = c.searcher || "";
       const user = c.user || "";
       const sig = c.sig || c.tx || "";
-      const net = c.net != null ? c.net : c.net_est_usd;
-      const netColor = net == null ? "var(--dim)" : net >= 0 ? "var(--green)" : "var(--red)";
+      const est = rowEstUsd(c);
+      const net = rowNetUsd(c);
       const flags = [];
-      if (c.missed || c.missed_by_us) flags.push(`<span class="cp-flag miss">miss</span>`);
-      if (c.edge) flags.push(`<span class="cp-flag edge">edge</span>`);
+      if (c.missed || c.missed_by_us)
+        flags.push(`<span class="cp-flag miss" title="we saw this confirmed liq and did not send">miss</span>`);
+      if (c.edge)
+        flags.push(`<span class="cp-flag edge" title="long-tail pair">edge</span>`);
       if (/revert/i.test(c.flags || "")) flags.push(`<span class="cp-flag revert">revert</span>`);
       flags.push(`<span class="pill">solend</span>`);
+      const left = cpLeftoverBits(c);
+      if (left.length)
+        flags.push(`<span class="cp-flag left" title="${left.join(", ")}">leftover</span>`);
       const tx = sig
         ? `<a href="${c.solscan || ("https://solscan.io/tx/" + sig)}" target="_blank" rel="noopener" style="color:var(--cyan)">${sig.slice(0, 8)}…</a>` +
           ` <span class="mono copy op-link" data-addr="${sig}" title="${sig}">copy</span>`
@@ -890,9 +1045,9 @@
         <td><b>${c.pair || "solend-liq"}</b></td>
         <td class="mono copy" data-addr="${searcher}" title="${searcher}">${solShortPk(searcher)}</td>
         <td class="mono copy dim" data-addr="${user}" title="${user}">${solShortPk(user)}</td>
-        <td>${c.gas_usd != null ? fmt.usd(c.gas_usd) : "--"}</td>
-        <td style="color:${c.est != null ? "var(--amber)" : "var(--dim)"}">${c.est != null ? fmt.usd(c.est) : "n/a"}</td>
-        <td style="color:${netColor}"><b>${net != null ? fmt.usd(net) : "--"}</b></td>
+        <td class="dim" title="on-chain fee × SOL price — not their profit">${c.gas_usd != null ? fmt.usd(c.gas_usd) : "—"}</td>
+        <td style="color:${est != null ? "var(--amber)" : "var(--dim)"}">${fmtHonestUsd(est)}</td>
+        <td style="color:${net != null ? "var(--green)" : "var(--dim)"}"><b>${fmtHonestUsd(net)}</b></td>
         <td>${flags.join(" ")}</td>
         <td>${tx}</td>
       </tr>`;
@@ -907,12 +1062,17 @@
       e.textContent = v;
       if (cls) e.className = "big " + cls;
     };
-    set("sol-cp-count", fmt.num(meta.count_1h, 0));
+    const solFeedN = (sol.competitors || []).length || meta.total || 0;
+    const solH1 = meta.count_1h || 0;
+    set("sol-cp-count", fmt.num(solH1, 0));
+    set("sol-cp-count-feed", solH1 === 0 && solFeedN ? `${fmt.num(solFeedN, 0)} in feed` : "");
     set("sol-cp-searchers", fmt.num(meta.unique_searchers, 0), "dim");
-    set("sol-cp-sum-est", meta.sum_est_profit ? fmt.usd(meta.sum_est_profit) : "—", "amber");
+    const solAllS = (sol.competitors || []).length ? [...new Set((sol.competitors || []).map(c => c.searcher || c.liquidator || "").filter(Boolean))].length : 0;
+    set("sol-cp-searchers-feed", !(meta.unique_searchers) && solAllS ? `${solAllS} all time` : "");
+    set("sol-cp-sum-est", honestUsd(meta.sum_est_profit) != null ? fmt.usd(meta.sum_est_profit) : "\u2014", "amber");
     set("sol-cp-missed",
       meta.missed_by_us
-        ? `${fmt.num(meta.missed_by_us, 0)}${meta.miss_rate_pct ? ` · ${fmt.num(meta.miss_rate_pct, 0)}%` : ""}`
+        ? `${fmt.num(meta.missed_by_us, 0)}${meta.miss_rate_pct ? ` \u00b7 ${fmt.num(meta.miss_rate_pct, 0)}%` : ""}`
         : "0", "red");
     const badge = $("sol-cp-pressure");
     if (badge) {
@@ -921,40 +1081,58 @@
     }
     const metaEl = $("sol-cp-meta");
     if (metaEl) {
+      const hit = lastHitTs(meta, sol.competitors || []);
       metaEl.innerHTML =
-        `<span>Σ miss <b>${fmt.num(meta.missed_by_us, 0)}</b></span>` +
+        `<span>${cpScanLine(meta, (sol.competitors || []).length, hit)}</span>` +
         `<span>edge <b>${fmt.num(meta.edge_n, 0)}</b></span>` +
         `<span>reverts <b>${fmt.num(meta.revert_n, 0)}</b></span>` +
-        `<span>scanned <b>${fmt.num(meta.scanned, 0)}</b></span>` +
+        (meta.scanned != null ? `<span>scanned <b>${fmt.num(meta.scanned, 0)}</b></span>` : "") +
         `<span>tracked <b>${fmt.num(meta.total, 0)}</b></span>` +
         (meta.last_slot ? `<span>slot <b>${meta.last_slot}</b></span>` : "") +
         (meta.last_scan ? `<span>${fmt.age(meta.last_scan)} ago</span>` : "") +
         (meta.status && meta.status !== "ok" ? `<span style="color:var(--red)">${meta.status}</span>` : "");
     }
+    const leftEl = $("sol-cp-leftover");
+    if (leftEl) {
+      const bits = (meta.leftovers || []).filter(Boolean);
+      if (bits.length) {
+        leftEl.style.display = "";
+        leftEl.textContent = "leftover · " + bits.slice(0, 4).join(" · ");
+      } else {
+        leftEl.style.display = "none";
+        leftEl.textContent = "";
+      }
+    }
     solCpCache = sol.competitors || [];
     renderSolComps();
-    const sbody = $("sol-cp-searcher-table") && $("sol-cp-searcher-table").querySelector("tbody");
-    const sempty = $("sol-cp-searcher-empty");
-    const tops = meta.top_searchers || [];
-    if (sempty) sempty.style.display = tops.length ? "none" : "block";
-    if (sbody) {
-      sbody.innerHTML = tops.map((t, i) =>
-        `<tr><td>${i + 1}</td>
-          <td class="mono copy" data-addr="${t.searcher || ""}" title="${t.searcher || ""}">${solShortPk(t.searcher)}</td>
-          <td>${t.share != null ? Math.round((t.share || 0) * 100) + "%" : ""}</td>
-          <td>${t.n}</td><td>${t.sum_est ? fmt.usd(t.sum_est) : "—"}</td></tr>`
-      ).join("");
-    }
+    const { tops: solTops, label: solTopLabel } = resolveTopSearchers(meta, solCpCache, meta.last_slot);
+    if (solTops.length && !(meta.unique_searchers))
+      set("sol-cp-searchers", fmt.num(solTops.length, 0), "dim");
+    renderTopSearchers({
+      tableId: "sol-cp-searcher-table",
+      emptyId: "sol-cp-searcher-empty",
+      tops: solTops,
+      meta,
+      shortFn: solShortPk,
+      label: solTopLabel,
+    });
     const pbody = $("sol-cp-pair-table") && $("sol-cp-pair-table").querySelector("tbody");
     const pnote = $("sol-cp-pair-note");
-    const mix = meta.pair_mix || [];
+    const ptags = $("sol-cp-pair-tag");
+    const plabel = $("sol-cp-mix-label");
+    const mix1h = meta.pair_mix || [];
+    const solNow = Math.floor(Date.now() / 1000);
+    const mix = mix1h.length ? mix1h : pairMixFromRows(solCpCache, solNow, meta.last_slot);
+    const solMixLabel = mix1h.length ? "last hour" : "all time";
     if (pnote) pnote.textContent = String(mix.length);
+    if (ptags) ptags.textContent = solMixLabel;
+    if (plabel) plabel.textContent = `pair mix (${solMixLabel})`;
     if (pbody) {
       pbody.innerHTML = mix.map((p) =>
         `<tr><td>${p.pair}</td>
           <td><div class="cp-bar-track"><div class="cp-bar pair" style="width:${Math.min(100, p.pct || 0)}%"></div></div></td>
           <td>${p.n}</td><td class="dim">${p.pct ?? ""}%</td></tr>`
-      ).join("");
+      ).join("") || `<tr><td colspan="4" class="dim">no confirmed liquidations</td></tr>`;
     }
     const track = $("sol-cp-mix-track");
     const keys = $("sol-cp-mix-keys");
@@ -967,265 +1145,13 @@
         : `<span style="width:100%;background:#334155"></span>`;
     }
     if (keys) keys.innerHTML = mix.map((m) => `<span>${m.pair} <b>${m.n}</b></span>`).join("")
-      || `<span class="dim">no liquidations this window</span>`;
+      || `<span class="dim">no confirmed liquidations</span>`;
     const ch = (hist && hist.sol_comp_1h) || [];
     if (solChartComp && ch.length) {
       solChartComp.data.labels = ch.map((_, i) => i);
       solChartComp.data.datasets[0].data = ch;
       solChartComp.data.datasets[1].data = ch.map(() => 0);
       solChartComp.update("none");
-    }
-  };
-
-  const SOL_VENUE_COLORS = {
-    jup: "#a78bfa", jupiter: "#a78bfa",
-    raydium: "#22d3ee", "raydium clmm": "#22d3ee",
-    orca: "#f472b6", whirlpool: "#f472b6",
-    meteora: "#f59e0b", "meteora dlmm": "#f59e0b",
-    phoenix: "#22c55e", lifinity: "#38bdf8",
-  };
-
-  const solVenueBadge = (o) => {
-    const raw = String(o.venue || o.hop_src?.[0] || o.dex || "jupiter");
-    const v = raw.toLowerCase();
-    const cls = o.cross_dex || v.includes("→") || v.includes("+") ? "cross"
-      : (v.includes("raydium") ? "raydium" : v.includes("orca") || v.includes("whirl") ? "orca"
-        : v.includes("meteora") ? "meteora" : v.includes("phoenix") ? "phoenix" : "jupiter");
-    const label = (o.cross_dex ? raw : (o.hop_src && o.hop_src[0]) || raw).slice(0, 28);
-    return `<span class="ar-venue ${cls}">${label}</span>`;
-  };
-
-  const solArbFlag = (o) => {
-    const bits = [];
-    if (o.actionable && o.submit === "live") bits.push(`<span class="pill ok">LIVE</span>`);
-    else if (o.actionable) bits.push(`<span class="pill warn">+EV sim</span>`);
-    if (o.submit === "blocked")
-      bits.push(`<span class="pill blocked" title="${o.submit_reason || "blocked"}">blocked</span>`);
-    else if (o.submit === "sim")
-      bits.push(`<span class="pill" title="${o.submit_reason || "sim-only"}">sim</span>`);
-    if (o.use_flash || o.flash)
-      bits.push(`<span class="pill accent">flash</span>`);
-    if (o.flash_fee_bps)
-      bits.push(`<span class="pill" title="Solend flash ${fmt.usd(o.flash_fee_usd)}">${fmt.num(o.flash_fee_bps, 0)} bps</span>`);
-    const left = [].concat(o.leftover || (o.plan && o.plan.leftover) || []).filter(Boolean);
-    if (left.length)
-      bits.push(`<span class="pill blocked" title="${left.join(", ")}">leftover</span>`);
-    if (o.cross_dex) bits.push(`<span class="pill accent">cross</span>`);
-    const src = String(o.quote_src || "").split("+")[0];
-    if (src && src !== "jupiter")
-      bits.push(`<span class="pill">${src}</span>`);
-    bits.push(`<span class="sol-kind mev">${o.kind || "mev"}</span>`);
-    return bits.join(" ");
-  };
-
-  const renderSolArb = () => {
-    const body = $("sol-arb-table") && $("sol-arb-table").querySelector("tbody");
-    const empty = $("sol-arb-empty");
-    if (!body) return;
-    let rows = solArCache.filter((o) => Number(o.net_usd) > 0 && !o.same_pool);
-    if (solArFilter === "live") rows = rows.filter((o) => Number(o.net_usd) > 0 && o.actionable);
-    else if (solArFilter === "cross") rows = rows.filter((o) => o.cross_dex);
-    else if (solArFilter === "local") rows = rows.filter((o) =>
-      /raydium-account|orca-account/i.test(o.quote_src || o.source || ""));
-    else if (solArFilter === "jup") rows = rows.filter((o) =>
-      /jup|jupiter/i.test(o.dex || o.quote_src || o.source || o.venue || ""));
-    const note = $("sol-ar-feed-note");
-    if (note) note.textContent = rows.length ? `${rows.length} +EV` : "+EV after costs";
-    const m = solArMeta || {};
-    const a = solArLastState || {};
-    if (empty) {
-      if (rows.length) {
-        empty.style.display = "none";
-        empty.classList.remove("err");
-      } else {
-        empty.style.display = "block";
-        if (solArError || a.error) {
-          empty.classList.add("err");
-          empty.textContent = "scan error: " + (solArError || a.error);
-        } else if (m.last_scan || a.last_scan) {
-          empty.classList.remove("err");
-          const n = m.pairs != null ? m.pairs : (m.pairs_tried || 0);
-          const q = m.quoted != null ? m.quoted : m.quotes;
-          const skip = m.skipped != null ? m.skipped : (a.near || []).length;
-          const floor = m.min_usd;
-          const mix = m.quote_src_mix || {};
-          const mixBits = Object.keys(mix).length
-            ? Object.entries(mix).map(([k, v]) => `${k}:${v}`).join(" ")
-            : (m.quote_src || "");
-          const loc = m.local_n != null ? m.local_n : 0;
-          const jn = m.jup_n != null ? m.jup_n : 0;
-          empty.textContent = `no +EV this scan · ${fmt.num(n, 0)} pairs`
-            + (q != null ? ` · ${fmt.num(q, 0)} quotes` : "")
-            + (skip != null ? ` · skip ${fmt.num(skip, 0)}` : "")
-            + (floor != null ? ` · floor ${fmt.usd(floor, 4)}` : "")
-            + ` · local ${fmt.num(loc, 0)} / jup ${fmt.num(jn, 0)}`
-            + (m.pools_decoded != null ? ` · pools ${fmt.num(m.pools_decoded, 0)}` : "")
-            + (mixBits ? ` · ${mixBits}` : "")
-            + (m.last_scan ? ` · last ${fmt.age(m.last_scan)}` : "");
-        } else {
-          empty.classList.remove("err");
-          empty.textContent = "waiting for first pool-account scan…";
-        }
-      }
-    }
-    body.innerHTML = rows.slice(0, 40).map((o) => {
-      const netColor = o.net_usd > 0 ? "var(--green)" : "var(--dim)";
-      const hopTip = (o.hop_src || o.labels || []).join(" → ");
-      return `<tr>
-        <td>${solVenueBadge(o)}</td>
-        <td><b>${o.mid || o.path || "?"}</b></td>
-        <td class="mono dim" title="${hopTip}">${o.route || hopTip || "--"}</td>
-        <td>${fmt.num(o.hops || 2, 0)}</td>
-        <td>${o.borrow || ""}</td>
-        <td style="color:var(--amber)">${fmt.usd(o.gross_usd, 4)}</td>
-        <td class="dim">${fmt.usd(o.gas_usd, 4)}</td>
-        <td style="color:${netColor}"><b>${fmt.usd(o.net_usd, 4)}</b></td>
-        <td>${solArbFlag(o)}</td>
-      </tr>`;
-    }).join("");
-  };
-
-  let solArMeta = {};
-  let solArError = null;
-  let solArLastState = {};
-
-  const updateSolArb = (sol, hist) => {
-    const a = sol.arb || sol.mev || {};
-    const meta = a.meta || {};
-    solArMeta = meta;
-    solArError = a.error || null;
-    solArLastState = a;
-    const set = (id, v) => { const e = $(id); if (e) e.textContent = v; };
-    set("sol-ar-live", fmt.num(meta.live, 0));
-    set("sol-ar-actionable", fmt.num(meta.actionable, 0));
-    set("sol-ar-best-net", meta.best_net_usd != null && meta.live ? fmt.usd(meta.best_net_usd, 4) : "--");
-    set("sol-ar-skip-n", fmt.num(meta.skipped != null ? meta.skipped : (meta.near || 0), 0));
-    set("sol-ar-skip-debug-n", fmt.num(meta.skipped != null ? meta.skipped : (a.near || []).length, 0));
-    const badge = $("sol-ar-pressure");
-    if (badge) {
-      badge.textContent = meta.pressure || "idle";
-      badge.className = "ar-pressure-badge " + (meta.pressure || "idle");
-    }
-    const metaEl = $("sol-arb-meta");
-    if (metaEl) {
-      const uni = a.universe && !Array.isArray(a.universe) ? a.universe : {};
-      const dexes = (meta.dexes || uni.venues || ["raydium", "orca"]).join("+") || "local";
-      const gate = meta.submit_gate || "blocked";
-      const gateColor = gate === "live" ? "var(--green)" : gate === "sim" ? "var(--amber)" : "var(--red)";
-      const age = meta.last_scan ? fmt.age(meta.last_scan) : (a.last_scan ? fmt.age(a.last_scan) : null);
-      const sample = meta.sample_route || {};
-      const hopLabs = (sample.labels || []).join("→");
-      const qmix = meta.quote_src_mix || {};
-      const mixBits = Object.keys(qmix).length
-        ? Object.entries(qmix).map(([k, v]) => `${k}:${v}`).join(" ")
-        : (meta.quote_src || "—");
-      metaEl.innerHTML =
-        `<span>pairs <b>${fmt.num(meta.pairs != null ? meta.pairs : uni.pairs, 0)}</b></span>` +
-        `<span>dexes <b>${dexes}</b></span>` +
-        `<span>submit <b style="color:${gateColor}">${gate}</b></span>` +
-        `<span>cross <b style="color:var(--violet)">${fmt.num(meta.cross_dex, 0)}</b></span>` +
-        `<span>quote_src <b>${mixBits}</b></span>` +
-        `<span>local <b>${fmt.num(meta.local_n, 0)}</b></span>` +
-        `<span>jup <b>${fmt.num(meta.jup_n, 0)}</b></span>` +
-        (meta.pools_decoded != null ? `<span>pools <b>${fmt.num(meta.pools_decoded, 0)}/${fmt.num(meta.pools_watch != null ? meta.pools_watch : 11, 0)}</b></span>` : "") +
-        (meta.geyser === false ? `<span>geyser <b>off</b></span>` : "") +
-        (meta.top_mid ? `<span>top <b>${meta.top_mid}</b></span>` : "") +
-        (meta.scan_ms != null ? `<span>scan <b>${fmt.num(meta.scan_ms, 0)}ms</b></span>` : "") +
-        (age ? `<span>last <b>${age}</b></span>` : "") +
-        (meta.scan_slot ? `<span>slot <b>${fmt.num(meta.scan_slot, 0)}</b></span>` : "") +
-        (meta.min_usd != null ? `<span>floor <b>${fmt.usd(meta.min_usd, 4)}</b></span>` : "") +
-        (hopLabs ? `<span>routePlan <b>${hopLabs}</b></span>` : "") +
-        (meta.mode ? `<span>mode <b>${meta.mode}</b></span>` : "") +
-        (a.error ? `<span style="color:var(--red)">${a.error}</span>` : "");
-    }
-    const mix = meta.venue_mix || [];
-    const track = $("sol-ar-mix-track");
-    const keys = $("sol-ar-mix-keys");
-    if (track) {
-      track.innerHTML = mix.length
-        ? mix.map((p) => {
-            const c = SOL_VENUE_COLORS[(p.venue || "").toLowerCase()] || "#64748b";
-            return `<span style="width:${Math.max(2, p.pct || 0)}%;background:${c}" title="${p.venue} ${p.n}"></span>`;
-          }).join("")
-        : `<span style="width:100%;background:#1e293b"></span>`;
-    }
-    if (keys) {
-      keys.innerHTML = mix.slice(0, 5).map((p) => {
-        const c = SOL_VENUE_COLORS[(p.venue || "").toLowerCase()] || "#64748b";
-        return `<span><i style="display:inline-block;width:7px;height:7px;border-radius:2px;background:${c};margin-right:4px"></i>${p.venue} <b>${p.n}</b></span>`;
-      }).join("") || `<span class="dim">no +EV venues this cycle</span>`;
-    }
-    solArCache = (a.opps || []).filter((o) => Number(o.net_usd) > 0 && !o.same_pool);
-    renderSolArb();
-    const nbody = $("sol-arb-near-table") && $("sol-arb-near-table").querySelector("tbody");
-    const nempty = $("sol-arb-near-empty");
-    const near = a.near || [];
-    const skipDbg = $("sol-ar-skip-debug-n");
-    if (skipDbg) skipDbg.textContent = String(meta.skipped != null ? meta.skipped : near.length);
-    if (nempty) {
-      if (near.length) nempty.style.display = "none";
-      else {
-        nempty.style.display = "block";
-        nempty.textContent = (meta.last_scan || a.last_scan)
-          ? "no debug skips this scan"
-          : "waiting for first pool-account scan…";
-      }
-    }
-    if (nbody) {
-      nbody.innerHTML = near.slice(0, 8).map((o) => {
-        const gap = o.gap_usd != null ? o.gap_usd : o.net_usd;
-        const why = o.skip_reason || (o.net_usd != null && o.net_usd <= 0 ? "neg_net" : "below_floor");
-        const hop = (o.hop_src || o.labels || []).join("→") || "jup";
-        return `<tr class="arb-near-row" title="${hop}">
-          <td>${solVenueBadge(o)}</td>
-          <td><b>${o.mid || o.path || "?"}</b></td>
-          <td class="dim">${fmt.usd(o.net_usd, 4)}</td>
-          <td style="color:var(--red)">${fmt.usd(gap, 4)}</td>
-          <td class="dim">${why}</td>
-        </tr>`;
-      }).join("");
-    }
-    const st = a.stats || {};
-    const cov = $("sol-arb-stats");
-    const covNote = $("sol-ar-cov-note");
-    if (covNote) covNote.textContent = (meta.quote_src || (meta.dexes || ["local"]).slice(0, 3).join("+")) || "local";
-    if (cov) {
-      const byDex = meta.by_dex || st.by_dex || {};
-      const dexBits = Object.entries(byDex).slice(0, 8).map(([k, v]) => `${k}:${v}`).join(" ");
-      const toks = (meta.tokens || (a.universe && a.universe.tokens) || []).slice(0, 8).join(" ");
-      const sample = meta.sample_route || {};
-      const hopLabs = (sample.labels || []).join(" → ");
-      const qmix = meta.quote_src_mix || {};
-      const mixBits = Object.entries(qmix).map(([k, v]) => `${k}:${v}`).join(" ");
-      cov.innerHTML = [
-        `<span>net <b>solana mainnet</b></span>`,
-        `<span>pairs <b>${fmt.num(meta.pairs != null ? meta.pairs : st.pairs, 0)}</b></span>`,
-        `<span>jobs local/jup <b>${fmt.num(meta.local_jobs != null ? meta.local_jobs : 0, 0)}/${fmt.num(meta.jup_jobs != null ? meta.jup_jobs : 0, 0)}</b></span>`,
-        `<span>quoted <b>${fmt.num(meta.quoted != null ? meta.quoted : (st.quoted != null ? st.quoted : meta.quotes), 0)}</b></span>`,
-        `<span>quote_src <b>${mixBits || meta.quote_src || "—"}</b></span>`,
-        `<span>local vs jup <b>${fmt.num(meta.local_n, 0)}/${fmt.num(meta.jup_n, 0)}</b></span>`,
-        (meta.pools_decoded != null ? `<span>pools decoded <b>${fmt.num(meta.pools_decoded, 0)}/${fmt.num(meta.pools_watch != null ? meta.pools_watch : 11, 0)}</b></span>` : ""),
-        (meta.geyser === false ? `<span>geyser <b>off (account poll)</b></span>` : ""),
-        (dexBits ? `<span>graph <b>${dexBits}</b></span>` : ""),
-        (toks ? `<span>mids <b>${toks}</b></span>` : ""),
-        `<span>skipped <b>${fmt.num(meta.skipped != null ? meta.skipped : st.skipped, 0)}</b></span>`,
-        (meta.skipped_same_pool != null ? `<span>same-pool <b>${fmt.num(meta.skipped_same_pool, 0)}</b></span>` : ""),
-        (meta.quote_errors ? `<span style="color:var(--red)">quote fail <b>${meta.quote_errors}</b></span>` : ""),
-        (meta.min_usd != null ? `<span>floor <b>${fmt.usd(meta.min_usd, 4)}</b></span>` : ""),
-        (meta.tip_usd != null ? `<span>tip <b>${fmt.usd(meta.tip_usd, 4)}</b></span>` : ""),
-        (hopLabs ? `<span>sample routePlan <b>${hopLabs}</b></span>` : ""),
-        (meta.last_scan ? `<span>last scan <b>${fmt.age(meta.last_scan)}</b></span>` : ""),
-        `<span>submit <b>${meta.submit_gate || "blocked"}</b></span>`,
-      ].filter(Boolean).join("");
-    }
-    const bn = (hist && hist.sol_arb_best_net) || [];
-    const ac = (hist && hist.sol_arb_actionable) || [];
-    if (solChartArb && (bn.length || ac.length)) {
-      const n = Math.max(bn.length, ac.length);
-      solChartArb.data.labels = Array.from({ length: n }, (_, i) => i);
-      solChartArb.data.datasets[0].data = bn;
-      solChartArb.data.datasets[1].data = ac;
-      solChartArb.update("none");
     }
   };
 
@@ -1246,20 +1172,22 @@
       badge.className = "bc-pressure-badge " + pressure;
     }
     setTxt("sol-bc-liq", ready.liq ? "ready" : "blocked", ready.liq ? "green" : "red");
-    setTxt("sol-bc-arb", ready.arb ? "ready" : "blocked", ready.arb ? "green" : "red");
+    const solModeLabel = bc.armed ? (bc.keep_live ? "keep live" : "armed") : bc.sim_only ? "sim" : bc.keep_live ? "keep live" : "off";
+    setTxt("sol-bc-mode", solModeLabel, bc.armed ? "green" : (bc.sim_only ? "" : "dim"));
     setTxt("sol-bc-dyn-liq", bc.dyn_min_liq != null ? "$" + fmt.num(bc.dyn_min_liq) : "--", "amber");
-    setTxt("sol-bc-dyn-arb", bc.dyn_min_arb != null ? "$" + fmt.num(bc.dyn_min_arb) : "--", "amber");
-    setTxt("sol-bc-last-stage", sum.last_stage || "--", "dim");
+    const lastStage = sum.last_stage || "--";
+    const okStage = ["sent", "ok", "simulated"].includes(String(lastStage).toLowerCase());
+    setTxt("sol-bc-last-stage", lastStage, okStage ? "green" : (lastStage === "--" ? "dim" : "amber"));
     const st = $("sol-bcast-status");
     if (st) {
       st.innerHTML =
         `<span>sim <b>${bc.sim_only ? "ON" : "off"}</b></span>` +
         `<span>keep live <b>${bc.keep_live ? "ON" : "off"}</b></span>` +
-        `<span>armed <b>${bc.arm_note || (bc.armed ? "LIVE" : "no")}</b></span>` +
-        `<span>liq hist <b>${fmt.num(sum.n_liq, 0)}</b></span>` +
-        `<span>MEV hist <b>${fmt.num(sum.n_mev, 0)}</b></span>` +
-        (bc.liq_contract ? `<span>liq <b>${String(bc.liq_contract).slice(0, 10)}…</b></span>` : `<span>liq <b>unset</b></span>`) +
-        (bc.arb_contract ? `<span>arb <b>${String(bc.arb_contract).slice(0, 10)}…</b></span>` : `<span>arb <b>unset</b></span>`);
+        `<span>armed <b style="color:${bc.armed ? "var(--green)" : "var(--dim)"}">${bc.arm_note || (bc.armed ? "LIVE" : "no")}</b></span>` +
+        `<span>edge <b>${bc.edge_bias ? "ON" : "off"}</b></span>` +
+        `<span>gates <b style="color:${ready.liq ? "var(--green)" : "var(--red)"}">${ready.liq ? "clear" : "blocked"}</b></span>` +
+        `<span>hist <b>${fmt.num(sum.n_hist || 0, 0)}</b></span>` +
+        (bc.liq_contract ? `<span>liq <b>${String(bc.liq_contract).slice(0, 10)}\u2026</b></span>` : "");
     }
     const pills = $("sol-bc-mode-pills");
     if (pills) {
@@ -1268,8 +1196,7 @@
         `<span class="bc-pill ${bc.keep_live ? "keep" : ""}">keep live ${bc.keep_live ? "auto-renew" : "off"}</span>` +
         `<span class="bc-pill ${bc.armed ? "live" : ""}">${bc.arm_note || (bc.armed ? "armed LIVE" : "not armed")}</span>` +
         `<span class="bc-pill ${bc.edge_bias ? "on" : ""}">edge ${bc.edge_bias ? "on" : "off"}</span>` +
-        `<span class="bc-pill ${ready.liq ? "on" : "warn"}">liq ${ready.liq ? "ready" : "blocked"}</span>` +
-        `<span class="bc-pill ${ready.arb ? "on" : "warn"}">MEV ${ready.arb ? "ready" : "blocked"}</span>`;
+        `<span class="bc-pill ${ready.liq ? "on" : "warn"}">liq ${ready.liq ? "ready" : "blocked"}</span>`;
     }
     const btnSim = $("sol-btn-sim");
     const btnKeep = $("sol-btn-keep-live");
@@ -1305,11 +1232,24 @@
         ? ready.reasons.map((r) => `<span style="color:var(--amber)">${r}</span>`).join("")
         : "<span style=\"color:var(--green)\">ready</span>";
     }
-    const near = $("sol-bcast-near");
-    if (near) {
-      near.innerHTML = (bc.near_miss_hints || []).length
-        ? bc.near_miss_hints.map((h) => `<span>${JSON.stringify(h)}</span>`).join("")
-        : "<span class=\"dim\">no near-miss data yet</span>";
+    const nearBody = $("sol-bc-near-table") && $("sol-bc-near-table").querySelector("tbody");
+    if (nearBody || $("sol-bc-near-empty")) {
+      const nearEmpty = $("sol-bc-near-empty");
+      const nearNote = $("sol-bc-near-note");
+      const hints = bc.near_miss_hints || [];
+      if (nearNote) nearNote.textContent = hints.length ? `${hints.length} pairs` : "learning";
+      if (nearEmpty) nearEmpty.style.display = hints.length ? "none" : "block";
+      if (nearBody) {
+        nearBody.innerHTML = hints.map((h) =>
+          `<tr>
+            <td><b>${h.mid || "?"}</b></td>
+            <td class="dim">${h.fee || "?"}</td>
+            <td style="color:var(--amber)">${fmt.num(h.best_weth, 5)}</td>
+            <td class="dim">${fmt.num(h.avg_weth, 5)}</td>
+            <td class="dim">${fmt.num(h.n, 0)}</td>
+          </tr>`
+        ).join("");
+      }
     }
     const hist = bc.history || [];
     const skipped = bc.skipped || [];
@@ -1319,7 +1259,6 @@
     const hempty = $("sol-bc-hist-empty");
     let rows = solBcRowsCache;
     if (solBcFilter === "liq") rows = rows.filter((r) => r.kind === "liq");
-    else if (solBcFilter === "arb") rows = rows.filter((r) => r.kind === "arb");
     else if (solBcFilter === "skip") rows = rows.filter((r) => (r.kind === "skip") || /skip/i.test(r.stage || ""));
     else if (solBcFilter === "sent") rows = rows.filter((r) => /sent|ok/i.test(r.stage || ""));
     else if (solBcFilter === "sim") rows = rows.filter((r) => /sim/i.test(r.stage || ""));
@@ -1330,15 +1269,6 @@
           <td><span class="sol-kind ${h.kind || ""}">${h.kind || ""}</span></td>
           <td>${h.stage || ""}</td>
           <td class="args">${h.detail || h.why || ""}</td></tr>`
-      ).join("");
-    }
-    const rbody = $("sol-bc-recent-table") && $("sol-bc-recent-table").querySelector("tbody");
-    const rempty = $("sol-bc-recent-empty");
-    const recent = hist.slice(0, 8);
-    if (rempty) rempty.style.display = recent.length ? "none" : "block";
-    if (rbody) {
-      rbody.innerHTML = recent.map((h) =>
-        `<tr><td>${h.kind || ""}</td><td>${h.stage || ""}</td><td class="args">${h.detail || ""}</td></tr>`
       ).join("");
     }
   };
@@ -1385,7 +1315,6 @@
       brain.innerHTML =
         `<span>protocol <b>${b.protocol || sol.protocol || "Solend"}</b></span>` +
         `<span>liq× <b>${fmt.num(b.min_liq_mult, 2)}</b></span>` +
-        `<span>arb× <b>${fmt.num(b.min_arb_mult, 2)}</b></span>` +
         `<span>edge <b>${b.prefer_edge ? "on" : "off"}</b></span>`;
     }
     const mev = intel.mev || {};
@@ -1485,11 +1414,11 @@
     updateSolMempool(sol, s.hist);
     updateSolOpps(sol);
     updateSolCompetitors(sol, s.hist);
-    updateSolArb(sol, s.hist);
     updateSolBroadcast(sol);
     updateSolIntel(sol);
     updateSolPrices(sol);
     updateSolLog(s);
+    updateRangeLines(solChart, solRangeHigh, solRangeLow, s.paper_sol);
   };
 
   const postSolControl = async (body) => {
@@ -1529,7 +1458,6 @@
     bind("sol-mp-filters", "mp-f", (v) => { solMpFilter = v; }, renderSolMpLive);
     bind("sol-op-filters", "op-f", (v) => { solOpFilter = v; }, renderSolOpps);
     bind("sol-cp-filters", "cp-f", (v) => { solCpFilter = v; }, renderSolComps);
-    bind("sol-ar-filters", "ar-f", (v) => { solArFilter = v; }, renderSolArb);
     bind("sol-bc-filters", "bc-f", (v) => { solBcFilter = v; }, () => {
       if (window.__lastState) updateSolBroadcast(window.__lastState.sol || {});
     });
@@ -1584,19 +1512,18 @@
     const bcastEl = $("p-bcast");
     if (bcastEl) {
       if (!bc.enabled) bcastEl.textContent = "off";
-      else if (ready.liq || ready.arb) bcastEl.textContent =
-        (ready.liq ? "liq" : "") + (ready.liq && ready.arb ? "+" : "") + (ready.arb ? "arb" : "");
+      else if (ready.liq) bcastEl.textContent = "liq";
       else bcastEl.textContent = "blocked";
       bcastEl.style.color = (!bc.enabled ? "var(--amber)"
-        : (ready.liq || ready.arb) ? "var(--green)" : "var(--red)");
+        : ready.liq ? "var(--green)" : "var(--red)");
     }
     $("sys-info").textContent = "uptime " + fmt.age(s.started) + " | ws " + (s.now ? "live" : "--");
   };
 
   const BOT_GROUPS = [
-    { id: "sense", label: "sense", keys: ["mempool", "prices"] },
-    { id: "hunt", label: "hunt", keys: ["sweep", "competitors", "arb"] },
-    { id: "act", label: "act", keys: ["broadcast", "funds", "intel"] },
+    { id: "observe", label: "observe", keys: ["mempool", "prices"] },
+    { id: "scan", label: "scan", keys: ["sweep", "competitors"] },
+    { id: "execute", label: "execute", keys: ["broadcast", "funds", "intel"] },
   ];
 
   function renderBotsFleet(opts) {
@@ -1614,7 +1541,7 @@
     const ready = bc.ready || {};
     const sim = !!bc.sim_only;
     const armed = !!bc.armed;
-    const gates = !!(ready.liq || ready.arb);
+    const gates = !!ready.liq;
 
     const unit = opts.unit || "ETH";
     const balKey = opts.balKey || "eth";
@@ -1677,10 +1604,10 @@
     const mode = $(opts.modeId);
     if (mode) {
       mode.innerHTML =
-        `<span class="bt-pill ${sim ? "sim" : "idle"}">sim ${sim ? "ON" : "off"}</span>` +
-        `<span class="bt-pill ${bc.keep_live ? "live" : "idle"}">keep live ${bc.keep_live ? "ON" : "off"}</span>` +
-        `<span class="bt-pill ${armed ? "live" : "idle"}">${bc.arm_note || (armed ? "armed LIVE" : "not armed")}</span>` +
-        `<span class="bt-pill ${gates ? "ready" : "blocked"}">${gates ? "gates clear" : "gates blocked"}</span>`;
+        `<span class="bt-pill ${sim ? "sim" : "idle"}" title="Sim mode: dry-run only, no real txs">sim ${sim ? "ON" : "off"}</span>` +
+        `<span class="bt-pill ${bc.keep_live ? "live" : "idle"}" title="Keep Live: auto-send +EV liquidations">live ${bc.keep_live ? "ON" : "off"}</span>` +
+        `<span class="bt-pill ${armed ? "live" : "idle"}" title="${armed ? "Armed: will broadcast real txs" : "Not armed: manual or sim only"}">${bc.arm_note || (armed ? "armed" : "paused")}</span>` +
+        `<span class="bt-pill ${gates ? "ready" : "blocked"}" title="${gates ? "All contracts and keys ready" : "Missing contracts or keys"}">${gates ? "gates open" : "gates closed"}</span>`;
     }
 
     const wal = $(opts.walletsId);
@@ -1690,26 +1617,98 @@
         const f = funds[n] || {};
         const pk = wallets[n] || f.pubkey || "";
         const raw = f[balKey];
-        const bal = raw != null ? fmt.num(raw, 4) + " " + unit : "--";
+        const bal = raw != null ? fmt.num(raw, 4) : "--";
         const low = walletLow(n, f);
         const short = pk ? `${pk.slice(0, 4)}…${pk.slice(-4)}` : "unset";
-        const addr = pk
-          ? `<span class="mono copy" data-addr="${hx(pk)}" title="click to copy">${hx(short)}</span>`
-          : `<span class="mono dim">unset</span>`;
-        return `<div class="bt-wal${low ? " low" : ""}">
-          <div class="bt-wal-h"><span class="bt-wal-name">${n}</span><span class="bt-role">${tags[n]}</span></div>
-          <div class="bt-wal-addr">${addr}</div>
-          <div class="bt-wal-bal">${hx(bal)}${low ? `<span class="bt-pill unfunded">unfunded</span>` : ""}</div>
-        </div>`;
+        return `<span class="bt-wal-inline${low ? " low" : ""}" title="${n} (${tags[n]}): ${bal} ${unit}${low ? " — LOW" : ""}">` +
+          `${n}: <b${low ? ' style="color:var(--amber)"' : ""}>${bal}</b> ${unit}` +
+          (low ? ` <span class="bt-pill unfunded">low</span>` : "") +
+          `</span>`;
       }).join("");
     }
+
+    const parseMsg = (key, raw) => {
+      const msg = String(raw || "").trim();
+      if (!msg) return { main: "—" };
+      if (key === "mempool") {
+        const m = msg.match(/(\d[\d,]*)\s*pend/i);
+        const q = msg.match(/(\d[\d,]*)\s*q/i);
+        const mev = msg.match(/MEV\s+live[=:]\s*(\d+)/i);
+        const tps = msg.match(/tps[=:]\s*([\d.]+)/i);
+        const parts = [];
+        if (m) parts.push(`${m[1]} pend`);
+        if (q) parts.push(`${q[1]} q`);
+        if (mev) parts.push(`${mev[1]} MEV`);
+        if (tps) parts.push(`${tps[1]} tps`);
+        return { main: parts.length ? parts.join(" · ") : msg };
+      }
+      if (key === "prices") {
+        const eth = msg.match(/eth[=$\s]+([\d,.]+)/i);
+        const sol = msg.match(/sol[=$\s]+([\d,.]+)/i);
+        const gas = msg.match(/gas[=:\s]+([\d.]+)/i);
+        const blk = msg.match(/blk[=:]\s*([\d,]+)/i);
+        const slot = msg.match(/slot[=:]\s*([\d,]+)/i);
+        const parts = [];
+        if (eth) parts.push(`ETH $${eth[1]}`);
+        if (sol) parts.push(`SOL $${sol[1]}`);
+        if (gas) parts.push(`${gas[1]} gwei`);
+        if (blk) parts.push(`#${blk[1]}`);
+        if (slot) parts.push(`slot ${slot[1]}`);
+        return { main: parts.length ? parts.join(" · ") : msg };
+      }
+      if (key === "sweep") {
+        const n = msg.match(/(\d+)\s*(opp|watch|liq|probe)/i);
+        const proto = msg.match(/(Aave|Spark|Compound|Morpho|Solend)/i);
+        const parts = [];
+        if (proto) parts.push(proto[1]);
+        if (n) parts.push(`${n[1]} ${n[2]}`);
+        return { main: parts.length ? parts.join(" · ") : msg };
+      }
+      if (key === "broadcast") {
+        const stage = msg.match(/stage[=:]\s*(\w+)/i);
+        const sent = msg.match(/sent[=:]\s*(\d+)/i);
+        const sim = msg.match(/sim/i);
+        const parts = [];
+        if (sim) parts.push("sim only");
+        if (stage) parts.push(stage[1]);
+        if (sent) parts.push(`${sent[1]} sent`);
+        return { main: parts.length ? parts.join(" · ") : (msg || "idle") };
+      }
+      if (key === "funds") {
+        const eq = msg.match(/equity[=$\s]+([\d.]+)/i);
+        const pnl = msg.match(/pnl[=:\s]+([\w.]+)/i);
+        const low = msg.match(/LOW/i);
+        const parts = [];
+        if (eq) parts.push(`eq $${eq[1]}`);
+        if (pnl) parts.push(`pnl ${pnl[1]}`);
+        if (low) parts.push("⚠ low");
+        return { main: parts.length ? parts.join(" · ") : msg };
+      }
+      if (key === "competitors") {
+        const n = msg.match(/(\d+)\/(\d+)h/);
+        const proto = msg.match(/(Aave\+?\w*|Compound|Morpho|Solend)/i);
+        const parts = [];
+        if (n) parts.push(`${n[1]} in ${n[2]}h`);
+        if (proto) parts.push(proto[1]);
+        return { main: parts.length ? parts.join(" · ") : msg };
+      }
+      if (key === "intel") {
+        const recs = msg.match(/(\d+)\s*rec/i);
+        const ready = msg.match(/readiness[=:\s]*([\d.]+)/i);
+        const parts = [];
+        if (recs) parts.push(`${recs[1]} recs`);
+        if (ready) parts.push(`${ready[1]}% ready`);
+        return { main: parts.length ? parts.join(" · ") : msg };
+      }
+      return { main: msg };
+    };
 
     el.innerHTML = BOT_GROUPS.map((g) => {
       const tiles = g.keys.map((k) => {
         const b = bots[k] || {};
         const t = toneOf(k, b.status);
         const age = b.last ? fmt.age(b.last) + " ago" : "never";
-        const msg = String(b.msg || "").trim();
+        const parsed = parseMsg(k, b.msg);
         return `<div class="bot tone-${t.cls}">
           <div class="bt-head">
             <span class="st ${t.st}"></span>
@@ -1720,7 +1719,7 @@
             <span class="bt-pill ${t.cls}">${t.label}</span>
           </div>
           <div class="bt-fields"><span class="b-last"><i>seen</i><b>${hx(age)}</b></span></div>
-          <div class="b-msg${msg ? "" : " is-empty"}" title="${hx(msg)}">${msg ? hx(msg) : "—"}</div>
+          <div class="b-msg">${hx(parsed.main)}</div>
         </div>`;
       }).join("");
       return `<div class="bt-group">
@@ -1741,12 +1740,12 @@
       bots: (s || {}).bots,
       labels: {
         mempool: "Mempool Watcher", prices: "Oracle / Prices", funds: "Funds Balances",
-        sweep: "HF Opportunity Sweep", competitors: "Competitor Watch", arb: "DEX Arb Scanner",
+        sweep: "HF Opportunity Sweep", competitors: "Competitor Watch",
         intel: "Learning / Intel", broadcast: "Broadcast Submit",
       },
       roles: {
         mempool: "watch", prices: "oracle", funds: "wallets", sweep: "HF",
-        competitors: "liq", arb: "DEX", intel: "learn", broadcast: "submit",
+        competitors: "liq", intel: "learn", broadcast: "submit",
       },
       funds: (s || {}).funds,
       wallets: (s || {}).wallets,
@@ -1794,10 +1793,9 @@
     if (edge) {
       const bits = [];
       if (p.best_opp_usd > 0) bits.push(`best liq $${fmt.num(p.best_opp_usd, 2)}`);
-      if (p.arb_best_net_usd != null)
-        bits.push(`arb net $${fmt.num(p.arb_best_net_usd, 2)}`);
       if (p.equity_eth != null) bits.push(`${fmt.num(p.equity_eth, 4)} ETH`);
       if (p.day_realized_usd) bits.push(`24h real $${fmt.num(p.day_realized_usd, 2)}`);
+      if (!p.capital_ok) bits.push("fund sponsor + bot to start");
       edge.textContent = bits.length ? bits.join(" · ") : "no live edge yet";
     }
     const led = $("fp-ledger");
@@ -1820,14 +1818,24 @@
 
     const rows = Object.entries(s.funds || {}).map(([label, f]) => {
       const addr = (s.wallets || {})[label] || "";
-      const t = f.weth != null ? `ETH ${fmt.num(f.eth, 4)} &middot; USDC ${fmt.num(f.usdc)} &middot; USDT ${fmt.num(f.usdt)} &middot; WETH ${fmt.num(f.weth, 4)}` : `ETH ${fmt.num(f.eth, 4)}`;
-      const cls = f.eth > 0.001 ? "style=\"color:var(--green)\"" : "";
+      const roles = { funder: "capital", sponsor: "tips", bot: "fee payer" };
+      const role = roles[label] || "";
+      const eth = f.eth || 0;
+      const weth = f.weth || 0;
+      const usdc = f.usdc || 0;
+      const usdt = f.usdt || 0;
+      const parts = [];
+      if (eth > 0.0001 || weth > 0.0001) parts.push(`${fmt.num(eth + weth, 4)} ETH`);
+      if (usdc > 0) parts.push(`${fmt.num(usdc, 0)} USDC`);
+      if (usdt > 0) parts.push(`${fmt.num(usdt, 0)} USDT`);
+      const bal = parts.length ? parts.join(" · ") : "empty";
+      const cls = (eth + weth) > 0.001 ? "style=\"color:var(--green)\"" : ((eth + weth) > 0 ? "style=\"color:var(--amber)\"" : "");
       const short = addr ? `${addr.slice(0, 6)}&hellip;${addr.slice(-4)}` : "--";
-      return `<tr><td>${label.toUpperCase()}</td>` +
+      return `<tr><td>${label.toUpperCase()} <span class="tag">${role}</span></td>` +
              `<td class="mono copy" data-addr="${addr}" title="click to copy">${short}</td>` +
-             `<td ${cls}>${t}</td></tr>`;
+             `<td ${cls}>${bal}</td></tr>`;
     }).join("");
-    $("funds-table").innerHTML = `<table><thead><tr><th>wallet</th><th>address</th><th>balances</th></tr></thead><tbody>${rows}</tbody></table>`;
+    $("funds-table").innerHTML = `<table class="mini"><thead><tr><th>wallet</th><th>address</th><th>balances</th></tr></thead><tbody>${rows}</tbody></table>`;
   };
 
   document.addEventListener("click", (e) => {
@@ -1848,7 +1856,7 @@
       ? mpLiveCache
       : mpLiveCache.filter((t) => t.cls === mpFilter);
     const mevNote = $("mp-mev-note");
-    if (mevNote) mevNote.textContent = `${live.length}/${mpLiveCache.length} · tip-sorted`;
+    if (mevNote) mevNote.textContent = `${live.length}/${mpLiveCache.length} · decoded`;
     const mevEmpty = $("mp-mev-empty");
     if (mevEmpty) mevEmpty.style.display = live.length ? "none" : "block";
     const liveBody = $("mp-mev-live") && $("mp-mev-live").querySelector("tbody");
@@ -1886,13 +1894,16 @@
     const meta = m.meta || {};
     const hist = s.hist || {};
     $("mp-count").textContent = fmt.num(m.count, 0);
-    const qEl = $("mp-queued");
-    if (qEl) qEl.textContent = fmt.num(m.queued != null ? m.queued : meta.queued, 0);
+    const mevN = meta.mev_live != null ? meta.mev_live : (m.mev_txs || []).length;
+    $("mp-queued").textContent = fmt.num(mevN, 0);
     const liveN = meta.mev_live != null ? meta.mev_live : (m.mev_txs || []).length;
     const liveNEl = $("mp-mev-live-n");
     if (liveNEl) liveNEl.textContent = fmt.num(liveN, 0);
-    const shareEl = $("mp-mev-share");
-    if (shareEl) shareEl.textContent = (meta.mev_share_pct != null ? fmt.num(meta.mev_share_pct, 1) + "%" : "--");
+    const gasEl = $("mp-mev-share");
+    if (gasEl) {
+      const gas = s.gas_gwei != null ? s.gas_gwei : (s.eth_price_usd != null ? null : null);
+      gasEl.textContent = gas != null ? fmt.num(gas, 1) : "--";
+    }
 
     const pr = $("mp-pressure");
     if (pr) {
@@ -1903,16 +1914,17 @@
     const metaEl = $("mp-meta");
     if (metaEl) {
       metaEl.innerHTML =
-        `<span>method <b>${m.method || meta.method || "--"}</b></span>` +
         `<span>sampled <b>${fmt.num(meta.sampled, 0)}</b></span>` +
         (meta.content_age_s != null
           ? `<span>age <b>${fmt.num(meta.content_age_s, 0)}s</b></span>`
           : "") +
-        `<span>contested <b style="color:${meta.contested ? "var(--red)" : "var(--dim)"}">${fmt.num(meta.contested, 0)}</b></span>`;
+        `<span>MEV <b>${fmt.num(meta.mev_share_pct, 1)}%</b></span>` +
+        `<span>contested <b style="color:${meta.contested ? "var(--red)" : "var(--dim)"}">${fmt.num(meta.contested, 0)}</b></span>` +
+        `<span class="dim">${m.method || meta.method || "txpool_content"}</span>`;
     }
 
     const mv = m.mev || {};
-    const order = ["liq", "router", "spoke", "aave", "create", "other"];
+    const order = ["liq", "spoke", "aave"];
     const totalMev = order.reduce((a, k) => a + (mv[k] || 0), 0) || 1;
     const track = $("mp-mix-track");
     if (track) {
@@ -1934,14 +1946,22 @@
 
     const spoke = m.spoke_txs || [];
     const spokeNote = $("mp-spoke-note");
-    if (spokeNote) spokeNote.textContent = `${spoke.length} spoke · ${(m.contested || []).length} contested`;
+    if (spokeNote) {
+      const protoCounts = {};
+      spoke.forEach((t) => { const p = t.proto || "other"; protoCounts[p] = (protoCounts[p] || 0) + 1; });
+      const protoTags = Object.entries(protoCounts).map(([k, v]) => `${k} ${v}`).join(" · ");
+      spokeNote.textContent = `${spoke.length} txs${protoTags ? " · " + protoTags : ""} · ${(m.contested || []).length} contested`;
+    }
     const spokeEmpty = $("mp-spoke-empty");
     if (spokeEmpty) spokeEmpty.style.display = spoke.length ? "none" : "block";
-    $("mp-spoke").querySelector("tbody").innerHTML = spoke.slice(0, 14).map((t) => {
+    const protoColors = { "aave-v3": "var(--green)", "aave-v4": "var(--cyan)", "spark": "var(--violet)", "compound": "var(--amber)", "morpho": "var(--red)" };
+    $("mp-spoke").querySelector("tbody").innerHTML = spoke.slice(0, 20).map((t) => {
       const hot = t.hot || /liquidat/i.test(t.name || "");
       const flag = hot ? `<span class="pill warn">LIQ</span>` : "";
       const user = t.user_short || (t.user ? t.user.slice(0, 10) + "…" : "--");
+      const pc = protoColors[t.proto] || "var(--dim)";
       return `<tr>
+        <td style="color:${pc}"><b>${t.proto_label || t.proto || "?"}</b></td>
         <td style="color:${hot ? "var(--red)" : "var(--cyan)"}">${t.name || "?"}</td>
         <td class="mono" title="${t.user || ""}">${user}</td>
         <td class="args dim">${(t.args || []).join(", ")}</td>
@@ -1965,7 +1985,7 @@
         const obj = Array.isArray(row)
           ? { label: String(row[0]).slice(0, 10) + "…", kind: "other", count: row[1], pct: null, bar: 0, etherscan: `https://etherscan.io/address/${row[0]}`, mev: false }
           : row;
-        const barCls = obj.mev || obj.kind === "router" || obj.kind === "lending" ? "mev" : (obj.kind === "token" ? "token" : "");
+        const barCls = obj.mev || obj.kind === "lending" ? "mev" : "";
         const w = Math.max(2, Number(obj.bar) || 0);
         return `<tr>
           <td><span class="mp-kind ${obj.kind || "other"}">${obj.kind || "other"}</span></td>
@@ -2005,8 +2025,15 @@
   let opFilter = "all";
   let opProto = "all";
   let opCache = [];
+  let opWatchCache = [];
   let opLastMeta = {};
   const OP_PAIR_COLORS = ["#22c55e", "#22d3ee", "#f59e0b", "#a78bfa", "#ef4444", "#3b82f6", "#ec4899", "#14b8a6"];
+  const isSendLeftover = (t) => /KIND\(\)|DEPLOY\.md|GenericFlashLiquidator|LIQ_GENERIC|LIQ_CONTRACT unset/i.test(String(t));
+  const fmtHfCell = (hf) => {
+    if (hf == null || !Number.isFinite(hf)) return "—";
+    if (hf >= 100) return "∞";
+    return hf < 10 ? hf.toFixed(4).replace(/0+$/, "").replace(/\.$/, "") : hf.toFixed(3);
+  };
 
   const protoId = (o) => {
     const p = String((o && (o.protocol_id || o.protocol)) || "").toLowerCase();
@@ -2037,19 +2064,19 @@
     const bits = [];
     if (o.actionable && o.submit === "live") bits.push(`<span class="pill ok">LIVE</span>`);
     else if (o.actionable) bits.push(`<span class="pill warn">+EV sim</span>`);
-    if (o.submit === "blocked")
-      bits.push(`<span class="pill blocked" title="${o.submit_reason || "blocked"}">blocked</span>`);
-    else if (o.submit === "sim")
-      bits.push(`<span class="pill" title="${o.submit_reason || "sim-only"}">sim</span>`);
+    if (o.submit === "blocked") {
+      const why = o.submit_reason || o.live_block_reason || GATE_TITLE_ETH;
+      bits.push(`<span class="pill blocked" title="${String(why).replace(/"/g, "'")}">blocked</span>`);
+    } else if (o.submit === "sim")
+      bits.push(`<span class="pill" title="${(o.submit_reason || "sim-only · hunt on").replace(/"/g, "'")}">sim</span>`);
     if (o.race || o.contested)
       bits.push(`<span class="pill warn" title="mempool or recent competitor">race</span>`);
     if (o.recent_competitor) bits.push(`<span class="pill">comp</span>`);
     if (o.edge) bits.push(`<span class="pill accent">${o.edge}</span>`);
     if (o.flash_fee_bps != null && Number(o.flash_fee_bps) > 0)
       bits.push(`<span class="pill" title="${o.flash_note || "Aave V3 flashLoan"}">${fmt.num(o.flash_fee_bps, 0)} bps flash</span>`);
-    if (o.submit === "blocked" && o.live_block_reason)
-      bits.push(`<span class="pill blocked" title="${o.live_block_reason}">venue</span>`);
-    if (o.leftover) bits.push(`<span class="pill" title="${o.leftover}">leftover</span>`);
+    const leftTxt = leftoverTxt(o);
+    if (leftTxt) bits.push(`<span class="pill blocked" title="${leftTxt.replace(/"/g, "'")}">leftover</span>`);
     const user = o.user || "";
     if (user) {
       bits.push(`<a class="op-link" href="https://etherscan.io/address/${user}" target="_blank" rel="noopener">↗</a>`);
@@ -2071,7 +2098,12 @@
       return true;
     });
     const note = $("op-feed-note");
-    if (note) note.textContent = `${rows.length}/${opCache.length} · multi-protocol · skip dust`;
+    const watchN = opWatchCache.length;
+    if (note) {
+      note.textContent = opCache.length
+        ? `${rows.length}/${opCache.length} in feed · HF<1 +EV`
+        : `0 in feed · ${watchN} in watch`;
+    }
     const empty = $("opps-empty");
     const body = $("opps-table") && $("opps-table").querySelector("tbody");
     if (!body) return;
@@ -2082,21 +2114,23 @@
       } else {
         empty.style.display = "block";
         const m = opLastMeta || {};
-        if (m.errors && m.errors.length) {
+        const fatal = m.status === "error" && !(Number(m.scanned) > 0);
+        if (fatal && (m.errors && m.errors.length)) {
           empty.classList.add("err");
           empty.textContent = "sweep error: " + m.errors[0];
+        } else if (opFilter !== "all" || opProto !== "all") {
+          empty.classList.remove("err");
+          empty.textContent = `no HF<1 +EV match this filter`
+            + (opProto !== "all" ? ` · ${opProto}` : "")
+            + (opFilter !== "all" ? ` · ${opFilter}` : "")
+            + ` · ${opCache.length} in feed · ${watchN} in watch`;
         } else if (m.last_scan) {
           empty.classList.remove("err");
-          const skipped = m.skipped_n != null ? m.skipped_n : "";
-          empty.textContent = `no HF<1 +EV this multi-protocol scan · ${fmt.num(m.scanned || 0, 0)} users`
-            + (m.n_logs != null ? ` · ${fmt.num(m.n_logs, 0)} logs` : "")
-            + (skipped !== "" ? ` · skip ${fmt.num(skipped, 0)}` : "")
-            + (m.last_block ? ` · blk ${m.last_block}` : "")
-            + (m.last_scan ? ` · ${fmt.age(m.last_scan)} ago` : "")
-            + (opProto !== "all" ? ` · filter ${opProto}` : "");
+          empty.textContent = `no HF<1 +EV this sweep · watch ${fmt.num(watchN, 0)}`
+            + (m.last_scan ? ` · last scan ${fmt.age(m.last_scan)} ago` : "");
         } else {
           empty.classList.remove("err");
-          empty.textContent = "scanning Aave · Spark · Compound · Morpho for HF<1…";
+          empty.textContent = "scanning Aave · Spark · Compound · Morpho for HF<1 +EV…";
         }
       }
     }
@@ -2104,20 +2138,60 @@
       const user = o.user || "";
       const short = user ? `${user.slice(0, 6)}…${user.slice(-4)}` : "--";
       const hf = oppHf(o);
-      const hfCell = hf == null ? "--" : (hf >= 100 ? "∞" : hf.toFixed(3));
-      const pair = `${o.coll_sym || "?"} → ${o.debt_sym || "?"}`;
-      const sizes = (o.coll_usd != null || o.debt_usd != null)
-        ? `<div class="dim">${fmt.usd(o.coll_usd)} / ${fmt.usd(o.debt_usd)}</div>` : "";
+      const urg = hfUrgency(hf);
+      const collUsd = oppUsd(o, "coll");
+      const debtUsd = oppUsd(o, "debt");
+      const pair = `${o.coll_sym || "?"}→${o.debt_sym || "?"}`;
       const net = o.net_usd != null ? o.net_usd : o.profit_usd;
-      const netColor = net == null ? "var(--dim)" : net > 0 ? "var(--green)" : "var(--red)";
+      const netColor = net == null ? "var(--dim)" : Number(net) > 0 ? "var(--green)" : "var(--dim)";
       return `<tr>
         <td>${protoPill(o)}</td>
         <td class="mono copy" data-addr="${user}" title="${user}">${short}</td>
-        <td class="${hfClass(hf)}">${hfCell}</td>
-        <td><b>${pair}</b>${sizes}</td>
-        <td style="color:var(--amber)">${o.bonus_usd != null ? fmt.usd(o.bonus_usd) : "--"}</td>
-        <td style="color:${netColor}"><b>${net != null ? fmt.usd(net) : "--"}</b></td>
+        <td class="${hfClass(hf)}">${fmtHfCell(hf)}</td>
+        <td title="${pair}">${collUsd != null ? fmt.usd(collUsd) : "—"}</td>
+        <td title="${pair}">${debtUsd != null ? fmt.usd(debtUsd) : "—"}</td>
+        <td><span class="op-urg ${urg.cls}">${urg.label}</span></td>
+        <td style="color:var(--amber)">${o.bonus_usd != null ? fmt.usd(o.bonus_usd) : "—"}</td>
+        <td style="color:${netColor}"><b>${net != null && Number.isFinite(Number(net)) ? fmt.usd(net) : "—"}</b></td>
         <td>${liqFlagBits(o)}</td>
+      </tr>`;
+    }).join("");
+  };
+
+  const renderWatch = () => {
+    const rows = opWatchCache.filter((w) => opProto === "all" || protoId(w) === opProto);
+    const note = $("watch-note");
+    if (note) note.textContent = `${rows.length}/${opWatchCache.length} · up to 50 lowest HF`;
+    const wempty = $("watch-empty");
+    if (wempty) {
+      if (rows.length) wempty.style.display = "none";
+      else {
+        wempty.style.display = "block";
+        wempty.textContent = opWatchCache.length
+          ? `no closest HF for ${opProto} this sweep`
+          : "waiting for lowest-HF hydrates…";
+      }
+    }
+    const wbody = $("watch-table") && $("watch-table").querySelector("tbody");
+    if (!wbody) return;
+    wbody.innerHTML = rows.map((w) => {
+      const hf = oppHf(w);
+      const collUsd = oppUsd(w, "coll");
+      const debtUsd = oppUsd(w, "debt");
+      const urg = hfUrgency(hf);
+      const user = w.user || "";
+      const short = user ? `${user.slice(0, 6)}…${user.slice(-4)}` : "--";
+      const left = leftoverTxt(w);
+      const urgCell = left
+        ? `<span class="op-urg ${urg.cls}">${urg.label}</span> <span class="pill blocked" title="${left.replace(/"/g, "'")}">leftover</span>`
+        : `<span class="op-urg ${urg.cls}">${urg.label}</span>`;
+      return `<tr>
+        <td>${protoPill(w)}</td>
+        <td class="mono copy" data-addr="${user}" title="click to copy">${short}</td>
+        <td class="${hfClass(hf)}">${fmtHfCell(hf)}</td>
+        <td>${collUsd != null ? fmt.usd(collUsd) : "—"}</td>
+        <td>${debtUsd != null ? fmt.usd(debtUsd) : "—"}</td>
+        <td>${urgCell}</td>
       </tr>`;
     }).join("");
   };
@@ -2157,16 +2231,20 @@
       opProto = btn.dataset.proto || "all";
       opProtoFilters.querySelectorAll(".op-f").forEach((b) => b.classList.toggle("on", b === btn));
       renderOppsFeed();
+      renderWatch();
     });
   }
 
-  const updateOpps = (s) => {
+    const updateOpps = (s) => {
     const opps = s.opportunities || [];
-    const wl = (s.watchlist || []).filter((w) => Number(w.hf) < 1e38);
+    const wl = (s.watchlist || []).filter((w) => {
+      const hf = Number(w.hf);
+      return Number.isFinite(hf) && hf < 1e38;
+    }).slice(0, 50);
     const m = s.opportunities_meta || {};
     opLastMeta = m;
-    const sweep = s.sweep_total != null ? s.sweep_total : m.sweep_total;
     opCache = opps.slice(0, 80);
+    opWatchCache = wl;
 
     const count = m.count != null ? m.count : opps.length;
     const edgeN = m.edge_n != null ? m.edge_n : opps.filter((o) => o.edge).length;
@@ -2182,28 +2260,32 @@
     }
     const setTxt = (id, v) => { const el = $(id); if (el) el.textContent = v; };
     setTxt("op-count", fmt.num(count, 0));
-    setTxt("op-best", best != null && best > 0 ? fmt.usd(best) : (count ? fmt.usd(0) : "--"));
+    setTxt("op-best", best != null && best > 0 ? fmt.usd(best) : "—");
     setTxt("op-edge-n", fmt.num(edgeN, 0));
-    setTxt("op-sweep", `${fmt.num(m.scanned != null ? m.scanned : (sweep != null ? sweep : 0), 0)}`);
+    setTxt("op-sweep", fmt.num(m.watch_n != null ? m.watch_n : wl.length, 0));
 
     const closest = wl[0];
-    const closestHf = closest ? Number(closest.hf) / 1e18 : null;
+    const closestHf = closest ? oppHf(closest) : null;
     const closestEl = $("op-closest-hf");
     if (closestEl) {
-      closestEl.textContent = closestHf == null ? "--" : (closestHf >= 100 ? "∞" : closestHf.toFixed(4));
+      closestEl.textContent = fmtHfCell(closestHf);
       closestEl.className = "big " + (closestHf != null && closestHf < 1.05 ? "red" : closestHf != null && closestHf < 1.1 ? "amber" : "dim");
     }
-    setTxt("op-closest-user", closest && closest.user
-      ? `${closest.user.slice(0, 10)}…${closest.user.slice(-4)}`
-      : "--");
+    const cu = $("op-closest-user");
+    if (cu) {
+      const addr = closest && closest.user ? closest.user : "";
+      cu.textContent = addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : "—";
+      cu.className = "dim mono copy";
+      if (addr) { cu.dataset.addr = addr; cu.title = addr; }
+    }
 
     const urg = $("op-urgency");
     if (urg) {
       const buckets = [
-        { label: "<1.00", n: wl.filter((w) => Number(w.hf) / 1e18 < 1).length },
-        { label: "1–1.05", n: wl.filter((w) => { const h = Number(w.hf) / 1e18; return h >= 1 && h < 1.05; }).length },
-        { label: "1.05–1.1", n: wl.filter((w) => { const h = Number(w.hf) / 1e18; return h >= 1.05 && h < 1.1; }).length },
-        { label: "1.1+", n: wl.filter((w) => Number(w.hf) / 1e18 >= 1.1).length },
+        { label: "<1.00", n: wl.filter((w) => { const h = oppHf(w); return h != null && h < 1; }).length },
+        { label: "1–1.05", n: wl.filter((w) => { const h = oppHf(w); return h != null && h >= 1 && h < 1.05; }).length },
+        { label: "1.05–1.1", n: wl.filter((w) => { const h = oppHf(w); return h != null && h >= 1.05 && h < 1.1; }).length },
+        { label: "1.1+", n: wl.filter((w) => { const h = oppHf(w); return h != null && h >= 1.1; }).length },
       ];
       const maxN = Math.max(1, ...buckets.map((b) => b.n));
       urg.innerHTML = buckets.map((b) =>
@@ -2212,23 +2294,16 @@
         `<span>${b.n}</span></div>`).join("");
     }
 
+    paintOpGate("op-gate", m, "eth");
     const meta = $("op-meta");
     if (meta) {
       const sweepBot = (s.bots || {}).sweep || {};
-      const gate = m.submit_gate || "blocked";
       meta.innerHTML =
-        `<span>Σ net <b style="color:var(--green)">${fmt.usd(m.sum_profit != null ? m.sum_profit : opps.reduce((a, o) => a + (Number(o.net_usd || o.profit_usd) || 0), 0))}</b></span>` +
-        `<span>watch <b>${fmt.num(wl.length, 0)}</b></span>` +
         (m.scanned != null ? `<span>scanned <b>${fmt.num(m.scanned, 0)}</b></span>` : "") +
-        (m.n_logs != null ? `<span>logs <b>${fmt.num(m.n_logs, 0)}</b></span>` : "") +
         (sweepBot.status ? `<span>sweep <b>${sweepBot.status}</b></span>` : "") +
-        `<span>gate <b>${gate}</b></span>` +
         (m.flash_fee_bps != null ? `<span>flash <b>${fmt.num(m.flash_fee_bps, 0)} bps ${m.flash_fee_src || "aave-v3"}</b></span>` : "") +
-        (m.protocol_mix && m.protocol_mix.length
-          ? `<span>venues <b>${m.protocol_mix.map((p) => `${p.id}×${p.n}`).join(" · ")}</b></span>` : "") +
         (m.last_block ? `<span>blk <b>${m.last_block}</b></span>` : "") +
-        (m.last_scan ? `<span>${fmt.age(m.last_scan)} ago</span>` : "") +
-        (m.avg_hf != null ? `<span>avg HF <b>${Number(m.avg_hf).toFixed(3)}</b></span>` : "");
+        (m.last_scan ? `<span>${fmt.age(m.last_scan)} ago</span>` : "");
     }
 
     const mixSrc = (m.pair_mix && m.pair_mix.length)
@@ -2261,17 +2336,15 @@
         ? mixSrc.map((p, i) =>
             `<span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${OP_PAIR_COLORS[i % OP_PAIR_COLORS.length]};margin-right:4px"></i>${p.pair} <b>${p.n}</b></span>`
           ).join("")
-        : `<span class="dim">no liquidatable pairs</span>`;
+        : `<span class="dim">no liquidatable pairs · see watch →</span>`;
     }
 
     const leftoverEl = $("op-leftover");
     if (leftoverEl) {
-      if (m.leftovers && m.leftovers.length) {
+      const bits = (m.leftovers || []).filter((t) => t && !isSendLeftover(t));
+      if (bits.length) {
         leftoverEl.style.display = "";
-        const bits = m.leftovers.slice(0, 4);
-        leftoverEl.textContent = bits.some((t) => /KIND\(\)|DEPLOY\.md|GenericFlashLiquidator/i.test(String(t)))
-          ? bits.join(" · ")
-          : "leftover · " + bits.join(" · ");
+        leftoverEl.textContent = "leftover · " + bits.slice(0, 4).join(" · ");
       } else {
         leftoverEl.style.display = "none";
         leftoverEl.textContent = "";
@@ -2279,31 +2352,7 @@
     }
 
     renderOppsFeed();
-
-    const watchNote = $("watch-note");
-    if (watchNote) {
-      watchNote.textContent = (sweep != null ? `${fmt.num(sweep, 0)} tracked` : "--") + " · lowest HF";
-    }
-    const wbody = $("watch-table") && $("watch-table").querySelector("tbody");
-    if (wbody) {
-      wbody.innerHTML = wl.map((w) => {
-        const hf = Number(w.hf) / 1e18;
-          const collUsd = w.coll_usd != null ? Number(w.coll_usd) : Number(w.coll) / 1e26;
-          const debtUsd = w.debt_usd != null ? Number(w.debt_usd) : Number(w.debt) / 1e26;
-        const hfCell = hf >= 100 ? "∞" : hf.toFixed(3);
-        const urg = hfUrgency(hf);
-        const user = w.user || "";
-        const short = user ? `${user.slice(0, 10)}…` : "--";
-        return `<tr>
-          <td>${protoPill(w)}</td>
-          <td class="mono copy" data-addr="${user}" title="click to copy">${short}</td>
-          <td class="${hfClass(hf)}">${hfCell}</td>
-          <td>${fmt.usd(collUsd)}</td>
-          <td>${fmt.usd(debtUsd)}</td>
-          <td><span class="op-urg ${urg.cls}">${urg.label}</span></td>
-        </tr>`;
-      }).join("") || `<tr><td colspan="6" class="dim">--</td></tr>`;
-    }
+    renderWatch();
   };
 
   let cpFilter = "all";
@@ -2317,12 +2366,14 @@
       if (cpFilter === "all") return true;
       if (cpFilter === "miss") return !!c.missed_by_us;
       if (cpFilter === "edge") return !!c.edge;
-      if (cpFilter === "profit") return (c.net_est_usd != null ? c.net_est_usd : c.est_profit_usd) > 0;
+      if (cpFilter === "profit") return rowEstUsd(c) != null || rowNetUsd(c) != null;
       if (cpFilter === "revert") return c.status === 0;
       return true;
     });
     const note = $("cp-feed-note");
-    if (note) note.textContent = `${rows.length}/${cpCache.length} · newest first`;
+    if (note) note.textContent = feedWindowNote(
+      rows.length, cpCache.length, (cpLastMeta || {}).count_1h,
+      cpFilter !== "all" || cpProto !== "all");
     const empty = $("comp-empty");
     const body = $("comp-table") && $("comp-table").querySelector("tbody");
     if (!body) return;
@@ -2335,16 +2386,19 @@
         const m = cpLastMeta || {};
         if (m.status && String(m.status).startsWith("err")) {
           empty.classList.add("err");
-          empty.textContent = "scan error: " + m.status;
+          empty.textContent = "scan error: " + String(m.status).replace(/^err\s*/i, "");
+        } else if (cpFilter !== "all" || cpProto !== "all") {
+          empty.classList.remove("err");
+          empty.textContent = `no rows match filter`
+            + (cpProto !== "all" ? ` ${cpProto}` : "")
+            + (cpFilter !== "all" ? ` ${cpFilter}` : "")
+            + ` · ${cpCache.length} in feed · ${fmt.num(m.count_1h, 0)} in last hour`;
         } else if (m.last_scan || m.last_block) {
           empty.classList.remove("err");
-          const from = m.from_block, to = m.to_block || m.last_block;
-          empty.textContent = `no liquidations this window (Aave · Spark · Compound · Morpho)`
-            + (from && to ? ` · blk ${from}→${to}` : (m.last_block ? ` · blk ${m.last_block}` : ""))
-            + (m.window ? ` · ${fmt.num(m.window, 0)} blocks` : "")
-            + (m.n_logs != null ? ` · ${fmt.num(m.n_logs, 0)} logs` : "")
-            + (m.last_scan ? ` · ${fmt.age(m.last_scan)} ago` : "")
-            + (cpProto !== "all" ? ` · filter ${cpProto}` : "");
+          empty.textContent = `no confirmed liquidations in feed yet`
+            + (m.n_logs != null ? ` · this window ${fmt.num(m.n_logs, 0)}` : "")
+            + (m.from_block && m.to_block ? ` · blk ${m.from_block}→${m.to_block}` : "")
+            + (m.last_scan ? ` · ${fmt.age(m.last_scan)} ago` : "");
         } else {
           empty.classList.remove("err");
           empty.textContent = "scanning Aave · Spark · Compound · Morpho liquidation logs…";
@@ -2357,12 +2411,17 @@
       const user = c.user || "";
       const sShort = searcher ? `${searcher.slice(0, 6)}…${searcher.slice(-4)}` : "--";
       const uShort = user ? `${user.slice(0, 6)}…${user.slice(-4)}` : "--";
-      const net = c.net_est_usd;
-      const netColor = net == null ? "var(--dim)" : net >= 0 ? "var(--green)" : "var(--red)";
+      const est = rowEstUsd(c);
+      const net = rowNetUsd(c);
       const flags = [];
-      if (c.missed_by_us) flags.push(`<span class="cp-flag miss">miss</span>`);
-      if (c.edge) flags.push(`<span class="cp-flag edge">edge</span>`);
+      if (c.missed_by_us)
+        flags.push(`<span class="cp-flag miss" title="we saw this confirmed liq and did not send">miss</span>`);
+      if (c.edge)
+        flags.push(`<span class="cp-flag edge" title="long-tail pair">edge</span>`);
       if (c.status === 0) flags.push(`<span class="cp-flag revert">revert</span>`);
+      const left = cpLeftoverBits(c);
+      if (left.length)
+        flags.push(`<span class="cp-flag left" title="${left.join(", ")}">leftover</span>`);
       const tx = c.tx
         ? `<a href="https://etherscan.io/tx/${c.tx}" target="_blank" rel="noopener" style="color:var(--cyan)">${c.tx.slice(0, 8)}…</a>` +
           ` <span class="mono copy op-link" data-addr="${c.tx}" title="${c.tx}">copy</span>`
@@ -2373,9 +2432,9 @@
         <td><b>${pair}</b></td>
         <td class="mono copy" data-addr="${searcher}" title="${searcher}">${sShort}</td>
         <td class="mono copy dim" data-addr="${user}" title="${user}">${uShort}</td>
-        <td>${c.gas_cost_usd != null ? fmt.usd(c.gas_cost_usd) : "--"}</td>
-        <td style="color:${c.est_profit_usd != null ? "var(--amber)" : "var(--dim)"}">${c.est_profit_usd != null ? fmt.usd(c.est_profit_usd) : "n/a"}</td>
-        <td style="color:${netColor}"><b>${net != null ? fmt.usd(net) : "--"}</b></td>
+        <td class="dim" title="on-chain gas × ETH price — not their profit">${c.gas_cost_usd != null ? fmt.usd(c.gas_cost_usd) : "—"}</td>
+        <td style="color:${est != null ? "var(--amber)" : "var(--dim)"}">${fmtHonestUsd(est)}</td>
+        <td style="color:${net != null ? "var(--green)" : "var(--dim)"}"><b>${fmtHonestUsd(net)}</b></td>
         <td>${flags.join(" ") || `<span class="dim">—</span>`}</td>
         <td>${tx}</td>
       </tr>`;
@@ -2418,31 +2477,52 @@
       badge.className = "cp-pressure-badge " + pressure;
     }
     const setTxt = (id, v) => { const el = $(id); if (el) el.textContent = v; };
-    setTxt("cp-count", fmt.num(m.count_1h, 0));
+    const feedN = cpCache.length || m.total || 0;
+    const h1 = m.count_1h || 0;
+    setTxt("cp-count", fmt.num(h1, 0));
+    setTxt("cp-count-feed", h1 === 0 && feedN ? `${fmt.num(feedN, 0)} in feed` : "");
     setTxt("cp-searchers", fmt.num(m.unique_searchers, 0));
-    setTxt("cp-sum-est", fmt.usd(m.sum_est_profit));
+    const allSearcherN = cpCache.length ? [...new Set(cpCache.map(c => c.searcher || c.liquidator || "").filter(Boolean))].length : 0;
+    setTxt("cp-searchers-feed", !(m.unique_searchers) && allSearcherN ? `${allSearcherN} all time` : "");
+    setTxt("cp-sum-est", honestUsd(m.sum_est_profit) != null ? fmt.usd(m.sum_est_profit) : "\u2014");
     setTxt("cp-missed",
       m.missed_by_us
-        ? `${fmt.num(m.missed_by_us, 0)}${m.miss_rate_pct ? ` · ${fmt.num(m.miss_rate_pct, 0)}%` : ""}`
+        ? `${fmt.num(m.missed_by_us, 0)}${m.miss_rate_pct ? ` \u00b7 ${fmt.num(m.miss_rate_pct, 0)}%` : ""}`
         : "0");
 
     const meta = $("cp-meta");
     if (meta) {
+      const hit = lastHitTs(m, cpCache);
       meta.innerHTML =
+        `<span>${cpScanLine(m, cpCache.length, hit)}</span>` +
         (m.avg_gas != null ? `<span>avg gas <b>${fmt.num(m.avg_gas, 0)}</b></span>` : "") +
-        `<span>Σ net <b style="color:${(m.sum_net_est || 0) >= 0 ? "var(--green)" : "var(--red)"}">${fmt.usd(m.sum_net_est)}</b></span>` +
+        (honestUsd(m.sum_est_profit) != null
+          ? `<span>Σ our est <b style="color:var(--amber)">${fmt.usd(m.sum_est_profit)}</b></span>`
+          : "") +
         `<span>edge <b>${fmt.num(m.edge_n, 0)}</b></span>` +
         `<span>reverts <b>${fmt.num(m.revert_n, 0)}</b></span>` +
         `<span>spokes <b>${m.spokes || 0}</b></span>` +
         `<span>tracked <b>${fmt.num(m.total, 0)}</b></span>` +
-        (m.last_block ? `<span>→ blk <b>${m.last_block}</b></span>` : "") +
-        (m.from_block && m.to_block ? `<span>scan <b>${m.from_block}→${m.to_block}</b></span>` : "") +
+        (m.from_block && m.to_block ? `<span>blk <b>${m.from_block}–${m.to_block}</b></span>` : "") +
         (m.last_scan ? `<span>${fmt.age(m.last_scan)} ago</span>` : "") +
-        (m.n_logs != null ? `<span>logs <b>${fmt.num(m.n_logs, 0)}</b></span>` : "") +
         (m.status && m.status !== "ok" ? `<span style="color:var(--red)">${m.status}</span>` : "");
     }
+    const leftEl = $("cp-leftover");
+    if (leftEl) {
+      const bits = (m.errors || m.leftovers || []).filter(Boolean);
+      if (bits.length && m.status && String(m.status).startsWith("err")) {
+        leftEl.style.display = "";
+        leftEl.textContent = "leftover · " + bits.slice(0, 3).join(" · ");
+      } else {
+        leftEl.style.display = "none";
+        leftEl.textContent = "";
+      }
+    }
 
-    const mix = m.pair_mix || [];
+    const mix1h = m.pair_mix || [];
+    const now2 = Math.floor(Date.now() / 1000);
+    const mix = mix1h.length ? mix1h : pairMixFromRows(cpCache, now2, m.last_slot || m.last_block);
+    const mixLabel = mix1h.length ? "last hour" : "all time";
     const track = $("cp-mix-track");
     const keys = $("cp-mix-keys");
     if (track) {
@@ -2455,28 +2535,26 @@
     if (keys) {
       keys.innerHTML = mix.slice(0, 5).map((p, i) =>
         `<span><i style="display:inline-block;width:7px;height:7px;border-radius:2px;background:${PAIR_COLORS[i % PAIR_COLORS.length]};margin-right:4px"></i>${p.pair} <b>${p.n}</b></span>`
-      ).join("") || `<span class="dim">no pairs yet</span>`;
+      ).join("") || `<span class="dim">no confirmed liquidations</span>`;
     }
+    const mixLabelEl = $("cp-mix-label");
+    if (mixLabelEl) mixLabelEl.textContent = `pair mix (${mixLabel})`;
 
-    const sBody = $("cp-searcher-table") && $("cp-searcher-table").querySelector("tbody");
-    const sEmpty = $("cp-searcher-empty");
-    const tops = m.top_searchers || [];
-    if (sEmpty) sEmpty.style.display = tops.length ? "none" : "block";
-    if (sBody) {
-      sBody.innerHTML = tops.map((t, i) => {
-        const pct = t.pct || 0;
-        return `<tr>
-          <td class="dim">${i + 1}</td>
-          <td class="mono copy" title="${t.addr || ""}" data-addr="${t.addr || ""}">${(t.short || (t.addr || "").slice(0, 6) || "--")}…${(t.addr || "").slice(-4)}</td>
-          <td><div class="cp-bar-track"><div class="cp-bar" style="width:${Math.min(100, pct)}%"></div></div></td>
-          <td>${fmt.num(t.n, 0)}</td>
-          <td style="color:var(--amber)">${fmt.usd(t.est)}</td>
-        </tr>`;
-      }).join("");
-    }
+    const { tops: cpTops, label: cpTopLabel } = resolveTopSearchers(m, cpCache, m.last_slot || m.last_block);
+    if (cpTops.length && !(m.unique_searchers))
+      setTxt("cp-searchers", fmt.num(cpTops.length, 0));
+    renderTopSearchers({
+      tableId: "cp-searcher-table",
+      emptyId: "cp-searcher-empty",
+      tops: cpTops,
+      meta: m,
+      label: cpTopLabel,
+    });
 
     const pNote = $("cp-pair-note");
     if (pNote) pNote.textContent = String(mix.length);
+    const pTag = $("cp-pair-tag");
+    if (pTag) pTag.textContent = mixLabel;
     const pBody = $("cp-pair-table") && $("cp-pair-table").querySelector("tbody");
     if (pBody) {
       pBody.innerHTML = mix.map((p) =>
@@ -2486,7 +2564,7 @@
           <td>${fmt.num(p.n, 0)}</td>
           <td class="dim">${fmt.num(p.pct, 0)}%</td>
         </tr>`
-      ).join("") || `<tr><td colspan="4" class="dim">no pair activity</td></tr>`;
+      ).join("") || `<tr><td colspan="4" class="dim">no confirmed liquidations</td></tr>`;
     }
 
     if (chartComp) {
@@ -2500,256 +2578,6 @@
     }
 
     renderCompFeed();
-  };
-
-  let arFilter = "all";
-  let arLiveCache = [];
-  let arNearCache = [];
-  let arMetaCache = {};
-  let arLastState = {};
-
-  const arbFlag = (o) => {
-    const bits = [];
-    if (o.actionable && o.submit === "live") bits.push(`<span class="pill ok">LIVE</span>`);
-    else if (o.actionable) bits.push(`<span class="pill warn">+EV sim</span>`);
-    else if (o.net_usd != null && o.net_usd <= 0)
-      bits.push(`<span class="pill warn">gas</span>`);
-    if (o.submit === "blocked")
-      bits.push(`<span class="pill blocked" title="${o.submit_reason || "blocked"}">blocked</span>`);
-    else if (o.submit === "sim")
-      bits.push(`<span class="pill" title="${o.submit_reason || "sim-only"}">sim</span>`);
-    if (o.cross_dex) bits.push(`<span class="pill accent">cross</span>`);
-    if (o.sized) bits.push(`<span class="pill">sized</span>`);
-    if (o.learned) bits.push(`<span class="pill accent">learn</span>`);
-    if (o.mode === "backrun")
-      bits.push(`<span class="pill accent" title="${(o.victim_hash || o.bundle_mode || "backrun").replace(/"/g, "&quot;")}">backrun</span>`);
-    if (o.etherscan)
-      bits.push(`<a href="${o.etherscan}" target="_blank" rel="noopener">pool</a>`);
-    return bits.join(" ") || "";
-  };
-
-  const venueBadge = (o) => {
-    const v = (o.venue || "uni").toLowerCase();
-    const cls = o.cross_dex || v.includes("+") ? "cross" : v;
-    return `<span class="ar-venue ${cls}">${v}</span>`;
-  };
-
-  const renderArbFeed = () => {
-    let rows = arLiveCache.filter((o) => Number(o.net_usd) > 0 && !o.same_pool);
-    if (arFilter !== "all") {
-      rows = rows.filter((o) => {
-        if (arFilter === "live") return !!o.actionable;
-        if (arFilter === "cross") return !!o.cross_dex;
-        if (arFilter === "uni") return (o.venue || "").includes("uni") && !o.cross_dex;
-        if (arFilter === "sushi") return (o.venue || "").includes("sushi");
-        return true;
-      });
-    }
-    const note = $("ar-feed-note");
-    if (note) {
-      note.textContent = rows.length ? `${rows.length} +EV` : "+EV after costs";
-    }
-    const empty = $("arb-empty");
-    if (empty) {
-      const m = arMetaCache || {};
-      const a = arLastState || {};
-      if (rows.length) {
-        empty.style.display = "none";
-        empty.classList.remove("err");
-      } else {
-        empty.style.display = "block";
-        if (a.error) {
-          empty.classList.add("err");
-          empty.textContent = "scan error: " + a.error;
-        } else if (m.last_scan) {
-          empty.classList.remove("err");
-          const n = m.pairs || 0;
-          const q = m.quoted != null ? m.quoted : m.quotes;
-          const skip = m.skipped != null ? m.skipped : arNearCache.length;
-          const floor = m.min_usd;
-          empty.textContent = `no +EV this scan · ${fmt.num(n, 0)} pairs`
-            + (q != null ? ` · ${fmt.num(q, 0)} quotes` : "")
-            + (skip != null ? ` · skip ${fmt.num(skip, 0)}` : "")
-            + (floor != null ? ` · floor ${fmt.usd(floor)}` : "");
-        } else {
-          empty.classList.remove("err");
-          empty.textContent = "backrun+lst · scoring LST/stables (Aave flash)…";
-        }
-      }
-    }
-    const body = $("arb-table") && $("arb-table").querySelector("tbody");
-    if (!body) return;
-    body.innerHTML = rows.slice(0, 40).map((o) => {
-      const netColor = o.net_usd > 0 ? "var(--green)" : "var(--dim)";
-      const planTip = o.plan ? JSON.stringify(o.plan).replace(/"/g, "&quot;") : (o.flash_full || "");
-      return `<tr>
-        <td>${venueBadge(o)}</td>
-        <td><b>${o.mid || "?"}</b></td>
-        <td class="mono dim" title="${planTip}">${o.route || "--"}</td>
-        <td>${fmt.num(o.hops || 2, 0)}</td>
-        <td>${fmt.num(o.borrow_weth, 4)}</td>
-        <td style="color:var(--amber)">${fmt.usd(o.profit_usd)}</td>
-        <td class="dim">${fmt.usd(o.gas_usd)}</td>
-        <td style="color:${netColor}"><b>${fmt.usd(o.net_usd)}</b></td>
-        <td>${arbFlag(o)}</td>
-      </tr>`;
-    }).join("");
-  };
-
-  const arFilters = $("ar-filters");
-  if (arFilters) {
-    arFilters.addEventListener("click", (e) => {
-      const btn = e.target.closest(".ar-f");
-      if (!btn) return;
-      arFilter = btn.dataset.f || "all";
-      arFilters.querySelectorAll(".ar-f").forEach((b) => b.classList.toggle("on", b === btn));
-      renderArbFeed();
-    });
-  }
-
-  const VENUE_COLORS = {
-    uni: "#f472b6", sushi: "#f59e0b", "uni+sushi": "#a78bfa", "sushi+uni": "#a78bfa",
-  };
-
-  const updateArb = (s) => {
-    const a = s.arb || {};
-    const m = a.meta || {};
-    const hist = s.hist || {};
-    arLiveCache = (a.opps || []).filter((o) => Number(o.net_usd) > 0 && !o.same_pool);
-    arNearCache = a.near || [];
-    arMetaCache = m;
-    arLastState = a;
-
-    const pressure = m.pressure || "idle";
-    const badge = $("ar-pressure");
-    if (badge) {
-      badge.textContent = pressure;
-      badge.className = "ar-pressure-badge " + pressure;
-    }
-    const setTxt = (id, v) => { const el = $(id); if (el) el.textContent = v; };
-    setTxt("ar-live", fmt.num(m.live, 0));
-    setTxt("ar-actionable", fmt.num(m.actionable, 0));
-    setTxt("ar-best-net", m.best_net_usd != null && m.live ? fmt.usd(m.best_net_usd) : "--");
-    setTxt("ar-skip-n", fmt.num(m.skipped != null ? m.skipped : (m.near || 0), 0));
-    setTxt("ar-skip-debug-n", fmt.num(m.skipped != null ? m.skipped : arNearCache.length, 0));
-
-    const meta = $("arb-meta");
-    if (meta) {
-      const uni = a.universe || {};
-      const dexes = (m.dexes || uni.venues || []).join("+") || "—";
-      const gate = m.submit_gate || "blocked";
-      const gateColor = gate === "live" ? "var(--green)" : gate === "sim" ? "var(--amber)" : "var(--red)";
-      const age = m.last_scan ? fmt.age(m.last_scan) : (a.last_scan ? fmt.age(a.last_scan) : null);
-      meta.innerHTML =
-        `<span>pairs <b>${fmt.num(m.pairs != null ? m.pairs : uni.pairs, 0)}</b></span>` +
-        `<span>dexes <b>${dexes}</b></span>` +
-        `<span>submit <b style="color:${gateColor}">${gate}</b></span>` +
-        `<span>cross <b style="color:var(--violet)">${fmt.num(m.cross_dex, 0)}</b></span>` +
-        (m.top_mid ? `<span>top <b>${m.top_mid}</b></span>` : "") +
-        (m.gas_gwei != null ? `<span>gas <b>${fmt.num(m.gas_gwei, 2)} gwei</b></span>` : "") +
-        (m.scan_ms != null ? `<span>scan <b>${fmt.num(m.scan_ms, 0)}ms</b></span>` : "") +
-        (age ? `<span>last <b>${age}</b></span>` : "") +
-        (m.mode ? `<span>mode <b>${m.mode}</b></span>` : "") +
-        (m.last_victim ? `<span>victim <b class="mono">${m.last_victim}</b></span>` : "") +
-        (m.quote_src ? `<span>quotes <b>${m.quote_src}</b></span>` : "") +
-        (m.live != null ? `<span>live <b>${fmt.num(m.live, 0)}</b></span>` : "") +
-        (m.skipped != null ? `<span>skipped <b>${fmt.num(m.skipped, 0)}</b></span>` : "") +
-        (m.flash_fee_bps != null ? `<span>flash <b>${fmt.num(m.flash_fee_bps, 0)} bps ${m.flash_fee_src || "aave"}</b></span>` : "") +
-        (m.scan_block ? `<span>@ blk <b>${m.scan_block}</b></span>` : "") +
-        ((m.preferred_mids || []).length
-          ? `<span>learn <b>${m.preferred_mids.join(",")}</b></span>` : "") +
-        (a.error ? `<span style="color:var(--red)">${a.error}</span>` : "");
-    }
-
-    const mix = m.venue_mix || [];
-    const track = $("ar-mix-track");
-    const keys = $("ar-mix-keys");
-    if (track) {
-      track.innerHTML = mix.length
-        ? mix.map((p) => {
-            const c = VENUE_COLORS[p.venue] || "#64748b";
-            return `<span style="width:${Math.max(2, p.pct || 0)}%;background:${c}" title="${p.venue} ${p.n}"></span>`;
-          }).join("")
-        : `<span style="width:100%;background:#1e293b"></span>`;
-    }
-    if (keys) {
-      keys.innerHTML = mix.slice(0, 5).map((p) => {
-        const c = VENUE_COLORS[p.venue] || "#64748b";
-        return `<span><i style="display:inline-block;width:7px;height:7px;border-radius:2px;background:${c};margin-right:4px"></i>${p.venue} <b>${p.n}</b></span>`;
-      }).join("") || `<span class="dim">awaiting scan…</span>`;
-    }
-
-    const nearBody = $("arb-near-table") && $("arb-near-table").querySelector("tbody");
-    const nearEmpty = $("arb-near-empty");
-    if (nearEmpty) {
-      if (arNearCache.length) nearEmpty.style.display = "none";
-      else {
-        nearEmpty.style.display = "block";
-        nearEmpty.textContent = m.last_scan || a.last_scan
-          ? "no debug skips this scan"
-          : "waiting for first quote pass…";
-      }
-    }
-    if (nearBody) {
-      nearBody.innerHTML = arNearCache.slice(0, 8).map((o) => {
-        const gap = o.gap_usd != null ? o.gap_usd : o.net_usd;
-        const why = o.skip_reason || (o.net_usd != null && o.net_usd <= 0 ? "neg_net" : "below_floor");
-        const tip = o.submit_reason ? String(o.submit_reason).replace(/"/g, "&quot;") : "";
-        return `<tr class="arb-near-row" title="${tip}">
-          <td>${venueBadge(o)}</td>
-          <td><b>${o.mid || "?"}</b></td>
-          <td class="dim">${fmt.usd(o.net_usd)}</td>
-          <td style="color:var(--red)">${fmt.usd(gap)}</td>
-          <td class="dim">${why}</td>
-        </tr>`;
-      }).join("");
-    }
-
-    const st = a.stats || {};
-    const best = (st.best_profit_weth || 0) / 1e18;
-    const cov = $("arb-stats");
-    const covNote = $("ar-cov-note");
-    if (covNote) covNote.textContent = (m.dexes || []).join("+") || "dex";
-    if (cov) {
-      const byDex = m.by_dex || st.by_dex || {};
-      const dexBits = Object.entries(byDex).map(([k, v]) => `${k}:${v}`).join(" ");
-      const kindBits = Object.entries(m.by_kind || st.by_kind || {}).map(([k, v]) => `${k}:${v}`).join(" ");
-      const toks = (m.tokens || (a.universe || {}).tokens || []).slice(0, 8).join(" ");
-      cov.innerHTML = [
-        `<span>net <b>ethereum mainnet</b></span>`,
-        `<span>pairs <b>${fmt.num(m.pairs != null ? m.pairs : st.pairs, 0)}</b></span>`,
-        `<span>routes <b>${fmt.num(m.routes != null ? m.routes : st.routes, 0)}</b></span>`,
-        `<span>flash pools <b>${fmt.num(m.flash_pools != null ? m.flash_pools : st.flash_pools, 0)}</b></span>`,
-        `<span>jobs <b>${fmt.num(m.jobs != null ? m.jobs : st.jobs, 0)}</b></span>`,
-        `<span>screened <b>${fmt.num(m.screened != null ? m.screened : st.screened, 0)}</b></span>`,
-        `<span>quoted <b>${fmt.num(m.quoted != null ? m.quoted : (st.quoted != null ? st.quoted : st.quotes), 0)}</b></span>`,
-        (dexBits ? `<span>graph <b>${dexBits}</b></span>` : ""),
-        (kindBits ? `<span>kind <b>${kindBits}</b></span>` : ""),
-        (toks ? `<span>mids <b>${toks}</b></span>` : ""),
-        (st.gas_gwei_live != null
-          ? `<span>live gas <b>${fmt.num(st.gas_gwei_live, 3)} gwei</b></span>` : ""),
-        `<span>skipped <b>${fmt.num(m.skipped != null ? m.skipped : st.skipped, 0)}</b></span>`,
-        (m.quote_src ? `<span>quotes via <b>${m.quote_src}</b></span>` : ""),
-        (m.last_victim ? `<span>last victim <b>${m.last_victim}</b></span>` : ""),
-        (m.flash_fee_bps != null
-          ? `<span>flash fee <b>${fmt.num(m.flash_fee_bps, 0)} bps ${m.flash_fee_src || "aave-v3"}</b></span>` : ""),
-        (m.min_usd != null ? `<span>floor <b>${fmt.usd(m.min_usd)}</b></span>` : ""),
-        `<span>best margin <b style="color:${best < 0 ? "var(--amber)" : "var(--green)"}">${fmt.num(best, 5)} WETH</b></span>`,
-        (m.last_scan ? `<span>last scan <b>${fmt.age(m.last_scan)}</b></span>` : ""),
-      ].filter(Boolean).join("");
-    }
-
-    if (chartArb) {
-      const bn = hist.arb_best_net || [];
-      const ac = hist.arb_actionable || [];
-      const n = Math.max(bn.length, ac.length);
-      chartArb.data.labels = Array.from({ length: n }, (_, i) => i);
-      chartArb.data.datasets[0].data = bn;
-      chartArb.data.datasets[1].data = ac;
-      chartArb.update();
-    }
-
-    renderArbFeed();
   };
 
   const binCount = (obj, key) => {
@@ -2865,7 +2693,6 @@
         `<span>loss <b>${fmt.num(b.loss_ema, 3)}</b></span>` +
         `<span>replay <b>${fmt.num(b.replay, 0)}</b></span>` +
         `<span>liq× <b>${fmt.num(b.min_liq_mult, 2)}</b></span>` +
-        `<span>arb× <b>${fmt.num(b.min_arb_mult, 2)}</b></span>` +
         `<span>cadence× <b>${fmt.num(b.cadence_mult, 2)}</b></span>` +
         `<span>edge <b style="color:${b.prefer_edge ? "var(--cyan)" : "var(--dim)"}">${b.prefer_edge ? "prefer" : "off"}</b></span>`;
     }
@@ -2903,7 +2730,6 @@
       const kind = (h.kind || "").toLowerCase();
       const stage = (h.stage || "").toLowerCase();
       if (bcFilter === "liq") return kind === "liq";
-      if (bcFilter === "arb") return kind === "arb";
       if (bcFilter === "skip") return kind === "skip" || stage === "skip";
       if (bcFilter === "sent") return stage === "sent" || stage === "ok";
       if (bcFilter === "sim") return stage === "simulated" || stage === "sim";
@@ -2960,21 +2786,20 @@
     }, bc.summary || {});
     const st = $("bcast-status");
     const rs = $("bcast-reasons");
-    const near = $("bcast-near");
     if (!st || !rs) return;
 
     let pressure = sum.pressure || bc.pressure;
     let label = sum.label;
     if (!pressure) {
       if (!bc.enabled) { pressure = "idle"; label = label || "off"; }
-      else if (bc.armed && (ready.liq || ready.arb)) {
+      else if (bc.armed && ready.liq) {
         pressure = "hot";
         label = label || (bc.keep_live ? "armed · auto-renew" : "armed live");
       }
       else if (bc.armed) { pressure = "elevated"; label = label || "armed · blocked"; }
-      else if (bc.sim_only && (ready.liq || ready.arb)) { pressure = "quiet"; label = label || "sim ready"; }
+      else if (bc.sim_only && ready.liq) { pressure = "quiet"; label = label || "sim ready"; }
       else if (bc.sim_only) { pressure = "busy"; label = label || "sim · blocked"; }
-      else if (ready.liq || ready.arb) { pressure = "elevated"; label = label || "ready · disarm"; }
+      else if (ready.liq) { pressure = "elevated"; label = label || "ready · disarm"; }
       else { pressure = "busy"; label = label || "blocked"; }
     }
     label = label || pressure || "idle";
@@ -2992,9 +2817,9 @@
       if (cls != null) el.className = "big " + cls;
     };
     setTxt("bc-liq", ready.liq ? "ready" : "blocked", ready.liq ? "green" : "red");
-    setTxt("bc-arb", ready.arb ? "ready" : "blocked", ready.arb ? "green" : "red");
+    const modeLabel = bc.armed ? (bc.keep_live ? "keep live" : "armed") : bc.sim_only ? "sim" : bc.keep_live ? "keep live" : "off";
+    setTxt("bc-mode", modeLabel, bc.armed ? "green" : (bc.sim_only ? "" : "dim"));
     setTxt("bc-dyn-liq", bc.dyn_min_liq != null ? "$" + fmt.num(bc.dyn_min_liq) : "--", "amber");
-    setTxt("bc-dyn-arb", bc.dyn_min_arb != null ? "$" + fmt.num(bc.dyn_min_arb) : "--", "amber");
     const lastStage = sum.last_stage || "--";
     const okStage = ["sent", "ok", "simulated"].includes(String(lastStage).toLowerCase());
     setTxt("bc-last-stage", lastStage, okStage ? "green" : (lastStage === "--" ? "dim" : "amber"));
@@ -3005,7 +2830,6 @@
       (bc.brain_advice ? `<span>brain <b style="color:var(--cyan)">${bc.brain_advice}</b></span>` : "") +
       `<span>sponsor <b>${fmt.num(bc.sponsor_target_eth, 3)} ETH</b></span>` +
       (bc.liq_contract ? `<span>liq <b>${bc.liq_contract.slice(0, 10)}…</b></span>` : "") +
-      (bc.arb_contract ? `<span>arb <b>${bc.arb_contract.slice(0, 10)}…</b></span>` : "") +
       `<span>keep live <b>${bc.keep_live ? "ON" : "off"}</b></span>` +
       `<span>${bc.arm_note || (bc.armed ? "armed" : "not armed")}</span>`;
 
@@ -3016,7 +2840,7 @@
         `<span class="bc-pill ${bc.keep_live ? "keep" : ""}">keep live ${bc.keep_live ? "auto-renew" : "off"}</span>` +
         `<span class="bc-pill ${bc.armed ? "live" : ""}">${bc.arm_note || (bc.armed ? "armed LIVE" : "not armed")}</span>` +
         `<span class="bc-pill ${bc.edge_bias ? "on" : ""}">edge ${bc.edge_bias ? "on" : "off"}</span>` +
-        `<span class="bc-pill ${ready.liq && ready.arb ? "ok" : "warn"}">${ready.liq && ready.arb ? "gates clear" : "gates blocked"}</span>`;
+        `<span class="bc-pill ${ready.liq ? "ok" : "warn"}">${ready.liq ? "gates clear" : "gates blocked"}</span>`;
     }
 
     const btnSim = $("btn-sim");
@@ -3052,18 +2876,30 @@
 
     const readyNote = $("bc-ready-note");
     if (readyNote) {
-      readyNote.textContent = (ready.liq || ready.arb) ? "partial/ready" : "blocked";
+      readyNote.textContent = ready.liq ? "ready" : "blocked";
     }
     rs.innerHTML = (ready.reasons || []).length
       ? ready.reasons.map((r) => `<span style="color:var(--amber)">${r}</span>`).join("")
       : "<span style=\"color:var(--green)\">ready to submit</span>";
 
-    if (near) {
-      near.innerHTML = (bc.near_miss_hints || []).length
-        ? bc.near_miss_hints.map((h) =>
-            `<span>${h.mid} fee${h.fee} n=${h.n} best <b>${fmt.num(h.best_weth, 5)}</b> WETH</span>`
-          ).join("")
-        : "<span class=\"dim\">no near-miss data yet</span>";
+    const nearBody = $("bc-near-table") && $("bc-near-table").querySelector("tbody");
+    if (nearBody || $("bc-near-empty")) {
+      const nearEmpty = $("bc-near-empty");
+      const nearNote = $("bc-near-note");
+      const hints = bc.near_miss_hints || [];
+      if (nearNote) nearNote.textContent = hints.length ? `${hints.length} pairs` : "learning";
+      if (nearEmpty) nearEmpty.style.display = hints.length ? "none" : "block";
+      if (nearBody) {
+        nearBody.innerHTML = hints.map((h) =>
+          `<tr>
+            <td><b>${h.mid || "?"}</b></td>
+            <td class="dim">${h.fee || "?"}</td>
+            <td style="color:var(--amber)">${fmt.num(h.best_weth, 5)}</td>
+            <td class="dim">${fmt.num(h.avg_weth, 5)}</td>
+            <td class="dim">${fmt.num(h.n, 0)}</td>
+          </tr>`
+        ).join("");
+      }
     }
 
     bcRowsCache = []
@@ -3075,22 +2911,6 @@
       })));
     bcRowsCache.sort((a, b) => (b.ts || 0) - (a.ts || 0));
     renderBcHistory();
-
-    const recentBody = $("bc-recent-table") && $("bc-recent-table").querySelector("tbody");
-    const recentEmpty = $("bc-recent-empty");
-    const recentNote = $("bc-recent-note");
-    const histOnly = hist.slice(0, 8);
-    if (recentNote) recentNote.textContent = histOnly.length ? `${histOnly.length}` : "last";
-    if (recentEmpty) recentEmpty.style.display = histOnly.length ? "none" : "block";
-    if (recentBody) {
-      recentBody.innerHTML = histOnly.map((h) =>
-        `<tr>
-          <td>${bcKindBadge(h.kind)}</td>
-          <td>${bcStageBadge(h.stage)}</td>
-          <td class="args">${bcDetail(h)}</td>
-        </tr>`
-      ).join("");
-    }
   };
 
   const postControl = async (body) => {
@@ -3145,7 +2965,7 @@
 
   /* ------------------------------------------------ Activity Log (al-*) */
   const LOG_MAX = 250;
-  const AL_PREF_CATS = ["mempool", "sweep", "competitor", "arb", "broadcast", "intel", "funds", "price", "bot"];
+  const AL_PREF_CATS = ["mempool", "sweep", "competitor", "broadcast", "intel", "funds", "price", "bot"];
   let logLines = [];
   let logSessionTotal = 0;
   let logLevelFilter = "all";   /* all | warn | error | info */
@@ -3426,6 +3246,7 @@
   const MC_INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"];
   const MC_LIMITS = { "1m": 240, "5m": 240, "15m": 200, "1h": 180, "4h": 180, "1d": 180 };
   let ethChart = null, ethSeries = null;
+  let ethRangeHigh = null, ethRangeLow = null;
   let mcInterval = "1h";
   let mcLoadSeq = 0;
   window.__mcInterval = mcInterval;
@@ -3457,6 +3278,16 @@
       crosshair: { mode: 0 },
     });
     ethSeries = ethChart.addCandlestickSeries(candleStyle);
+    ethRangeHigh = ethChart.addLineSeries({
+      color: "#22d3ee", lineWidth: 1, lineStyle: 2,
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    ethRangeLow = ethChart.addLineSeries({
+      color: "#f59e0b", lineWidth: 1, lineStyle: 2,
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
     const resize = () => {
       const box = $("eth-candles");
       if (!box || !ethChart) return;
@@ -3464,6 +3295,22 @@
     };
     window.addEventListener("resize", resize);
     requestAnimationFrame(resize);
+  };
+
+  const updateRangeLines = (chart, hiSeries, loSeries, paper) => {
+    if (!chart || !hiSeries || !loSeries || !paper || !paper.range_ready) {
+      if (hiSeries) hiSeries.setData([]);
+      if (loSeries) loSeries.setData([]);
+      return;
+    }
+    const rh = paper.range_high;
+    const rl = paper.range_low;
+    const start = paper.range_start_ts ? Math.floor(paper.range_start_ts / 1000) : 0;
+    const end = Math.floor(Date.now() / 1000);
+    const pts = [{ time: start, value: rh }, { time: end, value: rh }];
+    const loPts = [{ time: start, value: rl }, { time: end, value: rl }];
+    hiSeries.setData(pts);
+    loSeries.setData(loPts);
   };
 
   const loadEthChg24h = async () => {
@@ -3541,10 +3388,11 @@
   const CHAIN_TABS = ["eth", "sol"];
   const TAB_HINT = {
     eth: "Ethereum workspace · multi-protocol lending + Aave flash",
-    sol: "Solana workspace · Solend liq + Jupiter arb",
+    sol: "Solana workspace · Solend liquidations + flash",
   };
   let activeTab = "eth";
   let solChart = null, solSeries = null;
+  let solRangeHigh = null, solRangeLow = null;
   let solInterval = "1h";
   let solLoadSeq = 0;
   let solWorkspaceReady = false;
@@ -3601,6 +3449,16 @@
       crosshair: { mode: 0 },
     });
     solSeries = solChart.addCandlestickSeries(candleStyle);
+    solRangeHigh = solChart.addLineSeries({
+      color: "#22d3ee", lineWidth: 1, lineStyle: 2,
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+    solRangeLow = solChart.addLineSeries({
+      color: "#f59e0b", lineWidth: 1, lineStyle: 2,
+      priceLineVisible: false, lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
     window.addEventListener("resize", resizeSolChart);
     requestAnimationFrame(resizeSolChart);
   };
@@ -3754,22 +3612,6 @@
         empty.hidden = !!d.ok;
         if (!d.ok) empty.textContent = "RPC unreachable — will retry quietly";
       }
-      if (d.arb) {
-        window.__lastState = window.__lastState || {};
-        window.__lastState.sol = window.__lastState.sol || {};
-        const prev = window.__lastState.sol.arb || {};
-        window.__lastState.sol.arb = {
-          ...prev,
-          opps: d.arb.opps != null ? d.arb.opps : prev.opps,
-          near: d.arb.near != null ? d.arb.near : prev.near,
-          stats: d.arb.stats || prev.stats,
-          error: d.arb.error,
-          last_scan: d.arb.last_scan,
-          universe: d.arb.universe || prev.universe,
-          meta: { ...(prev.meta || {}), ...(d.arb.meta || {}) },
-        };
-        if (activeTab === "sol") updateSolArb(window.__lastState.sol, window.__lastState.hist);
-      }
       if ($("sol-updated")) $("sol-updated").textContent = sastClock();
       pushSolAct(d.ok
         ? `RPC ok · slot ${slotTxt} · epoch ${d.epoch != null ? d.epoch : "--"}`
@@ -3807,7 +3649,6 @@
       if (solChart) solChart.timeScale().fitContent();
       try { solChartTx?.resize?.(); } catch (_) {}
       try { solChartComp?.resize?.(); } catch (_) {}
-      try { solChartArb?.resize?.(); } catch (_) {}
     });
     if (!solRefreshTimer) {
       solRefreshTimer = setInterval(() => {
@@ -3856,13 +3697,12 @@
         const s = window.__lastState;
         updateHeader(s);
         updateBots(s); updateFunds(s); updateMempool(s);
-        updateOpps(s); updateCompetitors(s); updateArb(s); updateIntel(s); updateBroadcast(s); updatePrices(s);
+        updateOpps(s); updateCompetitors(s); updateIntel(s); updateBroadcast(s); updatePrices(s);
       }
       requestAnimationFrame(() => {
         resizeEthChart();
         try { chartTx?.resize?.(); } catch (_) {}
         try { chartComp?.resize?.(); } catch (_) {}
-        try { chartArb?.resize?.(); } catch (_) {}
       });
     }
   };
@@ -3921,8 +3761,9 @@
     }
     /* Heavy ETH card DOM only while ETH tab is visible — WS stays connected */
     updateBots(s); updateFunds(s); updateMempool(s);
-    updateOpps(s); updateCompetitors(s); updateArb(s); updateIntel(s); updateBroadcast(s); updatePrices(s);
+    updateOpps(s); updateCompetitors(s); updateIntel(s); updateBroadcast(s); updatePrices(s);
     if (!window.__logInit) { updateLog(s, s.log); window.__logInit = true; }
+    updateRangeLines(ethChart, ethRangeHigh, ethRangeLow, s.paper_eth);
   };
 
   /* ------------------------------------------------ web3 / wallet (ETH + SOL, independent) */
