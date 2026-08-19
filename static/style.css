@@ -1582,13 +1582,13 @@ footer {
 }
 .paper-stat-val {
   font-size: 13px; font-weight: 600; color: var(--text);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--mono);
 }
 .paper-open {
   margin-top: 6px; padding: 5px 8px;
   border-radius: 6px; background: rgba(34,211,238,.06);
   border: 1px solid rgba(34,211,238,.15);
   font-size: 11px; color: var(--text);
-  font-family: 'JetBrains Mono', monospace;
+  font-family: var(--mono);
 }
 .paper-open-label { color: var(--dim); font-size: 10px; }

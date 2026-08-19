@@ -109,6 +109,7 @@ class PaperTrader:
             key = asset.lower()
             if key in data:
                 pt.balance = data[key].get("balance", starting_balance)
+                pt.starting_balance = data[key].get("starting_balance", starting_balance)
                 pt.trades = data[key].get("trades", [])
         except Exception:
             pass
