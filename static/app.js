@@ -3387,6 +3387,58 @@
     }
   };
 
+  const postPaperControl = async (asset, body) => {
+    try {
+      await fetch("/api/paper/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ asset, ...body }),
+      });
+    } catch (e) { console.error("paper control failed", e); }
+  };
+
+  // ETH paper toggles
+  const ethRmOrb = $("eth-range-mode");
+  const ethRmPd = $("eth-range-mode-pd");
+  const ethPaperOn = $("eth-paper-on");
+  if (ethRmOrb) ethRmOrb.addEventListener("click", () => {
+    postPaperControl("ETH", { range_mode: "orb" });
+    ethRmOrb.classList.add("on");
+    ethRmPd && ethRmPd.classList.remove("on");
+  });
+  if (ethRmPd) ethRmPd.addEventListener("click", () => {
+    postPaperControl("ETH", { range_mode: "prev_day" });
+    ethRmPd.classList.add("on");
+    ethRmOrb && ethRmOrb.classList.remove("on");
+  });
+  if (ethPaperOn) ethPaperOn.addEventListener("click", () => {
+    const isOn = ethPaperOn.classList.contains("on");
+    postPaperControl("ETH", { enabled: !isOn });
+    ethPaperOn.classList.toggle("on");
+    ethPaperOn.textContent = isOn ? "Paper OFF" : "Paper ON";
+  });
+
+  // SOL paper toggles
+  const solRmOrb = $("sol-range-mode");
+  const solRmPd = $("sol-range-mode-pd");
+  const solPaperOn = $("sol-paper-on");
+  if (solRmOrb) solRmOrb.addEventListener("click", () => {
+    postPaperControl("SOL", { range_mode: "orb" });
+    solRmOrb.classList.add("on");
+    solRmPd && solRmPd.classList.remove("on");
+  });
+  if (solRmPd) solRmPd.addEventListener("click", () => {
+    postPaperControl("SOL", { range_mode: "prev_day" });
+    solRmPd.classList.add("on");
+    solRmOrb && solRmOrb.classList.remove("on");
+  });
+  if (solPaperOn) solPaperOn.addEventListener("click", () => {
+    const isOn = solPaperOn.classList.contains("on");
+    postPaperControl("SOL", { enabled: !isOn });
+    solPaperOn.classList.toggle("on");
+    solPaperOn.textContent = isOn ? "Paper OFF" : "Paper ON";
+  });
+
   const loadEthChg24h = async () => {
     try {
       const r = await fetch("/api/klines?symbol=ETHUSDT&interval=1h&limit=25");
