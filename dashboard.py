@@ -115,6 +115,8 @@ import intel_collector as ic  # noqa: E402
 import intel_analyze as ia  # noqa: E402
 from intel_collector import aggregate_liq_intel  # noqa: E402
 import profit_engine as pe  # noqa: E402
+import precompute_eth as _pre_eth  # noqa: E402
+import precompute_sol as _pre_sol  # noqa: E402
 import profit_brain as brain  # noqa: E402
 import sol_scanner as sols  # noqa: E402
 import eth_lending as elend  # noqa: E402
@@ -3783,12 +3785,24 @@ class Dashboard:
             await asyncio.sleep(85)
 
     # ------------------------------------------------------------ server
+    def _get_hot_eth_positions(self):
+        watchlist = self.state.get("watchlist", [])
+        return [w for w in watchlist if w.get("hf", 999) < 1.05]
+
+    def _get_hot_sol_obligations(self):
+        sol = self.state.get("sol", {})
+        return sol.get("watchlist", [])
+
     async def start_loops(self):
         self._loop = asyncio.get_running_loop()
         self._eth_hot_kick = asyncio.Event()
         self._enforce_keep_live()
         self.refresh_broadcast_ready()
         self.refresh_sol_broadcast_ready()
+        _pre_eth.start_block_listener(_RPC_POOL, self._get_hot_eth_positions)
+        _pre_sol.start_slot_listener(
+            "https://api.mainnet-beta.solana.com",
+            self._get_hot_sol_obligations)
         coros = (self.mempool_loop(), self.eth_hot_loop(), self.prices_loop(),
                  self.funds_loop(),
                  self.sweep_loop(), self.competitor_loop(),
