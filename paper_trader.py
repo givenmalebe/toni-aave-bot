@@ -1,8 +1,13 @@
 """Paper trading bot — Daily Range Breakout strategy on 5m candles."""
+import json
+import os
+import time
 from collections import deque
 
 class PaperTrader:
     """Paper trades ETH or SOL using the Daily Range Breakout strategy."""
+
+    PAPER_LOG = "paper_trades.json"
 
     def __init__(self, asset: str, starting_balance: float = 100.0):
         self.asset = asset
@@ -63,6 +68,51 @@ class PaperTrader:
             "pnl_pct": round(total_pnl / self.starting_balance * 100, 2),
             "win_rate": round(len(wins) / len(self.trades) * 100, 1) if self.trades else 0,
         }
+
+    def save(self):
+        """Append trade log to persistent JSON file."""
+        data = {}
+        if os.path.exists(self.PAPER_LOG):
+            try:
+                with open(self.PAPER_LOG, "r") as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+
+        key = self.asset.lower()
+        if "meta" not in data:
+            data["meta"] = {
+                "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "version": 1,
+                "strategy": "daily_range_breakout",
+                "timeframe": "5m",
+            }
+        if key not in data:
+            data[key] = {"balance": self.balance, "starting_balance": self.starting_balance, "trades": [], "stats": {}}
+
+        data[key]["balance"] = round(self.balance, 4)
+        data[key]["trades"] = self.trades
+        data[key]["stats"] = self._compute_stats()
+
+        with open(self.PAPER_LOG, "w") as f:
+            json.dump(data, f, indent=2)
+
+    @classmethod
+    def load(cls, asset, starting_balance=100.0):
+        """Load existing state from JSON file."""
+        pt = cls(asset, starting_balance)
+        if not os.path.exists(cls.PAPER_LOG):
+            return pt
+        try:
+            with open(cls.PAPER_LOG, "r") as f:
+                data = json.load(f)
+            key = asset.lower()
+            if key in data:
+                pt.balance = data[key].get("balance", starting_balance)
+                pt.trades = data[key].get("trades", [])
+        except Exception:
+            pass
+        return pt
 
 
     def _compute_atr(self, candles, period=14):
@@ -314,6 +364,7 @@ class PaperTrader:
         }
         self.trades.append(trade)
         self.cooldown_until = ts + 900000  # 15 min cooldown
+        self.save()
 
         result = {"type": reason, "price": price, "ts": ts, "pnl": round(pnl, 4), "trade": trade}
         self.position = None
