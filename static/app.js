@@ -185,6 +185,43 @@
   });
   const intelTrendHist = [];
 
+  /* ---- Liq-intel LightweightCharts ---- */
+  let liqHealthChart = null;
+  let liqHealthSeries = null;
+  let liqVolumeChart = null;
+  let liqVolumeSeries = null;
+  function initLiqCharts() {
+    const healthEl = $("liq-health-chart");
+    if (healthEl && window.LightweightCharts) {
+      liqHealthChart = LightweightCharts.createChart(healthEl, {
+        layout: { background: { color: "transparent" }, textColor: "#8b8fa3" },
+        grid: { vertLines: { color: "rgba(42,46,64,.4)" }, horzLines: { color: "rgba(42,46,64,.4)" } },
+        rightPriceScale: { visible: false },
+        timeScale: { visible: false, rightOffset: 0 },
+        crosshair: { mode: 0 },
+      });
+      liqHealthSeries = liqHealthChart.addBarSeries({
+        priceLineVisible: false, lastValueVisible: false,
+      });
+      liqHealthChart.applyOptions({ width: healthEl.clientWidth });
+    }
+    const volEl = $("liq-volume-chart");
+    if (volEl && window.LightweightCharts) {
+      liqVolumeChart = LightweightCharts.createChart(volEl, {
+        layout: { background: { color: "transparent" }, textColor: "#8b8fa3" },
+        grid: { vertLines: { color: "rgba(42,46,64,.4)" }, horzLines: { color: "rgba(42,46,64,.4)" } },
+        rightPriceScale: { visible: false },
+        timeScale: { visible: false, rightOffset: 0 },
+        crosshair: { mode: 0 },
+      });
+      liqVolumeSeries = liqVolumeChart.addLineSeries({
+        color: "#22d3ee", lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
+      });
+      liqVolumeChart.applyOptions({ width: volEl.clientWidth });
+    }
+  }
+  initLiqCharts();
+
   /* ======================== SOL twin renderers ======================== */
   const solChartTx = mkChart("sol-chart-tx", {
     type: "line",
@@ -2744,6 +2781,59 @@
       chartIntelTrend.data.labels = intelTrendHist.map((_, idx) => idx);
       chartIntelTrend.data.datasets[0].data = intelTrendHist.slice();
       chartIntelTrend.update("none");
+    }
+  };
+
+  const updateLiqIntel = (s) => {
+    const li = s.intel && s.intel.liq_intel;
+    if (!li) return;
+
+    const vol = li.volume_24h || 0;
+    const el = (id) => $(id);
+    const fmtK = (v) => v >= 1000 ? "$" + (v / 1000).toFixed(1) + "k" : "$" + v.toFixed(0);
+    const fmtD = (v) => "$" + v.toFixed(2);
+
+    const volEl = el("liq-volume"); if (volEl) volEl.textContent = fmtK(vol);
+    const cntEl = el("liq-count"); if (cntEl) cntEl.textContent = li.count_24h || 0;
+    const avgEl = el("liq-avg"); if (avgEl) avgEl.textContent = fmtK(li.avg_size || 0);
+    const gasEl = el("liq-gas"); if (gasEl) gasEl.textContent = fmtD(li.gas_per_liq || 0);
+
+    const protoBar = el("liq-proto-bar");
+    const protoLabels = el("liq-proto-labels");
+    if (protoBar && li.protocols) {
+      const total = Object.values(li.protocols).reduce((s, p) => s + p.count, 0) || 1;
+      const colors = { aave_v3: "#22d3ee", compound_v3: "#22c55e", morpho: "#a78bfa", spark: "#f59e0b" };
+      const names = { aave_v3: "Aave", compound_v3: "Compound", morpho: "Morpho", spark: "Spark" };
+      let barHtml = "";
+      let labelHtml = "";
+      for (const [k, v] of Object.entries(li.protocols)) {
+        const pct = (v.count / total * 100).toFixed(1);
+        barHtml += `<div style="width:${pct}%;background:${colors[k] || '#666'}"></div>`;
+        labelHtml += `<span style="color:${colors[k]}">${names[k]} ${v.count}</span>`;
+      }
+      protoBar.innerHTML = barHtml;
+      if (protoLabels) protoLabels.innerHTML = labelHtml;
+    }
+
+    if (liqHealthSeries && li.health_dist) {
+      const hd = li.health_dist;
+      const time = Math.floor(Date.now() / 1000);
+      liqHealthSeries.setData([
+        { time: time - 3, open: 0, high: hd["<1.0"] || 0, low: 0, close: hd["<1.0"] || 0, color: "#ef4444" },
+        { time: time - 2, open: 0, high: hd["1.0-1.05"] || 0, low: 0, close: hd["1.0-1.05"] || 0, color: "#f59e0b" },
+        { time: time - 1, open: 0, high: hd["1.05-1.1"] || 0, low: 0, close: hd["1.05-1.1"] || 0, color: "#22c55e" },
+        { time: time, open: 0, high: hd[">1.1"] || 0, low: 0, close: hd[">1.1"] || 0, color: "#6b7280" },
+      ]);
+    }
+
+    const comp = li.competitors || {};
+    const sEl = el("liq-comp-searchers"); if (sEl) sEl.textContent = comp.searchers || 0;
+    const rEl = el("liq-comp-rate"); if (rEl) rEl.textContent = ((comp.success_rate || 0) * 100).toFixed(0) + "%";
+    const mEl = el("liq-comp-missed"); if (mEl) mEl.textContent = comp.missed || 0;
+
+    if (liqVolumeSeries && li.volume_history && li.volume_history.length) {
+      const series = li.volume_history.map(h => ({ time: h.ts, value: h.volume }));
+      liqVolumeSeries.setData(series);
     }
   };
 
