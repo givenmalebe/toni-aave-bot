@@ -24,3 +24,26 @@ def test_evict_stale():
     assert evicted == 1
     assert "0xold" not in pe._cache
     assert "0xnew" in pe._cache
+
+def test_build_entry():
+    entry = pe.build_entry(
+        protocol="aave-v3",
+        user="0xabc",
+        collateral="0xcoll",
+        debt="0xdead",
+        debt_amount_wei=1000000,
+        hf=0.95,
+        contract_addr="0xcontract",
+        liq_sig="0xc2fa746c",
+        liq_args=["0xabc", "0xcoll", "0xdead", "0xf4240"],
+        swap_path=b"\x00",
+        gas_limit=1500000,
+        estimated_profit_usd=42.0,
+        flash_amount_wei=1000000,
+        debt_token="0xA0b86991",
+        coll_token="0xC02aaA39",
+    )
+    assert entry["protocol"] == "aave-v3"
+    assert entry["calldata"].startswith("0xc2fa746c")
+    assert entry["estimated_profit_usd"] == 42.0
+    assert entry["hf"] == 0.95

@@ -37,6 +37,43 @@ def cache_stats() -> dict:
     }
 
 
+def build_entry(
+    protocol: str,
+    user: str,
+    collateral: str,
+    debt: str,
+    debt_amount_wei: int,
+    hf: float,
+    contract_addr: str,
+    liq_sig: str,
+    liq_args: list[str],
+    swap_path: bytes,
+    gas_limit: int,
+    estimated_profit_usd: float,
+    flash_amount_wei: int,
+    debt_token: str,
+    coll_token: str,
+) -> dict:
+    """Build a cache entry for a single position."""
+    return {
+        "protocol": protocol,
+        "user": user,
+        "collateral": collateral,
+        "debt": debt,
+        "calldata": liq_sig + "".join(a[2:] if a.startswith("0x") else a for a in liq_args),
+        "selector": liq_sig[:10],
+        "swap_path": swap_path.hex() if isinstance(swap_path, bytes) else swap_path,
+        "gas_limit": gas_limit,
+        "estimated_profit_usd": estimated_profit_usd,
+        "flash_amount": str(flash_amount_wei),
+        "debt_token": debt_token,
+        "coll_token": coll_token,
+        "hf": hf,
+        "updated_block": _last_block,
+        "live_ok": True,
+    }
+
+
 def evict_stale(max_blocks_old: int = 3) -> int:
     """Remove entries not refreshed in max_blocks_old blocks. Returns count evicted."""
     global _cache
