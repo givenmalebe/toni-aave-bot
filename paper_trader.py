@@ -1,7 +1,4 @@
-"""Paper trading bot â€” Daily Range Breakout strategy on 5m candles."""
-import time
-import json
-import os
+"""Paper trading bot — Daily Range Breakout strategy on 5m candles."""
 from collections import deque
 
 class PaperTrader:
@@ -27,7 +24,11 @@ class PaperTrader:
 
         # Trade log
         self.trades = []
-        self.cooldown_until = 0  # timestamp â€” no new trade until this time
+        self.cooldown_until = 0  # timestamp — no new trade until this time
+
+        # Streak tracking
+        self._consecutive_wins = 0
+        self._consecutive_losses = 0
 
         # Recent candles for ATR / RSI
         self._candle_buffer = deque(maxlen=200)
@@ -101,7 +102,6 @@ class PaperTrader:
     def _update_range(self, candle):
         """Update daily range based on current range_mode."""
         ts = candle[0]  # ms
-        hour = (ts // 3600000) % 24  # UTC hour
 
         # Reset range at UTC 00:00
         day_start = (ts // 86400000) * 86400000
@@ -118,7 +118,7 @@ class PaperTrader:
                 if len(self.range_candles) >= 24:
                     self._finalize_range()
             elif not self.range_ready and ts >= day_start + 7200000:
-                # Missed the window â€” backfill from what we have
+                # Missed the window — backfill from what we have
                 if self.range_candles:
                     self._finalize_range()
                 else:
@@ -128,7 +128,7 @@ class PaperTrader:
                     self.range_ready = True
                     self.range_start_ts = day_start
         elif self.range_mode == "prev_day":
-            # Range is set from yesterday â€” handled in on_candle when we have enough data
+            # Range is set from yesterday — handled in on_candle when we have enough data
             if not self.range_ready:
                 self.range_candles.append(candle)
                 if len(self.range_candles) >= 2:
@@ -159,11 +159,11 @@ class PaperTrader:
         atr = self._compute_atr(list(self._candle_buffer))
         rsi = self._compute_rsi(list(self._candle_buffer))
 
-        # If in position â€” check exits
+        # If in position — check exits
         if self.position:
             return self._check_exit(candle, atr)
 
-        # If no position â€” check entry
+        # If no position — check entry
         if ts < self.cooldown_until:
             return None
 
@@ -234,12 +234,12 @@ class PaperTrader:
         if atr and atr > 0:
             if direction == "long":
                 trail = pos["best_price"] - 2 * atr
-                pos["trail_stop"] = max(pos["trail_stop"] or 0, trail)
+                pos["trail_stop"] = max(pos["trail_stop"] if pos["trail_stop"] is not None else 0, trail)
                 if c <= pos["trail_stop"]:
                     return self._close_leg2(c, ts, "trail_stop")
             else:
                 trail = pos["best_price"] + 2 * atr
-                pos["trail_stop"] = min(pos["trail_stop"] or float("inf"), trail)
+                pos["trail_stop"] = min(pos["trail_stop"] if pos["trail_stop"] is not None else float("inf"), trail)
                 if c >= pos["trail_stop"]:
                     return self._close_leg2(c, ts, "trail_stop")
 
@@ -276,10 +276,10 @@ class PaperTrader:
         # Streak tracking
         total_pnl_so_far = pos.get("leg1_pnl", 0) + pnl
         if total_pnl_so_far > 0:
-            self._consecutive_wins = getattr(self, "_consecutive_wins", 0) + 1
+            self._consecutive_wins += 1
             self._consecutive_losses = 0
         else:
-            self._consecutive_losses = getattr(self, "_consecutive_losses", 0) + 1
+            self._consecutive_losses += 1
             self._consecutive_wins = 0
 
         # Build trade record
@@ -309,8 +309,8 @@ class PaperTrader:
             "rsi_at_entry": round(pos["rsi_at_entry"], 2),
             "price_vs_range": round((pos["entry_price"] - pos["range_low"]) / max(pos["range_height"], 0.0001), 4),
             "hour_bucket": (pos["entry_ts"] // 14400000) % 6,
-            "consecutive_wins": getattr(self, "_consecutive_wins", 0),
-            "consecutive_losses": getattr(self, "_consecutive_losses", 0),
+            "consecutive_wins": self._consecutive_wins,
+            "consecutive_losses": self._consecutive_losses,
         }
         self.trades.append(trade)
         self.cooldown_until = ts + 900000  # 15 min cooldown
