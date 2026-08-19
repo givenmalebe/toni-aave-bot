@@ -113,6 +113,7 @@ import broadcast  # noqa: E402
 import aave_v4_monitor as avm  # noqa: E402
 import intel_collector as ic  # noqa: E402
 import intel_analyze as ia  # noqa: E402
+from intel_collector import aggregate_liq_intel
 import profit_engine as pe  # noqa: E402
 import profit_brain as brain  # noqa: E402
 import sol_scanner as sols  # noqa: E402
@@ -737,7 +738,15 @@ class Dashboard:
             },
             "intel": {"records": 0, "readiness": 0, "hours": {}, "dows": {},
                       "moves": 0, "last": None, "mev": {},
-                      "brain": brain.policy({})},
+                      "brain": brain.policy({}),
+                      "liq_intel": {
+                          "volume_24h": 0.0, "count_24h": 0, "avg_size": 0.0, "gas_per_liq": 0.0,
+                          "protocols": {"aave_v3": {"count": 0, "volume": 0.0}, "compound_v3": {"count": 0, "volume": 0.0},
+                                        "morpho": {"count": 0, "volume": 0.0}, "spark": {"count": 0, "volume": 0.0}},
+                          "health_dist": {"<1.0": 0, "1.0-1.05": 0, "1.05-1.1": 0, ">1.1": 0},
+                          "competitors": {"searchers": 0, "success_rate": 0.0, "missed": 0},
+                          "volume_history": [],
+                      }},
             "bots": {b: {"status": "idle", "last": None, "msg": ""}
                      for b in ("mempool", "prices", "funds", "sweep",
                                "competitors", "intel", "broadcast")},
@@ -925,6 +934,14 @@ class Dashboard:
                           "min_liq_mult": 1.0,
                           "prefer_edge": True},
                 "act_p": None, "exp_net": None, "steps": 0,
+                "liq_intel": {
+                    "volume_24h": 0.0, "count_24h": 0, "avg_size": 0.0, "gas_per_liq": 0.0,
+                    "protocols": {"aave_v3": {"count": 0, "volume": 0.0}, "compound_v3": {"count": 0, "volume": 0.0},
+                                  "morpho": {"count": 0, "volume": 0.0}, "spark": {"count": 0, "volume": 0.0}},
+                    "health_dist": {"<1.0": 0, "1.0-1.05": 0, "1.05-1.1": 0, ">1.1": 0},
+                    "competitors": {"searchers": 0, "success_rate": 0.0, "missed": 0},
+                    "volume_history": [],
+                },
             },
             "bots": {b: {"status": "idle", "last": None, "msg": ""}
                      for b in bots},
@@ -3031,6 +3048,15 @@ class Dashboard:
                         _, dows = self._intel_activity_fallback(records)
                         hours_source = "liq+poll-dow"
                     mv = rec.get("mev_classes") or {}
+                    # --- liquidation intel aggregation ---
+                    eth_price = self.state.get("eth_price", 3500.0)
+                    liq_data = aggregate_liq_intel(rec.get("spoke_txs") or [], eth_price=eth_price)
+                    vol_hist = self.state["intel"].get("liq_intel", {}).get("volume_history", [])
+                    vol_hist.append({"ts": int(time.time()), "volume": liq_data["volume_24h"]})
+                    if len(vol_hist) > 288:
+                        vol_hist = vol_hist[-288:]
+                    liq_data["volume_history"] = vol_hist
+                    self.state["intel"]["liq_intel"] = liq_data
                     pol = brain.policy(self.state)
                     ready = float(ia.readiness(records) or 0)
                     if ready < 1:
@@ -3676,6 +3702,14 @@ class Dashboard:
                     hours[str(lt.tm_hour)] = hours.get(str(lt.tm_hour), 0) + 1
                     dows[str(lt.tm_wday)] = dows.get(str(lt.tm_wday), 0) + 1
                 mp = sol.get("mempool") or {}
+                # --- liquidation intel aggregation (SOL) ---
+                sol_spoke_rows = mp.get("spoke_txs") or []
+                sol_liq_data = aggregate_liq_intel(sol_spoke_rows, eth_price=0.0)
+                sol_vol_hist = sol.get("intel", {}).get("liq_intel", {}).get("volume_history", [])
+                sol_vol_hist.append({"ts": int(time.time()), "volume": sol_liq_data["volume_24h"]})
+                if len(sol_vol_hist) > 288:
+                    sol_vol_hist = sol_vol_hist[-288:]
+                sol_liq_data["volume_history"] = sol_vol_hist
                 sol["intel"] = {
                     "records": sum(1 for l in (self.state.get("log") or [])
                                    if str(l.get("cat") or "").startswith("sol")),
@@ -3699,6 +3733,7 @@ class Dashboard:
                         "prefer_edge": self.sol_edge_bias,
                         "protocol": sols.PROTOCOL,
                     },
+                    "liq_intel": sol_liq_data,
                 }
                 self.refresh_sol_broadcast_ready()
                 self.sol_bot("broadcast", "ok" if not self.sol_armed else "running",
