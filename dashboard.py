@@ -742,10 +742,12 @@ class Dashboard:
                       "liq_intel": {
                           "volume_24h": 0.0, "count_24h": 0, "avg_size": 0.0, "gas_per_liq": 0.0,
                           "protocols": {"aave_v3": {"count": 0, "volume": 0.0}, "compound_v3": {"count": 0, "volume": 0.0},
-                                        "morpho": {"count": 0, "volume": 0.0}, "spark": {"count": 0, "volume": 0.0}},
+                                        "morpho": {"count": 0, "volume": 0.0}, "spark": {"count": 0, "volume": 0.0},
+                                        "solend": {"count": 0, "volume": 0.0}},
                           "health_dist": {"<1.0": 0, "1.0-1.05": 0, "1.05-1.1": 0, ">1.1": 0},
                           "competitors": {"searchers": 0, "success_rate": 0.0, "missed": 0},
                           "volume_history": [],
+                          "pressure": "idle",
                       }},
             "bots": {b: {"status": "idle", "last": None, "msg": ""}
                      for b in ("mempool", "prices", "funds", "sweep",
@@ -937,10 +939,12 @@ class Dashboard:
                 "liq_intel": {
                     "volume_24h": 0.0, "count_24h": 0, "avg_size": 0.0, "gas_per_liq": 0.0,
                     "protocols": {"aave_v3": {"count": 0, "volume": 0.0}, "compound_v3": {"count": 0, "volume": 0.0},
-                                  "morpho": {"count": 0, "volume": 0.0}, "spark": {"count": 0, "volume": 0.0}},
+                                  "morpho": {"count": 0, "volume": 0.0}, "spark": {"count": 0, "volume": 0.0},
+                                  "solend": {"count": 0, "volume": 0.0}},
                     "health_dist": {"<1.0": 0, "1.0-1.05": 0, "1.05-1.1": 0, ">1.1": 0},
                     "competitors": {"searchers": 0, "success_rate": 0.0, "missed": 0},
                     "volume_history": [],
+                    "pressure": "idle",
                 },
             },
             "bots": {b: {"status": "idle", "last": None, "msg": ""}
@@ -1397,6 +1401,16 @@ class Dashboard:
         }
         out["paper_eth"] = self._paper_eth.state_dict()
         out["paper_sol"] = self._paper_sol.state_dict()
+        # Pre-compute cache stats
+        try:
+            import precompute_eth as pe_mod
+            import precompute_sol as psol_mod
+            out["precompute"] = {
+                "eth": pe_mod.cache_stats(),
+                "sol": psol_mod.cache_stats(),
+            }
+        except ImportError:
+            out["precompute"] = {"eth": {}, "sol": {}}
         return out
 
     # ------------------------------------------------------------ broadcast
@@ -3049,8 +3063,16 @@ class Dashboard:
                         hours_source = "liq+poll-dow"
                     mv = rec.get("mev_classes") or {}
                     # --- liquidation intel aggregation ---
-                    eth_price = self.state.get("eth_price", 3500.0)
-                    liq_data = aggregate_liq_intel(rec.get("spoke_txs") or [], eth_price=eth_price)
+                    eth_price = (self.state.get("eth_price_usd")
+                                 or self.state.get("eth_price") or 3500.0)
+                    liq_data = aggregate_liq_intel(
+                        rec.get("spoke_txs") or [],
+                        eth_price=eth_price,
+                        competitors=self.state.get("competitors") or [],
+                        watchlist=self.state.get("watchlist") or [],
+                        opportunities=self.state.get("opportunities") or [],
+                        competitors_meta=self.state.get("competitors_meta") or {},
+                    )
                     vol_hist = self.state["intel"].get("liq_intel", {}).get("volume_history", [])
                     vol_hist.append({"ts": int(time.time()), "volume": liq_data["volume_24h"]})
                     if len(vol_hist) > 288:
@@ -3703,8 +3725,15 @@ class Dashboard:
                     dows[str(lt.tm_wday)] = dows.get(str(lt.tm_wday), 0) + 1
                 mp = sol.get("mempool") or {}
                 # --- liquidation intel aggregation (SOL) ---
-                sol_spoke_rows = mp.get("spoke_txs") or []
-                sol_liq_data = aggregate_liq_intel(sol_spoke_rows, eth_price=0.0)
+                sol_spoke_rows = mp.get("spoke_txs") or mp.get("landing") or []
+                sol_liq_data = aggregate_liq_intel(
+                    sol_spoke_rows,
+                    eth_price=0.0,
+                    competitors=sol.get("competitors") or [],
+                    watchlist=sol.get("watchlist") or [],
+                    opportunities=sol.get("opportunities") or [],
+                    competitors_meta=sol.get("competitors_meta") or {},
+                )
                 sol_vol_hist = sol.get("intel", {}).get("liq_intel", {}).get("volume_history", [])
                 sol_vol_hist.append({"ts": int(time.time()), "volume": sol_liq_data["volume_24h"]})
                 if len(sol_vol_hist) > 288:

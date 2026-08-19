@@ -10,7 +10,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.8/lib/index.iife.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
-<link rel="stylesheet" href="/static/style.css?v=keeplive1">
+<link rel="stylesheet" href="/static/style.css?v=mc2">
 </head>
 <body>
 <header id="topbar">
@@ -469,66 +469,155 @@
     </div>
 
     <!-- Liquidation Intel -->
-    <div class="card span-3" id="card-liq-intel">
-      <div class="card-head">Liquidation Intel <span id="in-pressure" class="tag"></span></div>
+    <div class="card span-6" id="card-liq-intel">
+      <h2>Liquidation Intel <span class="tag" id="liq-intel-tag">confirmed · health · mix</span></h2>
+
       <div class="liq-hero">
-        <div class="liq-hero-stat"><span class="liq-hero-label">Volume 24h</span><span class="liq-hero-val" id="liq-volume">$0</span></div>
-        <div class="liq-hero-stat"><span class="liq-hero-label">Liq Count</span><span class="liq-hero-val" id="liq-count">0</span></div>
-        <div class="liq-hero-stat"><span class="liq-hero-label">Avg Size</span><span class="liq-hero-val" id="liq-avg">$0</span></div>
-        <div class="liq-hero-stat"><span class="liq-hero-label">Gas/Liq</span><span class="liq-hero-val" id="liq-gas">$0</span></div>
+        <div class="liq-hero-left">
+          <div class="liq-pressure-badge idle" id="in-pressure">idle</div>
+          <div class="liq-hero-stats">
+            <div class="liq-stat">
+              <div class="liq-stat-label" title="collateral USD on confirmed liquidations in the last 24h">volume 24h</div>
+              <div class="big" id="liq-volume">--</div>
+            </div>
+            <div class="liq-stat">
+              <div class="liq-stat-label" title="confirmed liquidations in the last 24h">liq count</div>
+              <div class="big dim" id="liq-count">--</div>
+            </div>
+            <div class="liq-stat">
+              <div class="liq-stat-label" title="average collateral USD per liquidation">avg size</div>
+              <div class="big amber" id="liq-avg">--</div>
+            </div>
+            <div class="liq-stat">
+              <div class="liq-stat-label" title="average on-chain gas paid per liquidation">gas / liq</div>
+              <div class="big dim" id="liq-gas">--</div>
+            </div>
+          </div>
+          <div class="liq-window-hint">Confirmed competitor liquidations + watchlist health. Protocol mix includes mempool liquidation calls when present.</div>
+        </div>
+        <div class="liq-hero-right">
+          <div class="liq-mix">
+            <div class="liq-mix-label">protocol mix</div>
+            <div class="liq-proto-bar" id="liq-proto-bar"></div>
+            <div class="liq-proto-labels" id="liq-proto-labels"></div>
+          </div>
+          <div class="liq-competitors">
+            <div class="liq-comp-stat"><span class="liq-comp-label">searchers</span><span class="liq-comp-val" id="liq-comp-searchers">--</span></div>
+            <div class="liq-comp-stat"><span class="liq-comp-label">hit rate</span><span class="liq-comp-val" id="liq-comp-rate">--</span></div>
+            <div class="liq-comp-stat"><span class="liq-comp-label">missed</span><span class="liq-comp-val red" id="liq-comp-missed">--</span></div>
+          </div>
+        </div>
       </div>
-      <div class="liq-protocols">
-        <div class="liq-proto-bar" id="liq-proto-bar"></div>
-        <div class="liq-proto-labels" id="liq-proto-labels"></div>
+
+      <div class="liq-section-head">Pre-compute Cache</div>
+      <div class="cache-status">
+        <span class="cache-stat">ETH: <b id="pc-eth-hits">0</b> hits / <b id="pc-eth-pos">0</b> pos</span>
+        <span class="cache-stat">SOL: <b id="pc-sol-hits">0</b> hits / <b id="pc-sol-pos">0</b> pos</span>
+        <span class="cache-stat">Block: <b id="pc-eth-block">—</b></span>
       </div>
-      <div class="liq-section-head">Health Factor Distribution</div>
-      <div id="liq-health-chart" style="height:120px"></div>
-      <div class="liq-competitors">
-        <div class="liq-comp-stat"><span class="liq-comp-label">Searchers</span><span id="liq-comp-searchers">0</span></div>
-        <div class="liq-comp-stat"><span class="liq-comp-label">Success Rate</span><span id="liq-comp-rate">0%</span></div>
-        <div class="liq-comp-stat"><span class="liq-comp-label">Missed</span><span id="liq-comp-missed">0</span></div>
+
+      <div class="liq-grid">
+        <div class="liq-col">
+          <div class="liq-section-head">
+            <h3 class="watch">Health factor <span class="tag">watch + feed</span></h3>
+          </div>
+          <div class="liq-health" id="liq-health-chart"></div>
+        </div>
+        <div class="liq-col">
+          <div class="liq-section-head">
+            <h3 class="watch">Volume <span class="tag">24h buckets</span></h3>
+          </div>
+          <div class="liq-chart-wrap"><canvas id="liq-volume-chart"></canvas></div>
+        </div>
       </div>
-      <div class="liq-section-head">Volume History (24h)</div>
-      <div id="liq-volume-chart" style="height:120px"></div>
     </div>
 
     <!-- Trading Intel -->
-    <div class="card span-3" id="card-intel">
-      <div class="card-head">Trading Intel</div>
+    <div class="card span-6" id="card-intel">
+      <h2>Trading Intel <span class="tag">policy · activity · paper</span></h2>
+
       <div class="intel-hero">
-        <div class="intel-hero-stat"><span class="intel-hero-label">Act P</span><span class="intel-hero-val" id="intel-act">—</span></div>
-        <div class="intel-hero-stat"><span class="intel-hero-label">Exp Net</span><span class="intel-hero-val" id="intel-exp">—</span></div>
-        <div class="intel-hero-stat"><span class="intel-hero-label">Steps</span><span class="intel-hero-val" id="intel-steps">0</span></div>
-        <div class="intel-hero-stat"><span class="intel-hero-label">Records</span><span class="intel-hero-val" id="intel-records">0</span></div>
+        <div class="intel-hero-left">
+          <div id="in-advice" class="intel-advice">warming up</div>
+          <div class="intel-hero-stats">
+            <div class="intel-stat">
+              <div class="intel-stat-label">act P</div>
+              <div class="big" id="intel-act">--</div>
+            </div>
+            <div class="intel-stat">
+              <div class="intel-stat-label">exp net</div>
+              <div class="big amber" id="intel-exp">--</div>
+            </div>
+            <div class="intel-stat">
+              <div class="intel-stat-label">steps</div>
+              <div class="big dim" id="intel-steps">--</div>
+            </div>
+            <div class="intel-stat">
+              <div class="intel-stat-label">records</div>
+              <div class="big dim" id="intel-records">--</div>
+            </div>
+          </div>
+          <div id="in-meta" class="kv intel-meta"></div>
+        </div>
+        <div class="intel-hero-right">
+          <div class="intel-gauge-wrap">
+            <canvas id="gauge"></canvas>
+            <span class="intel-ready-pct"><b id="in-ready-pct">0</b>% ready</span>
+          </div>
+          <div class="intel-brain-panel" id="intel-brain"></div>
+        </div>
       </div>
-      <div id="in-advice" class="intel-advice">warming up</div>
-      <div id="in-meta" class="intel-meta"></div>
-      <div class="intel-gauge-wrap">
-        <canvas id="gauge"></canvas>
-        <span id="in-ready-pct" class="intel-ready-pct">0</span>
+
+      <div class="intel-mix">
+        <div class="intel-mix-label">MEV class mix</div>
+        <div class="intel-mix-track" id="in-mix-track"></div>
+        <div id="intel-mev" class="kv intel-mev"></div>
       </div>
-      <div class="intel-mix-track" id="in-mix-track"></div>
-      <div id="intel-mev" class="intel-mev"></div>
-      <div class="intel-brain-panel" id="intel-brain"></div>
-      <span id="in-brain-note" class="tag" hidden>policy</span>
-      <div class="intel-section-head">Hours Activity <span id="in-hours-note" class="tag">24h</span></div>
-      <div id="chart-hours" style="height:100px"></div>
-      <div class="intel-section-head">Weekday Activity</div>
-      <div id="chart-dows" style="height:100px"></div>
-      <div class="intel-section-head">Act P Trend</div>
-      <div id="chart-intel-trend" style="height:100px"></div>
-      <!-- kept for updateIntel / header compatibility -->
+
+      <div class="intel-paper" id="eth-intel-paper">
+        <div class="intel-paper-label">paper bot</div>
+        <div class="intel-paper-stats">
+          <span>bal <b id="eth-intel-paper-bal">--</b></span>
+          <span>PnL <b id="eth-intel-paper-pnl">--</b></span>
+          <span>W/L <b id="eth-intel-paper-wl">--</b></span>
+          <span>win% <b id="eth-intel-paper-wr">--</b></span>
+          <span>n <b id="eth-intel-paper-count">--</b></span>
+        </div>
+      </div>
+
+      <div class="intel-grid">
+        <div class="intel-col">
+          <div class="intel-section-head">
+            <h3 class="watch">Hours <span class="tag" id="in-hours-note">24h</span></h3>
+          </div>
+          <div class="intel-chart-wrap"><canvas id="chart-hours"></canvas></div>
+        </div>
+        <div class="intel-col">
+          <div class="intel-section-head">
+            <h3 class="watch">Weekday</h3>
+          </div>
+          <div class="intel-chart-wrap"><canvas id="chart-dows"></canvas></div>
+        </div>
+      </div>
+      <div class="intel-section-head">
+        <h3 class="watch">Act P trend</h3>
+      </div>
+      <div class="intel-chart-wrap intel-chart-wide"><canvas id="chart-intel-trend"></canvas></div>
       <span id="intel-moves" hidden></span>
       <span id="intel-block" hidden></span>
+      <span id="in-brain-note" class="tag" hidden>policy</span>
     </div>
 
     <!-- Prices / Market Context -->
     <div class="card span-6" id="card-prices">
-      <h2>Market Context <span class="tag">ETH/USD live candles</span></h2>
+      <h2>Market Context <span class="tag" id="mc-tag">ETH/USD · Binance</span></h2>
 
       <div class="mc-hero">
         <div class="mc-hero-left">
-          <div class="mc-pair-badge" id="mc-pair">ETH / USD</div>
+          <div class="mc-hero-badges">
+            <div class="mc-pair-badge" id="mc-pair">ETH / USD</div>
+            <span class="mc-src-chip">Binance ETHUSDT</span>
+          </div>
           <div class="mc-hero-stats">
             <div class="mc-stat">
               <div class="mc-stat-label">price</div>
@@ -547,11 +636,12 @@
               <div class="big dim" id="mc-updated">--</div>
             </div>
           </div>
+          <div class="mc-window-hint">Live candles drive the price. Range high/low overlay when the paper bot range is ready. Aave oracle fills reserves below.</div>
           <div id="mc-meta" class="kv mc-meta"></div>
         </div>
         <div class="mc-hero-right">
-          <div class="mc-section-head">
-            <h3 class="watch">Timeframe</h3>
+          <div class="mc-controls-panel">
+            <div class="mc-controls-label">timeframe — reload candles</div>
             <div class="mc-tf" id="mc-tf" role="group" aria-label="ETH candle timeframe">
               <button type="button" data-tf="1m" class="mc-f">1m</button>
               <button type="button" data-tf="5m" class="mc-f">5m</button>
@@ -560,54 +650,66 @@
               <button type="button" data-tf="4h" class="mc-f">4h</button>
               <button type="button" data-tf="1d" class="mc-f">1D</button>
             </div>
+            <div class="mc-hint dim">1m–1D · last close is the live price</div>
           </div>
-          <div class="mc-hint dim">Binance ETHUSDT · switch TF to reload candles</div>
         </div>
       </div>
 
       <div class="mc-chart-wrap">
-        <div id="eth-candles" class="candles mc-candles"><span class="lwc-msg">loading&hellip;</span></div>
+        <div class="mc-chart-head">
+          <h3 class="watch">ETHUSDT <span class="tag" id="mc-chart-note">1h</span></h3>
+          <div class="mc-legend">
+            <span><i class="up"></i>up</span>
+            <span><i class="dn"></i>down</span>
+            <span><i class="long"></i>long</span>
+            <span><i class="short"></i>short</span>
+            <span><i class="tp"></i>TP1</span>
+            <span><i class="trail"></i>trail</span>
+            <span><i class="sl"></i>SL</span>
+            <span><i class="hi"></i>range</span>
+          </div>
+        </div>
+        <div class="mc-chart-body">
+          <div id="eth-candles" class="candles mc-candles"><span class="lwc-msg">loading&hellip;</span></div>
+          <div class="mc-tape" id="eth-mc-tape"><span class="mc-tape-empty">no paper fills yet</span></div>
+        </div>
       </div>
 
-      <div class="mc-reserves">
-        <div class="mc-section-head">
-          <h3 class="watch">Aave reserve prices <span class="tag" id="res-delta"></span></h3>
+      <div class="mc-grid">
+        <div class="mc-col">
+          <div class="mc-section-head">
+            <h3 class="watch">Aave reserves <span class="tag" id="res-delta">oracle</span></h3>
+          </div>
+          <div id="reserves-list" class="mc-res-grid"></div>
         </div>
-        <div id="reserves-list" class="kv"></div>
-      </div>
-
-      <div class="paper-panel" id="eth-paper-panel">
-        <div class="paper-head">
-          <h3 class="watch">Paper Bot <span class="tag" id="eth-paper-status">loading</span></h3>
-          <div class="paper-toggles">
-            <button type="button" class="paper-toggle" id="eth-range-mode" data-mode="orb">ORB (2h)</button>
-            <button type="button" class="paper-toggle" id="eth-range-mode-pd" data-mode="prev_day">Prev Day</button>
-            <button type="button" class="paper-toggle on" id="eth-paper-on">Paper ON</button>
-          </div>
-        </div>
-        <div class="paper-stats" id="eth-paper-stats">
-          <div class="paper-stat"><span class="paper-stat-label">balance</span><span class="paper-stat-val" id="eth-paper-bal">$100.00</span></div>
-          <div class="paper-stat"><span class="paper-stat-label">PnL</span><span class="paper-stat-val" id="eth-paper-pnl">$0.00</span></div>
-          <div class="paper-stat"><span class="paper-stat-label">W/L</span><span class="paper-stat-val" id="eth-paper-wl">0 / 0</span></div>
-          <div class="paper-stat"><span class="paper-stat-label">win%</span><span class="paper-stat-val" id="eth-paper-wr">--</span></div>
-          <div class="paper-stat"><span class="paper-stat-label">trades</span><span class="paper-stat-val" id="eth-paper-count">0</span></div>
-        </div>
-        <div class="paper-open" id="eth-paper-open" style="display:none">
-          <div class="paper-pos-row">
-            <span class="paper-pos-label">position</span>
-            <span id="eth-paper-pos" class="paper-pos-val">--</span>
-          </div>
-          <div class="paper-pos-row">
-            <span class="paper-pos-label">TP1</span>
-            <span id="eth-paper-tp" class="paper-pos-val tp">--</span>
-          </div>
-          <div class="paper-pos-row">
-            <span class="paper-pos-label">trail</span>
-            <span id="eth-paper-trail" class="paper-pos-val trail">--</span>
-          </div>
-          <div class="paper-pos-row">
-            <span class="paper-pos-label">SL</span>
-            <span id="eth-paper-sl" class="paper-pos-val sl">--</span>
+        <div class="mc-col">
+          <div class="paper-panel" id="eth-paper-panel">
+            <div class="paper-head">
+              <h3 class="watch">Paper Bot <span class="tag" id="eth-paper-status">loading</span></h3>
+              <div class="paper-toggles">
+                <button type="button" class="paper-toggle" id="eth-range-mode" data-mode="orb">ORB (2h)</button>
+                <button type="button" class="paper-toggle" id="eth-range-mode-pd" data-mode="prev_day">Prev Day</button>
+                <button type="button" class="paper-toggle on" id="eth-paper-on">Paper ON</button>
+              </div>
+            </div>
+            <div class="paper-stats" id="eth-paper-stats">
+              <div class="paper-stat"><span class="paper-stat-label">balance</span><span class="paper-stat-val" id="eth-paper-bal">$100.00</span></div>
+              <div class="paper-stat"><span class="paper-stat-label">PnL</span><span class="paper-stat-val" id="eth-paper-pnl">$0.00</span></div>
+              <div class="paper-stat"><span class="paper-stat-label">W/L</span><span class="paper-stat-val" id="eth-paper-wl">0 / 0</span></div>
+              <div class="paper-stat"><span class="paper-stat-label">win%</span><span class="paper-stat-val" id="eth-paper-wr">--</span></div>
+              <div class="paper-stat"><span class="paper-stat-label">trades</span><span class="paper-stat-val" id="eth-paper-count">0</span></div>
+            </div>
+            <div class="paper-open" id="eth-paper-open" style="display:none">
+              <div class="paper-open-head">
+                <span class="paper-dir-badge long" id="eth-paper-dir">LONG</span>
+                <span id="eth-paper-pos" class="paper-pos-main">--</span>
+              </div>
+              <div class="paper-levels">
+                <div class="paper-lvl tp"><span>TP1</span><b id="eth-paper-tp">--</b></div>
+                <div class="paper-lvl trail"><span>TRAIL</span><b id="eth-paper-trail">--</b></div>
+                <div class="paper-lvl sl"><span>SL</span><b id="eth-paper-sl">--</b></div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1104,66 +1206,148 @@
     </div>
 
     <!-- Liquidation Intel (SOL) -->
-    <div class="card span-3" id="sol-card-liq-intel">
-      <div class="card-head">Liquidation Intel <span id="sol-in-pressure" class="tag sol-tag"></span></div>
+    <div class="card span-6" id="sol-card-liq-intel">
+      <h2>Liquidation Intel <span class="tag sol-tag" id="sol-liq-intel-tag">Solend · confirmed · health</span></h2>
+
       <div class="liq-hero">
-        <div class="liq-hero-stat"><span class="liq-hero-label">Volume 24h</span><span class="liq-hero-val" id="sol-liq-volume">$0</span></div>
-        <div class="liq-hero-stat"><span class="liq-hero-label">Liq Count</span><span class="liq-hero-val" id="sol-liq-count">0</span></div>
-        <div class="liq-hero-stat"><span class="liq-hero-label">Avg Size</span><span class="liq-hero-val" id="sol-liq-avg">$0</span></div>
-        <div class="liq-hero-stat"><span class="liq-hero-label">Gas/Liq</span><span class="liq-hero-val" id="sol-liq-gas">$0</span></div>
+        <div class="liq-hero-left">
+          <div class="liq-pressure-badge idle" id="sol-in-pressure">idle</div>
+          <div class="liq-hero-stats">
+            <div class="liq-stat">
+              <div class="liq-stat-label">volume 24h</div>
+              <div class="big" id="sol-liq-volume">--</div>
+            </div>
+            <div class="liq-stat">
+              <div class="liq-stat-label">liq count</div>
+              <div class="big dim" id="sol-liq-count">--</div>
+            </div>
+            <div class="liq-stat">
+              <div class="liq-stat-label">avg size</div>
+              <div class="big amber" id="sol-liq-avg">--</div>
+            </div>
+            <div class="liq-stat">
+              <div class="liq-stat-label">fee / liq</div>
+              <div class="big dim" id="sol-liq-gas">--</div>
+            </div>
+          </div>
+          <div class="liq-window-hint">Solend confirmed liquidations + watchlist health. Mix is Solend-only until more venues are wired.</div>
+        </div>
+        <div class="liq-hero-right">
+          <div class="liq-mix">
+            <div class="liq-mix-label">protocol mix</div>
+            <div class="liq-proto-bar" id="sol-liq-proto-bar"></div>
+            <div class="liq-proto-labels" id="sol-liq-proto-labels"></div>
+          </div>
+          <div class="liq-competitors">
+            <div class="liq-comp-stat"><span class="liq-comp-label">searchers</span><span class="liq-comp-val" id="sol-liq-comp-searchers">--</span></div>
+            <div class="liq-comp-stat"><span class="liq-comp-label">hit rate</span><span class="liq-comp-val" id="sol-liq-comp-rate">--</span></div>
+            <div class="liq-comp-stat"><span class="liq-comp-label">missed</span><span class="liq-comp-val red" id="sol-liq-comp-missed">--</span></div>
+          </div>
+        </div>
       </div>
-      <div class="liq-protocols">
-        <div class="liq-proto-bar" id="sol-liq-proto-bar"></div>
-        <div class="liq-proto-labels" id="sol-liq-proto-labels"></div>
+
+      <div class="liq-grid">
+        <div class="liq-col">
+          <div class="liq-section-head">
+            <h3 class="watch">Health factor <span class="tag">watch + feed</span></h3>
+          </div>
+          <div class="liq-health" id="sol-liq-health-chart"></div>
+        </div>
+        <div class="liq-col">
+          <div class="liq-section-head">
+            <h3 class="watch">Volume <span class="tag">24h buckets</span></h3>
+          </div>
+          <div class="liq-chart-wrap"><canvas id="sol-liq-volume-chart"></canvas></div>
+        </div>
       </div>
-      <div class="liq-section-head">Health Factor Distribution</div>
-      <div id="sol-liq-health-chart" style="height:120px"></div>
-      <div class="liq-competitors">
-        <div class="liq-comp-stat"><span class="liq-comp-label">Searchers</span><span id="sol-liq-comp-searchers">0</span></div>
-        <div class="liq-comp-stat"><span class="liq-comp-label">Success Rate</span><span id="sol-liq-comp-rate">0%</span></div>
-        <div class="liq-comp-stat"><span class="liq-comp-label">Missed</span><span id="sol-liq-comp-missed">0</span></div>
-      </div>
-      <div class="liq-section-head">Volume History (24h)</div>
-      <div id="sol-liq-volume-chart" style="height:120px"></div>
     </div>
 
     <!-- Trading Intel (SOL) -->
-    <div class="card span-3" id="sol-card-intel">
-      <div class="card-head">Trading Intel</div>
+    <div class="card span-6" id="sol-card-intel">
+      <h2>Trading Intel <span class="tag sol-tag">policy · activity · paper</span></h2>
+
       <div class="intel-hero">
-        <div class="intel-hero-stat"><span class="intel-hero-label">Act P</span><span class="intel-hero-val" id="sol-intel-act">—</span></div>
-        <div class="intel-hero-stat"><span class="intel-hero-label">Exp Net</span><span class="intel-hero-val" id="sol-intel-exp">—</span></div>
-        <div class="intel-hero-stat"><span class="intel-hero-label">Steps</span><span class="intel-hero-val" id="sol-intel-steps">0</span></div>
-        <div class="intel-hero-stat"><span class="intel-hero-label">Records</span><span class="intel-hero-val" id="sol-intel-records">0</span></div>
+        <div class="intel-hero-left">
+          <div id="sol-in-advice" class="intel-advice">warming up</div>
+          <div class="intel-hero-stats">
+            <div class="intel-stat">
+              <div class="intel-stat-label">act P</div>
+              <div class="big" id="sol-intel-act">--</div>
+            </div>
+            <div class="intel-stat">
+              <div class="intel-stat-label">exp net</div>
+              <div class="big amber" id="sol-intel-exp">--</div>
+            </div>
+            <div class="intel-stat">
+              <div class="intel-stat-label">steps</div>
+              <div class="big dim" id="sol-intel-steps">--</div>
+            </div>
+            <div class="intel-stat">
+              <div class="intel-stat-label">records</div>
+              <div class="big dim" id="sol-intel-records">--</div>
+            </div>
+          </div>
+          <div id="sol-in-meta" class="kv intel-meta"></div>
+        </div>
+        <div class="intel-hero-right">
+          <div class="intel-gauge-wrap">
+            <canvas id="sol-gauge"></canvas>
+            <span class="intel-ready-pct"><b id="sol-in-ready-pct">0</b>% ready</span>
+          </div>
+          <div class="intel-brain-panel" id="sol-intel-brain"></div>
+        </div>
       </div>
-      <div id="sol-in-advice" class="intel-advice">warming up</div>
-      <div id="sol-in-meta" class="intel-meta"></div>
-      <div class="intel-gauge-wrap">
-        <canvas id="sol-gauge"></canvas>
-        <span id="sol-in-ready-pct" class="intel-ready-pct">0</span>
+
+      <div class="intel-mix">
+        <div class="intel-mix-label">fee / MEV mix</div>
+        <div class="intel-mix-track" id="sol-in-mix-track"></div>
+        <div id="sol-intel-mev" class="kv intel-mev"></div>
       </div>
-      <div class="intel-mix-track" id="sol-in-mix-track"></div>
-      <div id="sol-intel-mev" class="intel-mev"></div>
-      <div class="intel-brain-panel" id="sol-intel-brain"></div>
-      <span id="sol-in-brain-note" class="tag" hidden>policy</span>
-      <div class="intel-section-head">Hours Activity <span id="sol-in-hours-note" class="tag">24h</span></div>
-      <div id="sol-chart-hours" style="height:100px"></div>
-      <div class="intel-section-head">Weekday Activity</div>
-      <div id="sol-chart-dows" style="height:100px"></div>
-      <div class="intel-section-head">Act P Trend</div>
-      <div id="sol-chart-intel-trend" style="height:100px"></div>
-      <!-- kept for updateIntel / header compatibility -->
+
+      <div class="intel-paper" id="sol-intel-paper">
+        <div class="intel-paper-label">paper bot</div>
+        <div class="intel-paper-stats">
+          <span>bal <b id="sol-intel-paper-bal">--</b></span>
+          <span>PnL <b id="sol-intel-paper-pnl">--</b></span>
+          <span>W/L <b id="sol-intel-paper-wl">--</b></span>
+          <span>win% <b id="sol-intel-paper-wr">--</b></span>
+          <span>n <b id="sol-intel-paper-count">--</b></span>
+        </div>
+      </div>
+
+      <div class="intel-grid">
+        <div class="intel-col">
+          <div class="intel-section-head">
+            <h3 class="watch">Hours <span class="tag" id="sol-in-hours-note">24h</span></h3>
+          </div>
+          <div class="intel-chart-wrap"><canvas id="sol-chart-hours"></canvas></div>
+        </div>
+        <div class="intel-col">
+          <div class="intel-section-head">
+            <h3 class="watch">Weekday</h3>
+          </div>
+          <div class="intel-chart-wrap"><canvas id="sol-chart-dows"></canvas></div>
+        </div>
+      </div>
+      <div class="intel-section-head">
+        <h3 class="watch">Act P trend</h3>
+      </div>
+      <div class="intel-chart-wrap intel-chart-wide"><canvas id="sol-chart-intel-trend"></canvas></div>
       <span id="sol-intel-moves" hidden></span>
       <span id="sol-intel-block" hidden></span>
+      <span id="sol-in-brain-note" class="tag" hidden>policy</span>
     </div>
 
     <!-- Prices / Market Context -->
     <div class="card span-6" id="sol-card-prices">
-      <h2>Market Context <span class="tag sol-tag">SOL/USD live candles</span></h2>
+      <h2>Market Context <span class="tag sol-tag" id="sol-mc-tag">SOL/USD · Binance</span></h2>
 
-      <div class="mc-hero">
+      <div class="mc-hero sol-mc">
         <div class="mc-hero-left">
-          <div class="mc-pair-badge" id="sol-mc-pair">SOL / USD</div>
+          <div class="mc-hero-badges">
+            <div class="mc-pair-badge sol-pair" id="sol-mc-pair">SOL / USD</div>
+            <span class="mc-src-chip">Binance SOLUSDT</span>
+          </div>
           <div class="mc-hero-stats">
             <div class="mc-stat">
               <div class="mc-stat-label">price</div>
@@ -1186,67 +1370,80 @@
               <div class="big dim" id="sol-mc-updated">--</div>
             </div>
           </div>
+          <div class="mc-window-hint">Live SOL candles. Priority fee is cluster µl/CU. Solend util sits beside the paper bot.</div>
           <div id="sol-mc-meta" class="kv mc-meta"></div>
         </div>
         <div class="mc-hero-right">
-          <div class="mc-section-head">
-            <h3 class="watch">Timeframe</h3>
+          <div class="mc-controls-panel">
+            <div class="mc-controls-label">timeframe — reload candles</div>
             <div class="mc-tf" id="sol-mc-tf-btns" role="group" aria-label="SOL candle timeframe">
-              <button type="button" data-tf="1m" class="mc-f">1m</button>
-              <button type="button" data-tf="5m" class="mc-f">5m</button>
-              <button type="button" data-tf="15m" class="mc-f">15m</button>
-              <button type="button" data-tf="1h" class="mc-f on">1h</button>
-              <button type="button" data-tf="4h" class="mc-f">4h</button>
-              <button type="button" data-tf="1d" class="mc-f">1D</button>
+              <button type="button" data-tf="1m" class="mc-f sol-f">1m</button>
+              <button type="button" data-tf="5m" class="mc-f sol-f">5m</button>
+              <button type="button" data-tf="15m" class="mc-f sol-f">15m</button>
+              <button type="button" data-tf="1h" class="mc-f sol-f on">1h</button>
+              <button type="button" data-tf="4h" class="mc-f sol-f">4h</button>
+              <button type="button" data-tf="1d" class="mc-f sol-f">1D</button>
             </div>
+            <div class="mc-hint dim">1m–1D · last close is the live price</div>
           </div>
-          <div class="mc-hint dim">Binance SOLUSDT · switch TF to reload candles</div>
         </div>
       </div>
 
       <div class="mc-chart-wrap">
-        <div id="sol-candles" class="candles mc-candles"><span class="lwc-msg">loading&hellip;</span></div>
+        <div class="mc-chart-head">
+          <h3 class="watch">SOLUSDT <span class="tag sol-tag" id="sol-mc-chart-note">1h</span></h3>
+          <div class="mc-legend">
+            <span><i class="up"></i>up</span>
+            <span><i class="dn"></i>down</span>
+            <span><i class="long"></i>long</span>
+            <span><i class="short"></i>short</span>
+            <span><i class="tp"></i>TP1</span>
+            <span><i class="trail"></i>trail</span>
+            <span><i class="sl"></i>SL</span>
+            <span><i class="hi"></i>range</span>
+          </div>
+        </div>
+        <div class="mc-chart-body">
+          <div id="sol-candles" class="candles mc-candles"><span class="lwc-msg">loading&hellip;</span></div>
+          <div class="mc-tape" id="sol-mc-tape"><span class="mc-tape-empty">no paper fills yet</span></div>
+        </div>
       </div>
 
-      <div class="mc-reserves">
-        <div class="mc-section-head">
-          <h3 class="watch">Solend reserve util <span class="tag" id="sol-res-delta"></span></h3>
+      <div class="mc-grid">
+        <div class="mc-col">
+          <div class="mc-section-head">
+            <h3 class="watch">Solend util <span class="tag" id="sol-res-delta">reserves</span></h3>
+          </div>
+          <div id="sol-reserves-list" class="mc-res-grid"></div>
         </div>
-        <div id="sol-reserves-list" class="kv"></div>
-      </div>
-
-      <div class="paper-panel" id="sol-paper-panel">
-        <div class="paper-head">
-          <h3 class="watch">Paper Bot <span class="tag" id="sol-paper-status">loading</span></h3>
-          <div class="paper-toggles">
-            <button type="button" class="paper-toggle" id="sol-range-mode" data-mode="orb">ORB (2h)</button>
-            <button type="button" class="paper-toggle" id="sol-range-mode-pd" data-mode="prev_day">Prev Day</button>
-            <button type="button" class="paper-toggle on" id="sol-paper-on">Paper ON</button>
-          </div>
-        </div>
-        <div class="paper-stats" id="sol-paper-stats">
-          <div class="paper-stat"><span class="paper-stat-label">balance</span><span class="paper-stat-val" id="sol-paper-bal">$100.00</span></div>
-          <div class="paper-stat"><span class="paper-stat-label">PnL</span><span class="paper-stat-val" id="sol-paper-pnl">$0.00</span></div>
-          <div class="paper-stat"><span class="paper-stat-label">W/L</span><span class="paper-stat-val" id="sol-paper-wl">0 / 0</span></div>
-          <div class="paper-stat"><span class="paper-stat-label">win%</span><span class="paper-stat-val" id="sol-paper-wr">--</span></div>
-          <div class="paper-stat"><span class="paper-stat-label">trades</span><span class="paper-stat-val" id="sol-paper-count">0</span></div>
-        </div>
-        <div class="paper-open" id="sol-paper-open" style="display:none">
-          <div class="paper-pos-row">
-            <span class="paper-pos-label">position</span>
-            <span id="sol-paper-pos" class="paper-pos-val">--</span>
-          </div>
-          <div class="paper-pos-row">
-            <span class="paper-pos-label">TP1</span>
-            <span id="sol-paper-tp" class="paper-pos-val tp">--</span>
-          </div>
-          <div class="paper-pos-row">
-            <span class="paper-pos-label">trail</span>
-            <span id="sol-paper-trail" class="paper-pos-val trail">--</span>
-          </div>
-          <div class="paper-pos-row">
-            <span class="paper-pos-label">SL</span>
-            <span id="sol-paper-sl" class="paper-pos-val sl">--</span>
+        <div class="mc-col">
+          <div class="paper-panel" id="sol-paper-panel">
+            <div class="paper-head">
+              <h3 class="watch">Paper Bot <span class="tag" id="sol-paper-status">loading</span></h3>
+              <div class="paper-toggles">
+                <button type="button" class="paper-toggle" id="sol-range-mode" data-mode="orb">ORB (2h)</button>
+                <button type="button" class="paper-toggle" id="sol-range-mode-pd" data-mode="prev_day">Prev Day</button>
+                <button type="button" class="paper-toggle on" id="sol-paper-on">Paper ON</button>
+              </div>
+            </div>
+            <div class="paper-stats" id="sol-paper-stats">
+              <div class="paper-stat"><span class="paper-stat-label">balance</span><span class="paper-stat-val" id="sol-paper-bal">$100.00</span></div>
+              <div class="paper-stat"><span class="paper-stat-label">PnL</span><span class="paper-stat-val" id="sol-paper-pnl">$0.00</span></div>
+              <div class="paper-stat"><span class="paper-stat-label">W/L</span><span class="paper-stat-val" id="sol-paper-wl">0 / 0</span></div>
+              <div class="paper-stat"><span class="paper-stat-label">win%</span><span class="paper-stat-val" id="sol-paper-wr">--</span></div>
+              <div class="paper-stat"><span class="paper-stat-label">trades</span><span class="paper-stat-val" id="sol-paper-count">0</span></div>
+            </div>
+            <div class="paper-open" id="sol-paper-open" style="display:none">
+              <div class="paper-open-head">
+                <span class="paper-dir-badge long" id="sol-paper-dir">LONG</span>
+                <span id="sol-paper-pos" class="paper-pos-main">--</span>
+              </div>
+              <div class="paper-levels">
+                <div class="paper-lvl tp"><span>TP1</span><b id="sol-paper-tp">--</b></div>
+                <div class="paper-lvl trail"><span>TRAIL</span><b id="sol-paper-trail">--</b></div>
+                <div class="paper-lvl sl"><span>SL</span><b id="sol-paper-sl">--</b></div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1329,6 +1526,6 @@
   <span>TONI dashboard &mdash; broadcast ON when LIQ/ARB contracts + keys ready. ETH: MetaMask EVM → sponsor · SOL: MetaMask Solana (Phantom fallback) → sponsor.</span>
   <span id="sys-info"></span>
 </footer>
-<script src="/static/app.js?v=keeplive1"></script>
+<script src="/static/app.js?v=mc2"></script>
 </body>
 </html>

@@ -185,75 +185,30 @@
   });
   const intelTrendHist = [];
 
-  /* ---- Liq-intel LightweightCharts ---- */
-  let liqHealthChart = null;
-  let liqHealthSeries = null;
-  let liqVolumeChart = null;
-  let liqVolumeSeries = null;
-  let solLiqHealthChart = null;
-  let solLiqHealthSeries = null;
-  let solLiqVolumeChart = null;
-  let solLiqVolumeSeries = null;
-  function initLiqCharts() {
-    const healthEl = $("liq-health-chart");
-    if (healthEl && window.LightweightCharts) {
-      liqHealthChart = LightweightCharts.createChart(healthEl, {
-        layout: { background: { color: "transparent" }, textColor: "#8b8fa3" },
-        grid: { vertLines: { color: "rgba(42,46,64,.4)" }, horzLines: { color: "rgba(42,46,64,.4)" } },
-        rightPriceScale: { visible: false },
-        timeScale: { visible: false, rightOffset: 0 },
-        crosshair: { mode: 0 },
-      });
-      liqHealthSeries = liqHealthChart.addBarSeries({
-        priceLineVisible: false, lastValueVisible: false,
-      });
-      liqHealthChart.applyOptions({ width: healthEl.clientWidth });
-    }
-    const volEl = $("liq-volume-chart");
-    if (volEl && window.LightweightCharts) {
-      liqVolumeChart = LightweightCharts.createChart(volEl, {
-        layout: { background: { color: "transparent" }, textColor: "#8b8fa3" },
-        grid: { vertLines: { color: "rgba(42,46,64,.4)" }, horzLines: { color: "rgba(42,46,64,.4)" } },
-        rightPriceScale: { visible: false },
-        timeScale: { visible: false, rightOffset: 0 },
-        crosshair: { mode: 0 },
-      });
-      liqVolumeSeries = liqVolumeChart.addLineSeries({
-        color: "#22d3ee", lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
-      });
-      liqVolumeChart.applyOptions({ width: volEl.clientWidth });
-    }
-
-    const solHealthEl = $("sol-liq-health-chart");
-    if (solHealthEl && window.LightweightCharts) {
-      solLiqHealthChart = LightweightCharts.createChart(solHealthEl, {
-        layout: { background: { color: "transparent" }, textColor: "#8b8fa3" },
-        grid: { vertLines: { color: "rgba(42,46,64,.4)" }, horzLines: { color: "rgba(42,46,64,.4)" } },
-        rightPriceScale: { visible: false },
-        timeScale: { visible: false, rightOffset: 0 },
-        crosshair: { mode: 0 },
-      });
-      solLiqHealthSeries = solLiqHealthChart.addBarSeries({
-        priceLineVisible: false, lastValueVisible: false,
-      });
-      solLiqHealthChart.applyOptions({ width: solHealthEl.clientWidth });
-    }
-    const solVolEl = $("sol-liq-volume-chart");
-    if (solVolEl && window.LightweightCharts) {
-      solLiqVolumeChart = LightweightCharts.createChart(solVolEl, {
-        layout: { background: { color: "transparent" }, textColor: "#8b8fa3" },
-        grid: { vertLines: { color: "rgba(42,46,64,.4)" }, horzLines: { color: "rgba(42,46,64,.4)" } },
-        rightPriceScale: { visible: false },
-        timeScale: { visible: false, rightOffset: 0 },
-        crosshair: { mode: 0 },
-      });
-      solLiqVolumeSeries = solLiqVolumeChart.addLineSeries({
-        color: "#22d3ee", lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
-      });
-      solLiqVolumeChart.applyOptions({ width: solVolEl.clientWidth });
-    }
-  }
-  initLiqCharts();
+  const mkLiqVolumeChart = (id) => mkChart(id, {
+    type: "line",
+    data: {
+      labels: [],
+      datasets: [{
+        data: [], borderColor: "#22d3ee", backgroundColor: "#22d3ee22",
+        pointRadius: 0, borderWidth: 2, tension: .35, fill: true,
+      }],
+    },
+    options: {
+      responsive: true, animation: false, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { display: false },
+        y: {
+          beginAtZero: true,
+          ticks: { font: { size: 8 }, color: "#64748b", maxTicksLimit: 4 },
+          grid: { color: "#1e293b55" },
+        },
+      },
+    },
+  });
+  const liqVolumeChart = mkLiqVolumeChart("liq-volume-chart");
+  const solLiqVolumeChart = mkLiqVolumeChart("sol-liq-volume-chart");
 
   /* ======================== SOL twin renderers ======================== */
   const solGauge = mkChart("sol-gauge", {
@@ -1494,9 +1449,11 @@
     set("sol-mc-updated", sastClock(), "dim");
     const meta = $("sol-mc-meta");
     if (meta) {
+      const tf = ($("sol-mc-tf") && $("sol-mc-tf").textContent) || "1H";
       meta.innerHTML =
         `<span>slot <b>${sol.slot != null ? fmt.num(sol.slot, 0) : "--"}</b></span>` +
         `<span>epoch <b>${sol.epoch != null ? fmt.num(sol.epoch, 0) : "--"}</b></span>` +
+        `<span>tf <b>${tf}</b></span>` +
         `<span>rpc <b>${(sol.rpc || "").replace(/^https?:\/\//, "").slice(0, 28) || "--"}</b></span>`;
     }
     const reserves = $("sol-reserves-list");
@@ -1506,9 +1463,15 @@
       reserves.innerHTML = keys.length
         ? keys.map((k) => {
             const r = res[k] || {};
-            return `<span>${k} <b>util ${r.util_pct ?? "--"}%</b> borrow ${r.borrow_apy ?? "--"}%</span>`;
+            const util = Number(r.util_pct);
+            const cls = util >= 80 ? "dn" : util >= 50 ? "up" : "";
+            return `<div class="mc-res-cell ${cls}">
+              <span class="mc-res-sym">${k}</span>
+              <span class="mc-res-px">util ${r.util_pct ?? "--"}%</span>
+              <span class="mc-res-d">borrow ${r.borrow_apy ?? "--"}%</span>
+            </div>`;
           }).join("")
-        : `<span class="dim">Solend reserves loading…</span>`;
+        : `<div class="mc-res-empty">Solend reserves loading…</div>`;
     }
     const delta = $("sol-res-delta");
     if (delta) delta.textContent = sol.protocol || "Solend";
@@ -1550,40 +1513,105 @@
     if (solAlAutoscroll && feed) feed.scrollTop = feed.scrollHeight;
   };
 
-  const buildTradeMarkers = (trades) => {
+  const BAR_SEC = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400 };
+  const toBarTime = (ts, interval) => {
+    const n = Number(ts);
+    if (!n) return 0;
+    const sec = n > 1e12 ? Math.floor(n / 1000) : Math.floor(n);
+    const step = BAR_SEC[interval] || 3600;
+    return Math.floor(sec / step) * step;
+  };
+
+  const buildTradeMarkers = (trades, interval) => {
     if (!trades || !trades.length) return [];
-    const markers = [];
-    for (const t of trades) {
-      if (t.entry_ts) {
-        markers.push({
-          time: Math.floor(t.entry_ts / 1000),
-          position: t.direction === "long" ? "belowBar" : "aboveBar",
-          color: t.direction === "long" ? "#22c55e" : "#ef4444",
-          shape: t.direction === "long" ? "arrowUp" : "arrowDown",
-          text: `${t.direction.toUpperCase()} @ $${fmt.num(t.entry_price, 2)}`,
-        });
+    const bucket = new Map();
+    const put = (time, kind, t) => {
+      if (!time) return;
+      const key = time + ":" + kind;
+      const cur = bucket.get(key) || { time, kind, n: 0, t };
+      cur.n += 1;
+      cur.t = t;
+      bucket.set(key, cur);
+    };
+    trades.forEach((t) => {
+      const dir = String(t.direction || "long").toLowerCase();
+      put(toBarTime(t.entry_ts, interval), dir === "short" ? "short" : "long", t);
+      if (t.leg1_exit_ts) put(toBarTime(t.leg1_exit_ts, interval), "tp", t);
+      if (t.leg2_exit_ts) {
+        put(toBarTime(t.leg2_exit_ts, interval), t.exit_reason === "stop_loss" ? "sl" : "trail", t);
       }
-      if (t.leg1_exit_price && t.leg1_exit_ts) {
-        markers.push({
-          time: Math.floor(t.leg1_exit_ts / 1000),
-          position: "aboveBar",
-          color: "#22d3ee",
-          shape: "circle",
-          text: `TP1 ${t.leg1_pnl > 0 ? "+" : ""}$${fmt.num(t.leg1_pnl, 2)}`,
-        });
-      }
-      if (t.leg2_exit_price && t.leg2_exit_ts) {
-        markers.push({
-          time: Math.floor(t.leg2_exit_ts / 1000),
-          position: "aboveBar",
-          color: t.exit_reason === "stop_loss" ? "#ef4444" : "#22d3ee",
-          shape: "cross",
-          text: `${t.exit_reason === "stop_loss" ? "SL" : "TRAIL"} ${t.leg2_pnl > 0 ? "+" : ""}$${fmt.num(t.leg2_pnl, 2)}`,
-        });
-      }
+    });
+    const spec = {
+      long:  { position: "belowBar", color: "#22c55e", shape: "arrowUp",   label: (b) => b.n > 1 ? "L×" + b.n : "L" },
+      short: { position: "aboveBar", color: "#f87171", shape: "arrowDown", label: (b) => b.n > 1 ? "S×" + b.n : "S" },
+      tp:    { position: "aboveBar", color: "#22d3ee", shape: "circle",    label: () => "TP" },
+      trail: { position: "aboveBar", color: "#f59e0b", shape: "square",    label: () => "T" },
+      sl:    { position: "aboveBar", color: "#ef4444", shape: "square",    label: () => "SL" },
+    };
+    return [...bucket.values()]
+      .sort((a, b) => a.time - b.time)
+      .slice(-14)
+      .map((b) => {
+        const s = spec[b.kind];
+        if (!s) return null;
+        return { time: b.time, position: s.position, color: s.color, shape: s.shape, text: s.label(b) };
+      })
+      .filter(Boolean);
+  };
+
+  const renderTradeTape = (id, trades) => {
+    const el = $(id);
+    if (!el) return;
+    const rows = (trades || []).slice(-8).reverse();
+    if (!rows.length) {
+      el.innerHTML = `<span class="mc-tape-empty">no paper fills yet</span>`;
+      return;
     }
-    markers.sort((a, b) => a.time - b.time);
-    return markers;
+    el.innerHTML = rows.map((t) => {
+      const dir = String(t.direction || "long").toLowerCase();
+      const pnl = Number(t.total_pnl != null ? t.total_pnl : t.leg2_pnl) || 0;
+      const why = t.exit_reason === "stop_loss" ? "SL" : t.exit_reason === "trail_stop" ? "TRAIL" : (t.exit_reason || "open");
+      const cls = pnl > 0 ? "win" : pnl < 0 ? "loss" : "flat";
+      return `<div class="mc-tape-row ${dir} ${cls}">
+        <span class="mc-tape-dir">${dir}</span>
+        <span class="mc-tape-px">$${fmt.num(t.entry_price, 2)}</span>
+        <span class="mc-tape-pnl">${pnl >= 0 ? "+" : ""}$${fmt.num(pnl, 2)}</span>
+        <span class="mc-tape-why">${why}</span>
+      </div>`;
+    }).join("");
+  };
+
+  const paperLines = { eth: {}, sol: {} };
+  const applyPaperLevels = (key, series, paper) => {
+    const store = paperLines[key];
+    const dash = (window.LightweightCharts && LightweightCharts.LineStyle)
+      ? LightweightCharts.LineStyle.Dashed : 2;
+    const clear = (name) => {
+      if (store[name] && series) {
+        try { series.removePriceLine(store[name]); } catch (e) { /* gone */ }
+        store[name] = null;
+      }
+    };
+    if (!series || !paper || !paper.position) {
+      ["entry", "sl", "trail", "tp"].forEach(clear);
+      return;
+    }
+    const p = paper.position;
+    const dir = p.direction === "short" ? "short" : "long";
+    const tp1 = Number(p.entry_price) + (dir === "long" ? 1 : -1) * Number(p.range_height || 0) * 1.5;
+    const sl = dir === "long" ? p.range_low : p.range_high;
+    [
+      { name: "entry", price: p.entry_price, color: dir === "long" ? "#22c55e" : "#f87171", title: dir === "long" ? "LONG" : "SHORT" },
+      { name: "tp", price: tp1, color: "#22d3ee", title: "TP1" },
+      { name: "trail", price: p.trail_stop, color: "#f59e0b", title: "TRAIL" },
+      { name: "sl", price: sl, color: "#ef4444", title: "SL" },
+    ].forEach(({ name, price, color, title }) => {
+      const px = Number(price);
+      if (!Number.isFinite(px) || px <= 0) { clear(name); return; }
+      const opts = { price: px, color, title, lineWidth: 1, lineStyle: dash, axisLabelVisible: true, lineVisible: true };
+      if (store[name]) store[name].applyOptions(opts);
+      else store[name] = series.createPriceLine(opts);
+    });
   };
 
   const renderSol = (s) => {
@@ -1596,12 +1624,14 @@
     updateSolOpps(sol);
     updateSolCompetitors(sol, s.hist);
     updateSolBroadcast(sol);
-    updateSolIntel(sol);
     updateLiqIntel(s, "sol");
+    updateTradingIntel(s, "sol");
     updateSolPrices(sol);
     updateSolLog(s);
-    if (solSeries) solSeries.setMarkers(buildTradeMarkers(s.paper_sol && s.paper_sol.recent_trades));
+    if (solSeries) solSeries.setMarkers(buildTradeMarkers(s.paper_sol && s.paper_sol.recent_trades, solInterval));
     updateRangeLines(solChart, solRangeHigh, solRangeLow, s.paper_sol);
+    applyPaperLevels("sol", solSeries, s.paper_sol);
+    renderTradeTape("sol-mc-tape", s.paper_sol && s.paper_sol.recent_trades);
     renderPaperPanel("sol", s.paper_sol);
   };
 
@@ -2772,66 +2802,72 @@
     return (s != null && !Number.isNaN(+s)) ? +s : 0;
   };
 
-  const updateTradingIntel = (s) => {
-    const i = s.intel || {};
+  const updateTradingIntel = (s, prefix) => {
+    const intel = prefix === "sol" ? (s.sol && s.sol.intel) : s.intel;
+    const i = intel || {};
     const b = i.brain || {};
     const ready = Number(i.readiness) || 0;
     const pressure = i.pressure || (ready >= 50 ? "hot" : ready >= 25 ? "busy" : ready >= 8 ? "quiet" : "idle");
+    const pfx = prefix ? prefix + "-" : "";
 
-    const setTxt = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+    const setTxt = (id, v) => { const el = $(pfx + id); if (el) el.textContent = v; };
     setTxt("intel-records", fmt.num(i.records, 0));
     setTxt("intel-moves", fmt.num(i.moves, 0));
-    setTxt("intel-block", i.last ? i.last.block : "--");
-    setTxt("intel-act", b.act_prob != null ? (Number(b.act_prob) * 100).toFixed(1) + "%" : "--");
-    setTxt("intel-steps", fmt.num(b.steps, 0));
+    setTxt("intel-block", i.last ? (i.last.block || "--") : "--");
+    const actRaw = b.act_prob != null ? Number(b.act_prob) : (i.act_p != null ? Number(i.act_p) : null);
+    setTxt("intel-act", actRaw != null ? (actRaw <= 1 ? (actRaw * 100).toFixed(1) + "%" : actRaw.toFixed(1) + "%") : "--");
+    setTxt("intel-steps", fmt.num(b.steps != null ? b.steps : i.steps, 0));
 
-    const expEl = $("intel-exp");
+    const expEl = $(pfx + "intel-exp");
     if (expEl) {
-      expEl.textContent = fmt.usd(b.exp_net_usd);
-      expEl.classList.toggle("green", (b.exp_net_usd || 0) > 0);
-      expEl.classList.toggle("amber", (b.exp_net_usd || 0) <= 0);
+      const exp = b.exp_net_usd != null ? b.exp_net_usd : i.exp_net;
+      expEl.textContent = fmt.usd(exp);
+      expEl.classList.toggle("green", (exp || 0) > 0);
+      expEl.classList.toggle("amber", !(exp > 0));
     }
 
-    const badge = $("in-pressure");
-    if (badge) {
+    const badge = $(pfx + "in-pressure");
+    if (badge && !badge.classList.contains("liq-pressure-badge")) {
       badge.textContent = pressure;
       badge.className = "in-pressure-badge " + pressure;
     }
     setTxt("in-advice", b.advice || i.advice || "warming up");
     setTxt("in-ready-pct", ready ? fmt.num(ready, 0) : "0");
 
-    const meta = $("in-meta");
+    const meta = $(pfx + "in-meta");
     if (meta) {
       const last = i.last || {};
       meta.innerHTML =
         `<span>moves <b>${fmt.num(i.moves, 0)}</b></span>` +
-        `<span>block <b>${last.block != null ? last.block : "--"}</b></span>` +
+        `<span>${last.slot != null ? "slot" : "block"} <b>${last.block != null ? last.block : (last.slot != null ? last.slot : "--")}</b></span>` +
         `<span>gas <b>${last.gas != null ? fmt.num(last.gas, 1) : "--"}</b></span>` +
         `<span>mempool <b>${fmt.num(last.mempool_txs, 0)}</b></span>` +
         (i.hours_source ? `<span>hours <b>${i.hours_source}</b></span>` : "");
     }
 
-    if (gauge) {
+    const gaugeChart = prefix === "sol" ? solGauge : gauge;
+    if (gaugeChart) {
       const filled = Math.max(0, Math.min(100, ready));
       const color = filled > 50 ? "#22c55e" : filled > 20 ? "#f59e0b" : "#ef4444";
-      gauge.data.datasets[0].data = [filled, Math.max(0.001, 100 - filled)];
-      gauge.data.datasets[0].backgroundColor = [color, "#1e293b"];
-      gauge.update("none");
+      gaugeChart.data.datasets[0].data = [filled, Math.max(0.001, 100 - filled)];
+      gaugeChart.data.datasets[0].backgroundColor = [color, "#1e293b"];
+      gaugeChart.update("none");
     }
 
     const hours = i.hours || {};
     const hourVals = Array.from({ length: 24 }, (_, h) => binCount(hours, h));
     const hourMax = Math.max(1, ...hourVals);
-    if (chartHours) {
-      chartHours.data.labels = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, "0"));
-      chartHours.data.datasets[0].data = hourVals;
-      chartHours.data.datasets[0].backgroundColor = hourVals.map((v) => {
+    const hoursChart = prefix === "sol" ? solChartHours : chartHours;
+    if (hoursChart) {
+      hoursChart.data.labels = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, "0"));
+      hoursChart.data.datasets[0].data = hourVals;
+      hoursChart.data.datasets[0].backgroundColor = hourVals.map((v) => {
         const t = v / hourMax;
         return t > 0.66 ? "#22d3ee" : t > 0.33 ? "#22d3eebb" : "#22d3ee66";
       });
-      chartHours.update("none");
+      hoursChart.update("none");
     }
-    const hoursNote = $("in-hours-note");
+    const hoursNote = $(pfx + "in-hours-note");
     if (hoursNote) {
       const sum = hourVals.reduce((a, c) => a + c, 0);
       hoursNote.textContent = sum ? `Σ ${fmt.num(sum, 0)}` : "empty";
@@ -2840,19 +2876,20 @@
     const dows = i.dows || {};
     const dowVals = Array.from({ length: 7 }, (_, d) => binCount(dows, d));
     const dowMax = Math.max(1, ...dowVals);
-    if (chartDows) {
-      chartDows.data.datasets[0].data = dowVals;
-      chartDows.data.datasets[0].backgroundColor = dowVals.map((v) => {
+    const dowsChart = prefix === "sol" ? solChartDows : chartDows;
+    if (dowsChart) {
+      dowsChart.data.datasets[0].data = dowVals;
+      dowsChart.data.datasets[0].backgroundColor = dowVals.map((v) => {
         const t = v / dowMax;
         return t > 0.66 ? "#a78bfa" : t > 0.33 ? "#a78bfabb" : "#a78bfa66";
       });
-      chartDows.update("none");
+      dowsChart.update("none");
     }
 
     const mv = i.mev || {};
     const mevKeys = ["liq", "router", "spoke", "aave", "create"];
     const mevTotal = mevKeys.reduce((a, k) => a + (Number(mv[k]) || 0), 0) || 1;
-    const track = $("in-mix-track");
+    const track = $(pfx + "in-mix-track");
     if (track) {
       track.innerHTML = mevKeys.map((k) => {
         const n = Number(mv[k]) || 0;
@@ -2860,14 +2897,14 @@
         return n ? `<span class="${k}" style="width:${pct}%" title="${k}: ${n}"></span>` : "";
       }).join("");
     }
-    const mevEl = $("intel-mev");
+    const mevEl = $(pfx + "intel-mev");
     if (mevEl) {
       mevEl.innerHTML = mevKeys.map((k) =>
         `<span class="${k}">${k} <b>${fmt.num(mv[k], 0)}</b></span>`
       ).join("");
     }
 
-    const bp = $("intel-brain");
+    const bp = $(pfx + "intel-brain");
     if (bp) {
       const confColor = (b.confidence || 0) > 0.4 ? "var(--green)" : "var(--amber)";
       bp.innerHTML =
@@ -2880,73 +2917,220 @@
         `<span>cadence× <b>${fmt.num(b.cadence_mult, 2)}</b></span>` +
         `<span>edge <b style="color:${b.prefer_edge ? "var(--cyan)" : "var(--dim)"}">${b.prefer_edge ? "prefer" : "off"}</b></span>`;
     }
-    const brainNote = $("in-brain-note");
+    const brainNote = $(pfx + "in-brain-note");
     if (brainNote) brainNote.textContent = b.prefer_edge ? "edge on" : "policy";
 
-    if (chartIntelTrend && b.act_prob != null) {
-      const p = Math.max(0, Math.min(1, Number(b.act_prob) || 0));
-      intelTrendHist.push(p);
-      if (intelTrendHist.length > 48) intelTrendHist.shift();
-      chartIntelTrend.data.labels = intelTrendHist.map((_, idx) => idx);
-      chartIntelTrend.data.datasets[0].data = intelTrendHist.slice();
-      chartIntelTrend.update("none");
+    const trendChart = prefix === "sol" ? solChartIntelTrend : chartIntelTrend;
+    const trendHist = prefix === "sol" ? solIntelTrendHist : intelTrendHist;
+    const trendVal = actRaw != null ? Math.max(0, Math.min(1, actRaw > 1 ? actRaw / 100 : actRaw)) : null;
+    if (trendChart && trendVal != null) {
+      trendHist.push(trendVal);
+      if (trendHist.length > 48) trendHist.shift();
+      trendChart.data.labels = trendHist.map((_, idx) => idx);
+      trendChart.data.datasets[0].data = trendHist.slice();
+      trendChart.update("none");
+    }
+
+    const paper = prefix === "sol" ? s.paper_sol : s.paper_eth;
+    if (paper) {
+      const st = paper.stats || {};
+      const pfxPaper = prefix === "sol" ? "sol" : "eth";
+      const setP = (id, v) => { const e = $(pfxPaper + "-intel-paper-" + id); if (e) e.textContent = v; };
+      setP("bal", "$" + fmt.num(paper.balance, 2));
+      const pnl = st.pnl || 0;
+      setP("pnl", `${pnl >= 0 ? "+" : ""}$${fmt.num(pnl, 2)}`);
+      setP("wl", `${st.wins || 0} / ${st.losses || 0}`);
+      setP("wr", st.win_rate ? st.win_rate + "%" : "--");
+      setP("count", String(st.total_trades || 0));
+      const pnlEl = $(pfxPaper + "-intel-paper-pnl");
+      if (pnlEl) pnlEl.style.color = pnl > 0 ? "var(--green)" : pnl < 0 ? "var(--red)" : "";
     }
   };
 
+  const hfBucket = (hf) => {
+    const n = Number(hf);
+    if (n == null || Number.isNaN(n)) return null;
+    const h = n > 1e9 ? n / 1e18 : n;
+    if (h < 1) return "<1.0";
+    if (h < 1.05) return "1.0-1.05";
+    if (h < 1.1) return "1.05-1.1";
+    return ">1.1";
+  };
+  const protoKey = (row) => {
+    const p = String(row.protocol_id || row.protocol || row.proto_label || "").toLowerCase();
+    if (p.includes("compound")) return "compound_v3";
+    if (p.includes("morpho")) return "morpho";
+    if (p.includes("spark")) return "spark";
+    if (p.includes("solend")) return "solend";
+    return "aave_v3";
+  };
+  const liveLiqIntel = (src, backend) => {
+    const comps = src.competitors || [];
+    const meta = src.competitors_meta || {};
+    const watch = src.watchlist || [];
+    const opps = src.opportunities || [];
+    const now = Math.floor(Date.now() / 1000);
+    const cutoff = now - 86400;
+    const protocols = {
+      aave_v3: { count: 0, volume: 0 },
+      compound_v3: { count: 0, volume: 0 },
+      morpho: { count: 0, volume: 0 },
+      spark: { count: 0, volume: 0 },
+      solend: { count: 0, volume: 0 },
+    };
+    const health = { "<1.0": 0, "1.0-1.05": 0, "1.05-1.1": 0, ">1.1": 0 };
+    let volume = 0, count = 0, gasSum = 0, gasN = 0;
+    const buckets = {};
+    comps.forEach((c) => {
+      const ts = Number(c.ts) || now;
+      if (ts < cutoff) return;
+      const pk = protoKey(c);
+      const vol = Number(c.coll_usd || c.est_profit_usd || c.est || 0) || 0;
+      protocols[pk].count += 1;
+      protocols[pk].volume += vol;
+      volume += vol;
+      count += 1;
+      const g = Number(c.gas_cost_usd || c.gas_usd || 0) || 0;
+      if (g) { gasSum += g; gasN += 1; }
+      const b = Math.floor(ts / 300) * 300;
+      buckets[b] = (buckets[b] || 0) + (vol || 1);
+    });
+    watch.concat(opps).forEach((o) => {
+      const b = hfBucket(o.hf != null ? o.hf : o.health_factor);
+      if (b) health[b] += 1;
+    });
+    const missPct = Number(meta.miss_rate_pct);
+    const missed = Number(meta.missed_by_us) || 0;
+    const n1h = Number(meta.count_1h) || count;
+    const rate = Number.isFinite(missPct)
+      ? Math.max(0, Math.min(1, 1 - missPct / 100))
+      : (n1h ? Math.max(0, (n1h - missed) / n1h) : 0);
+    let pressure = meta.pressure || "idle";
+    if (n1h >= 12) pressure = "hot";
+    else if (n1h >= 5) pressure = "busy";
+    else if (n1h >= 1) pressure = "quiet";
+    const hist = (backend && backend.volume_history) || [];
+    const volume_history = Object.keys(buckets).sort().map((t) => ({ ts: Number(t), volume: buckets[t] }));
+    if (count === 0 && backend && (backend.count_24h || 0) > 0) return backend;
+    return {
+      volume_24h: volume,
+      count_24h: count,
+      avg_size: count ? volume / count : 0,
+      gas_per_liq: gasN ? gasSum / gasN : 0,
+      protocols,
+      health_dist: health,
+      competitors: {
+        searchers: Number(meta.unique_searchers) || 0,
+        success_rate: rate,
+        missed,
+      },
+      volume_history: volume_history.length ? volume_history : hist,
+      pressure,
+    };
+  };
+
   const updateLiqIntel = (s, prefix) => {
-    const intel = prefix === "sol" ? (s.sol && s.sol.intel) : s.intel;
-    const li = intel && intel.liq_intel;
+    const src = prefix === "sol" ? (s.sol || {}) : s;
+    const intel = src.intel || (prefix === "sol" ? null : s.intel) || {};
+    const li = liveLiqIntel(src, intel.liq_intel);
     if (!li) return;
 
     const pfx = prefix ? prefix + "-" : "";
-    const vol = li.volume_24h || 0;
     const el = (id) => $(pfx + id);
-    const fmtK = (v) => v >= 1000 ? "$" + (v / 1000).toFixed(1) + "k" : "$" + v.toFixed(0);
-    const fmtD = (v) => "$" + v.toFixed(2);
+    const fmtK = (v) => {
+      const n = Number(v) || 0;
+      if (n >= 1000000) return "$" + (n / 1000000).toFixed(2) + "m";
+      if (n >= 1000) return "$" + (n / 1000).toFixed(1) + "k";
+      return "$" + n.toFixed(0);
+    };
 
-    const volEl = el("liq-volume"); if (volEl) volEl.textContent = fmtK(vol);
-    const cntEl = el("liq-count"); if (cntEl) cntEl.textContent = li.count_24h || 0;
-    const avgEl = el("liq-avg"); if (avgEl) avgEl.textContent = fmtK(li.avg_size || 0);
-    const gasEl = el("liq-gas"); if (gasEl) gasEl.textContent = fmtD(li.gas_per_liq || 0);
+    const volEl = el("liq-volume"); if (volEl) volEl.textContent = fmtK(li.volume_24h);
+    const cntEl = el("liq-count"); if (cntEl) cntEl.textContent = fmt.num(li.count_24h, 0);
+    const avgEl = el("liq-avg"); if (avgEl) avgEl.textContent = fmtK(li.avg_size);
+    const gasEl = el("liq-gas"); if (gasEl) gasEl.textContent = fmt.usd(li.gas_per_liq);
 
     const protoBar = el("liq-proto-bar");
     const protoLabels = el("liq-proto-labels");
     if (protoBar && li.protocols) {
-      const total = Object.values(li.protocols).reduce((s, p) => s + p.count, 0) || 1;
-      const colors = { aave_v3: "#22d3ee", compound_v3: "#22c55e", morpho: "#a78bfa", spark: "#f59e0b" };
-      const names = { aave_v3: "Aave", compound_v3: "Compound", morpho: "Morpho", spark: "Spark" };
-      let barHtml = "";
-      let labelHtml = "";
-      for (const [k, v] of Object.entries(li.protocols)) {
-        const pct = (v.count / total * 100).toFixed(1);
-        barHtml += `<div style="width:${pct}%;background:${colors[k] || '#666'}"></div>`;
-        labelHtml += `<span style="color:${colors[k]}">${names[k]} ${v.count}</span>`;
+      const colors = { aave_v3: "#22d3ee", compound_v3: "#22c55e", morpho: "#a78bfa", spark: "#f59e0b", solend: "#c084fc" };
+      const names = { aave_v3: "Aave", compound_v3: "Compound", morpho: "Morpho", spark: "Spark", solend: "Solend" };
+      const entries = Object.entries(li.protocols).filter(([, v]) => (v && v.count) || 0);
+      const total = entries.reduce((sum, [, p]) => sum + (p.count || 0), 0) || 1;
+      if (!entries.length) {
+        protoBar.innerHTML = `<div style="width:100%;background:#1e293b"></div>`;
+        if (protoLabels) protoLabels.innerHTML = `<span class="dim">no confirmed liqs yet</span>`;
+      } else {
+        protoBar.innerHTML = entries.map(([k, v]) =>
+          `<div style="width:${(v.count / total * 100).toFixed(1)}%;background:${colors[k] || "#64748b"}"></div>`
+        ).join("");
+        if (protoLabels) protoLabels.innerHTML = entries.map(([k, v]) =>
+          `<span style="color:${colors[k]}">${names[k] || k} ${v.count}</span>`
+        ).join("");
       }
-      protoBar.innerHTML = barHtml;
-      if (protoLabels) protoLabels.innerHTML = labelHtml;
     }
 
-    const healthSeries = prefix === "sol" ? solLiqHealthSeries : liqHealthSeries;
-    if (healthSeries && li.health_dist) {
-      const hd = li.health_dist;
-      const time = Math.floor(Date.now() / 1000);
-      healthSeries.setData([
-        { time: time - 3, open: 0, high: hd["<1.0"] || 0, low: 0, close: hd["<1.0"] || 0, color: "#ef4444" },
-        { time: time - 2, open: 0, high: hd["1.0-1.05"] || 0, low: 0, close: hd["1.0-1.05"] || 0, color: "#f59e0b" },
-        { time: time - 1, open: 0, high: hd["1.05-1.1"] || 0, low: 0, close: hd["1.05-1.1"] || 0, color: "#22c55e" },
-        { time: time, open: 0, high: hd[">1.1"] || 0, low: 0, close: hd[">1.1"] || 0, color: "#6b7280" },
-      ]);
+    const healthEl = el("liq-health-chart");
+    if (healthEl) {
+      const hd = li.health_dist || {};
+      const rows = [
+        ["<1.0", "#ef4444", "liq"],
+        ["1.0-1.05", "#f59e0b", "crit"],
+        ["1.05-1.1", "#22c55e", "near"],
+        [">1.1", "#64748b", "ok"],
+      ];
+      const maxN = Math.max(1, ...rows.map(([k]) => Number(hd[k]) || 0));
+      const any = rows.some(([k]) => (Number(hd[k]) || 0) > 0);
+      if (!any) {
+        healthEl.innerHTML = `<div class="empty">no HF samples on watch/feed yet</div>`;
+      } else {
+        healthEl.innerHTML = rows.map(([k, color]) => {
+          const n = Number(hd[k]) || 0;
+          const pct = Math.max(n ? 4 : 0, (n / maxN) * 100);
+          return `<div class="liq-hf-row">
+            <span class="liq-hf-lab">${k}</span>
+            <div class="liq-hf-track"><div class="liq-hf-fill" style="width:${pct}%;background:${color}"></div></div>
+            <span class="liq-hf-n">${n}</span>
+          </div>`;
+        }).join("");
+      }
     }
 
     const comp = li.competitors || {};
-    const sEl = el("liq-comp-searchers"); if (sEl) sEl.textContent = comp.searchers || 0;
+    const sEl = el("liq-comp-searchers"); if (sEl) sEl.textContent = fmt.num(comp.searchers, 0);
     const rEl = el("liq-comp-rate"); if (rEl) rEl.textContent = ((comp.success_rate || 0) * 100).toFixed(0) + "%";
-    const mEl = el("liq-comp-missed"); if (mEl) mEl.textContent = comp.missed || 0;
+    const mEl = el("liq-comp-missed"); if (mEl) mEl.textContent = fmt.num(comp.missed, 0);
 
-    const volumeSeries = prefix === "sol" ? solLiqVolumeSeries : liqVolumeSeries;
-    if (volumeSeries && li.volume_history && li.volume_history.length) {
-      const series = li.volume_history.map(h => ({ time: h.ts, value: h.volume }));
-      volumeSeries.setData(series);
+    const volChart = prefix === "sol" ? solLiqVolumeChart : liqVolumeChart;
+    if (volChart) {
+      const hist = li.volume_history || [];
+      volChart.data.labels = hist.map((h) => fmt.ts(h.ts));
+      volChart.data.datasets[0].data = hist.map((h) => Number(h.volume) || 0);
+      volChart.update("none");
+    }
+
+    const pBadge = el("in-pressure");
+    if (pBadge) {
+      const pr = li.pressure || "idle";
+      pBadge.textContent = pr;
+      pBadge.className = "liq-pressure-badge " + pr;
+    }
+    const tag = $(pfx + "liq-intel-tag");
+    if (tag) tag.textContent = `${fmt.num(li.count_24h, 0)} / 24h`;
+
+    if (prefix !== "sol") {
+      const pc = s.precompute || {};
+      const ethPc = pc.eth || {};
+      const solPc = pc.sol || {};
+      const pcEthHits = $("pc-eth-hits");
+      const pcEthPos = $("pc-eth-pos");
+      const pcEthBlock = $("pc-eth-block");
+      const pcSolHits = $("pc-sol-hits");
+      const pcSolPos = $("pc-sol-pos");
+      if (pcEthHits) pcEthHits.textContent = fmt.num(ethPc.hits, 0);
+      if (pcEthPos) pcEthPos.textContent = fmt.num(ethPc.positions, 0);
+      if (pcEthBlock) pcEthBlock.textContent = ethPc.last_block ? fmt.num(ethPc.last_block, 0) : "\u2014";
+      if (pcSolHits) pcSolHits.textContent = fmt.num(solPc.hits, 0);
+      if (pcSolPos) pcSolPos.textContent = fmt.num(solPc.positions, 0);
     }
   };
 
@@ -3182,17 +3366,37 @@
       if (s.eth_price_usd != null) bits.push(`<span>oracle eth <b>${fmt.usd(s.eth_price_usd)}</b></span>`);
       if (s.gas_gwei != null) bits.push(`<span>gas <b>${fmt.num(s.gas_gwei, 2)} gwei</b></span>`);
       bits.push(`<span>tf <b>${(window.__mcInterval || "1h").toUpperCase()}</b></span>`);
+      bits.push(`<span>source <b>Binance</b></span>`);
       meta.innerHTML = bits.join("");
     }
-    const res = s.prices.reserves || {};
+    const prices = s.prices || {};
+    const res = prices.reserves || {};
     const deltaMap = {};
-    (s.prices.deltas || []).forEach(([rid, sym, pct]) => (deltaMap[rid] = pct));
-    $("res-delta").textContent = Object.keys(deltaMap).length ? Object.entries(deltaMap).map(([r, p]) => `${RESERVE_SYMS[+r]} ${p > 0 ? "+" : ""}${p}%`).join(" ") : "stable";
-    $("reserves-list").innerHTML = Object.entries(res).slice(0, 14).map(([rid, v]) => {
-      const sym = RESERVE_SYMS[+rid] || rid;
-      const d = deltaMap[rid];
-      return `<span>${sym} <b>${fmt.num(v / 1e8, 2)}</b>${d ? `<i style="color:${d < 0 ? "var(--red)" : "var(--green)"}"> (${d > 0 ? "+" : ""}${d}%)</i>` : ""}</span>`;
-    }).join("");
+    (prices.deltas || []).forEach(([rid, sym, pct]) => (deltaMap[rid] = pct));
+    const deltaEl = $("res-delta");
+    if (deltaEl) {
+      const movers = Object.entries(deltaMap).filter(([, p]) => p);
+      deltaEl.textContent = movers.length
+        ? movers.slice(0, 3).map(([r, p]) => `${RESERVE_SYMS[+r] || r} ${p > 0 ? "+" : ""}${p}%`).join(" · ")
+        : "stable";
+    }
+    const list = $("reserves-list");
+    if (list) {
+      const rows = Object.entries(res).slice(0, 14);
+      list.innerHTML = rows.length
+        ? rows.map(([rid, v]) => {
+            const sym = RESERVE_SYMS[+rid] || rid;
+            const d = deltaMap[rid];
+            const cls = d > 0 ? "up" : d < 0 ? "dn" : "";
+            const dTxt = d ? `${d > 0 ? "+" : ""}${d}%` : "flat";
+            return `<div class="mc-res-cell ${cls}">
+              <span class="mc-res-sym">${sym}</span>
+              <span class="mc-res-px">${fmt.num(v / 1e8, 2)}</span>
+              <span class="mc-res-d">${dTxt}</span>
+            </div>`;
+          }).join("")
+        : `<div class="mc-res-empty">Aave oracle reserves loading…</div>`;
+    }
   };
 
   const pushSeries = (chart, arr) => {
@@ -3513,10 +3717,10 @@
     ethChart = LightweightCharts.createChart(el, {
       width: el.clientWidth || 600, height: h,
       layout: { background: { type: "solid", color: "transparent" }, textColor: "#64748b", fontFamily: "JetBrains Mono, monospace" },
-      grid: { vertLines: { color: "#1e293b55" }, horzLines: { color: "#1e293b55" } },
-      rightPriceScale: { borderColor: "#334155" },
-      timeScale: { borderColor: "#334155", timeVisible: true, secondsVisible: false },
-      crosshair: { mode: 0 },
+      grid: { vertLines: { color: "#1e293b40" }, horzLines: { color: "#1e293b40" } },
+      rightPriceScale: { borderColor: "#334155", scaleMargins: { top: 0.08, bottom: 0.14 } },
+      timeScale: { borderColor: "#334155", timeVisible: true, secondsVisible: false, rightOffset: 4 },
+      crosshair: { mode: 1 },
     });
     ethSeries = ethChart.addCandlestickSeries(candleStyle);
     ethRangeHigh = ethChart.addLineSeries({
@@ -3581,14 +3785,19 @@
       const dir = p.direction === "long" ? "long" : "short";
       const tp1 = p.entry_price + (dir === "long" ? 1 : -1) * p.range_height * 1.5;
       const sl = dir === "long" ? p.range_low : p.range_high;
-      if (pos) pos.textContent = `${dir.toUpperCase()} ${fmt.num(p.qty, 4)} ${paper.asset} @ $${fmt.num(p.entry_price, 2)}`;
+      const dirEl = $(prefix + "-paper-dir");
+      if (dirEl) {
+        dirEl.textContent = dir.toUpperCase();
+        dirEl.className = "paper-dir-badge " + dir;
+      }
+      if (pos) pos.textContent = `${fmt.num(p.qty, 4)} ${paper.asset} @ $${fmt.num(p.entry_price, 2)}`;
       const tpEl = $(prefix + "-paper-tp");
-      if (tpEl) { tpEl.textContent = `$${fmt.num(tp1, 2)}`; tpEl.style.color = "var(--cyan)"; }
+      if (tpEl) tpEl.textContent = `$${fmt.num(tp1, 2)}`;
       const trailEl = $(prefix + "-paper-trail");
-      if (trailEl) { trailEl.textContent = `$${fmt.num(p.trail_stop || 0, 2)}`; trailEl.style.color = "var(--amber)"; }
+      if (trailEl) trailEl.textContent = p.trail_stop ? `$${fmt.num(p.trail_stop, 2)}` : "—";
       const slEl = $(prefix + "-paper-sl");
-      if (slEl) { slEl.textContent = `$${fmt.num(sl, 2)}`; slEl.style.color = "var(--red)"; }
-      if (open) open.style.display = "block";
+      if (slEl) slEl.textContent = `$${fmt.num(sl, 2)}`;
+      if (open) open.style.display = "flex";
     } else {
       if (open) open.style.display = "none";
     }
@@ -3707,6 +3916,10 @@
     document.querySelectorAll("#mc-tf .mc-f").forEach((b) => {
       b.classList.toggle("on", b.getAttribute("data-tf") === tf);
     });
+    const note = $("mc-chart-note");
+    if (note) note.textContent = tf;
+    const tag = $("mc-tag");
+    if (tag) tag.textContent = "ETH/USD · " + tf;
     loadKlines(tf);
   };
 
@@ -3781,10 +3994,10 @@
     solChart = LightweightCharts.createChart(el, {
       width: el.clientWidth || 600, height: h,
       layout: { background: { type: "solid", color: "transparent" }, textColor: "#64748b", fontFamily: "JetBrains Mono, monospace" },
-      grid: { vertLines: { color: "#1e293b55" }, horzLines: { color: "#1e293b55" } },
-      rightPriceScale: { borderColor: "#334155" },
-      timeScale: { borderColor: "#334155", timeVisible: true, secondsVisible: false },
-      crosshair: { mode: 0 },
+      grid: { vertLines: { color: "#1e293b40" }, horzLines: { color: "#1e293b40" } },
+      rightPriceScale: { borderColor: "#334155", scaleMargins: { top: 0.08, bottom: 0.14 } },
+      timeScale: { borderColor: "#334155", timeVisible: true, secondsVisible: false, rightOffset: 4 },
+      crosshair: { mode: 1 },
     });
     solSeries = solChart.addCandlestickSeries(candleStyle);
     solRangeHigh = solChart.addLineSeries({
@@ -3852,8 +4065,6 @@
       if (upd) upd.textContent = sastClock();
       const heroUpd = $("sol-updated");
       if (heroUpd) heroUpd.textContent = sastClock();
-      const meta = $("sol-mc-meta");
-      if (meta) meta.innerHTML = `<span>pair <b>SOLUSDT</b></span><span>tf <b>${tf}</b></span><span>bars <b>${candles.length}</b></span>`;
       const heroMeta = $("sol-meta");
       if (heroMeta) heroMeta.innerHTML = `<span>source <b>Binance</b></span><span>pair <b>SOL/USD</b></span><span>network <b>Solana mainnet</b></span>`;
       msg?.remove();
@@ -3867,6 +4078,10 @@
     solInterval = tf;
     const label = $("sol-mc-tf");
     if (label) label.textContent = tf === "1d" ? "1D" : tf.toUpperCase();
+    const note = $("sol-mc-chart-note");
+    if (note) note.textContent = tf;
+    const tag = $("sol-mc-tag");
+    if (tag) tag.textContent = "SOL/USD · " + tf;
     document.querySelectorAll("#sol-mc-tf-btns .mc-f").forEach((b) => {
       b.classList.toggle("on", b.getAttribute("data-tf") === tf);
     });
@@ -4101,8 +4316,10 @@
     updateBots(s); updateFunds(s); updateMempool(s);
     updateOpps(s); updateCompetitors(s); updateTradingIntel(s); updateLiqIntel(s); updateBroadcast(s); updatePrices(s);
     if (!window.__logInit) { updateLog(s, s.log); window.__logInit = true; }
-    if (ethSeries) ethSeries.setMarkers(buildTradeMarkers(s.paper_eth && s.paper_eth.recent_trades));
+    if (ethSeries) ethSeries.setMarkers(buildTradeMarkers(s.paper_eth && s.paper_eth.recent_trades, mcInterval));
     updateRangeLines(ethChart, ethRangeHigh, ethRangeLow, s.paper_eth);
+    applyPaperLevels("eth", ethSeries, s.paper_eth);
+    renderTradeTape("eth-mc-tape", s.paper_eth && s.paper_eth.recent_trades);
     renderPaperPanel("eth", s.paper_eth);
   };
 
