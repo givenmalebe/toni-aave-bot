@@ -1456,6 +1456,7 @@
     updateSolLog(s);
     if (solSeries) solSeries.setMarkers(buildTradeMarkers(s.paper_sol && s.paper_sol.recent_trades));
     updateRangeLines(solChart, solRangeHigh, solRangeLow, s.paper_sol);
+    renderPaperPanel("sol", s.paper_sol);
   };
 
   const postSolControl = async (body) => {
@@ -3350,6 +3351,42 @@
     loSeries.setData(loPts);
   };
 
+  const renderPaperPanel = (prefix, paper) => {
+    if (!paper) return;
+    const stats = paper.stats || {};
+    const bal = $(prefix + "-paper-bal");
+    const pnl = $(prefix + "-paper-pnl");
+    const wl = $(prefix + "-paper-wl");
+    const wr = $(prefix + "-paper-wr");
+    const count = $(prefix + "-paper-count");
+    const pos = $(prefix + "-paper-pos");
+    const open = $(prefix + "-paper-open");
+    const status = $(prefix + "-paper-status");
+
+    if (bal) bal.textContent = "$" + fmt.num(paper.balance, 2);
+    if (pnl) {
+      const v = stats.pnl || 0;
+      pnl.textContent = `${v >= 0 ? "+" : ""}$${fmt.num(v, 2)} (${fmt.num(stats.pnl_pct || 0, 1)}%)`;
+      pnl.style.color = v > 0 ? "var(--green)" : v < 0 ? "var(--red)" : "var(--dim)";
+    }
+    if (wl) wl.textContent = `${stats.wins || 0} / ${stats.losses || 0}`;
+    if (wr) wr.textContent = stats.win_rate ? stats.win_rate + "%" : "--";
+    if (count) count.textContent = stats.total_trades || 0;
+
+    if (paper.position) {
+      const p = paper.position;
+      if (pos) pos.textContent = `${p.direction.toUpperCase()} ${fmt.num(p.qty, 4)} ${paper.asset} @ $${fmt.num(p.entry_price, 2)} | TP1 $${fmt.num(p.entry_price + (p.direction === "long" ? 1 : -1) * p.range_height * 1.5, 2)} trail $${fmt.num(p.trail_stop || 0, 2)}`;
+      if (open) open.style.display = "block";
+    } else {
+      if (open) open.style.display = "none";
+    }
+
+    if (status) {
+      status.textContent = paper.enabled ? (paper.range_ready ? "active" : "building range") : "paused";
+      status.style.color = paper.enabled ? "var(--green)" : "var(--dim)";
+    }
+  };
+
   const loadEthChg24h = async () => {
     try {
       const r = await fetch("/api/klines?symbol=ETHUSDT&interval=1h&limit=25");
@@ -3802,6 +3839,7 @@
     if (!window.__logInit) { updateLog(s, s.log); window.__logInit = true; }
     if (ethSeries) ethSeries.setMarkers(buildTradeMarkers(s.paper_eth && s.paper_eth.recent_trades));
     updateRangeLines(ethChart, ethRangeHigh, ethRangeLow, s.paper_eth);
+    renderPaperPanel("eth", s.paper_eth);
   };
 
   /* ------------------------------------------------ web3 / wallet (ETH + SOL, independent) */

@@ -18,7 +18,7 @@
     <span class="logo">&#9650;</span>
     <div>
       <h1>TONI <span>// BOT CONTROL</span></h1>
-      <p class="sub">Multi-protocol liquidator &middot; Aave flash &middot; DEX Arb &middot; Live Broadcast</p>
+      <p class="sub">Multi-protocol liquidator &middot; Aave / Solend flash &middot; Live Broadcast</p>
     </div>
   </div>
   <div class="pills">
@@ -50,10 +50,10 @@
           <div class="bt-mode" id="bots-mode"></div>
         </div>
         <div class="bt-hero-stats">
-          <div class="bt-stat"><div class="bt-stat-label">ready</div><div class="big" id="bots-n-ok">--</div></div>
-          <div class="bt-stat"><div class="bt-stat-label">running</div><div class="big amber" id="bots-n-run">--</div></div>
-          <div class="bt-stat"><div class="bt-stat-label">blocked</div><div class="big red" id="bots-n-err">--</div></div>
-          <div class="bt-stat"><div class="bt-stat-label">idle</div><div class="big dim" id="bots-n-idle">--</div></div>
+          <div class="bt-stat"><div class="bt-stat-label" title="bots with status=ok or sim mode">ready</div><div class="big" id="bots-n-ok">--</div></div>
+          <div class="bt-stat"><div class="bt-stat-label" title="actively processing a tick">running</div><div class="big amber" id="bots-n-run">--</div></div>
+          <div class="bt-stat"><div class="bt-stat-label" title="error or unfunded">blocked</div><div class="big red" id="bots-n-err">--</div></div>
+          <div class="bt-stat"><div class="bt-stat-label" title="not yet started or no data">idle</div><div class="big dim" id="bots-n-idle">--</div></div>
         </div>
       </div>
       <div class="bt-wallets" id="bots-wallets"></div>
@@ -62,7 +62,7 @@
 
     <!-- Funds -->
     <div class="card span-3" id="card-funds">
-      <h2>Funds <span class="tag">managed wallets · P&amp;L</span></h2>
+      <h2>Funds <span class="tag">wallets · P&amp;L</span></h2>
       <div id="funds-perf" class="funds-perf">
         <div class="fp-hero">
           <div class="fp-grade" id="fp-grade">—</div>
@@ -97,26 +97,26 @@
 
     <!-- Mempool -->
     <div class="card span-6" id="card-mempool">
-      <h2>Mempool <span class="tag">live pending · mainnet</span></h2>
+      <h2>Mempool <span class="tag">txpool · MEV · gas</span></h2>
 
       <div class="mp-hero">
         <div class="mp-hero-left">
           <div class="mp-pressure-badge" id="mp-pressure">--</div>
           <div class="mp-hero-stats">
             <div class="mp-stat">
-              <div class="mp-stat-label">pending</div>
+              <div class="mp-stat-label" title="pending txs in the txpool (content + queued)">pending</div>
               <div class="big" id="mp-count">--</div>
             </div>
             <div class="mp-stat">
-              <div class="mp-stat-label">queued</div>
+              <div class="mp-stat-label" title="MEV-class txs decoded this sample">MEV</div>
               <div class="big dim" id="mp-queued">--</div>
             </div>
             <div class="mp-stat">
-              <div class="mp-stat-label">MEV live</div>
+              <div class="mp-stat-label" title="MEV txs in the live decoded feed">live</div>
               <div class="big amber" id="mp-mev-live-n">--</div>
             </div>
             <div class="mp-stat">
-              <div class="mp-stat-label">share</div>
+              <div class="mp-stat-label" title="current base gas price in gwei">gas gwei</div>
               <div class="big dim" id="mp-mev-share">--</div>
             </div>
           </div>
@@ -135,7 +135,7 @@
       </div>
 
       <div class="mp-mix" id="mp-mix">
-        <div class="mp-mix-label">class mix</div>
+        <div class="mp-mix-label">tx class</div>
         <div class="mp-mix-track" id="mp-mix-track"></div>
         <div id="mp-mev" class="kv mev mp-mix-keys"></div>
       </div>
@@ -143,19 +143,18 @@
       <div class="mp-grid">
         <div class="mp-col">
           <div class="mp-section-head">
-            <h3 class="watch">Live MEV <span class="tag" id="mp-mev-note">tip-sorted</span></h3>
+            <h3 class="watch">Live Liquidations <span class="tag" id="mp-mev-note">liq + spoke + aave</span></h3>
             <div class="mp-filters" id="mp-filters">
               <button type="button" data-f="all" class="mp-f on">all</button>
               <button type="button" data-f="liq" class="mp-f">liq</button>
               <button type="button" data-f="spoke" class="mp-f">spoke</button>
               <button type="button" data-f="aave" class="mp-f">aave</button>
-              <button type="button" data-f="router" class="mp-f">router</button>
             </div>
           </div>
           <div class="mp-scroll">
             <table id="mp-mev-live" class="mini">
               <thead><tr>
-                <th>cls</th><th>dest</th><th>method</th><th>tip</th><th>gas</th><th>tx</th>
+                <th>cls</th><th>dest</th><th>selector</th><th>tip</th><th>gas</th><th>tx</th>
               </tr></thead>
               <tbody></tbody>
             </table>
@@ -164,7 +163,7 @@
         </div>
         <div class="mp-col">
           <div class="mp-section-head">
-            <h3 class="watch">Top destinations <span class="tag">MEV first</span></h3>
+            <h3 class="watch">Top destinations <span class="tag">liq only</span></h3>
           </div>
           <div class="mp-scroll">
             <table id="mp-top-table" class="mini">
@@ -173,15 +172,15 @@
             </table>
           </div>
           <div class="mp-section-head" style="margin-top:10px">
-            <h3 class="watch">Spoke / contested <span class="tag" id="mp-spoke-note">0</span></h3>
+            <h3 class="watch">Lending Calls <span class="tag" id="mp-spoke-note">0</span></h3>
           </div>
           <div id="mp-contested" class="kv mp-contested"></div>
           <div class="mp-scroll mp-scroll-sm">
             <table id="mp-spoke" class="mini">
-              <thead><tr><th>fn</th><th>user</th><th>args</th><th></th></tr></thead>
+              <thead><tr><th>protocol</th><th>method</th><th>user</th><th>args</th><th></th></tr></thead>
               <tbody></tbody>
             </table>
-            <div class="empty" id="mp-spoke-empty">no Spoke txs in last content sample</div>
+            <div class="empty" id="mp-spoke-empty">no lending calls in last content sample</div>
           </div>
         </div>
       </div>
@@ -189,29 +188,33 @@
 
     <!-- Opportunities -->
     <div class="card span-6" id="card-opps">
-      <h2>Liquidatable Opportunities <span class="tag">Aave · Spark · Compound · Morpho · HF&lt;1 · +EV after Aave flash</span></h2>
+      <h2>Liquidatable Opportunities <span class="tag">Aave · Spark · Compound · Morpho · HF&lt;1 +EV after Aave flash</span></h2>
 
       <div class="op-hero">
         <div class="op-hero-left">
-          <div class="op-pressure-badge" id="op-pressure">idle</div>
+          <div class="op-hero-badges">
+            <div class="op-pressure-badge" id="op-pressure">idle</div>
+            <span class="op-gate-chip blocked" id="op-gate" title="Live send off until Sim off + Keep Live + LIQ_CONTRACT / GenericFlashLiquidator KIND. Hunt still works.">send off</span>
+          </div>
           <div class="op-hero-stats">
             <div class="op-stat">
-              <div class="op-stat-label">liquidatable</div>
+              <div class="op-stat-label" title="HF&lt;1 and +EV after Aave flash (~9 bps) + gas">liquidatable</div>
               <div class="big" id="op-count">--</div>
             </div>
             <div class="op-stat">
-              <div class="op-stat-label">best net</div>
+              <div class="op-stat-label" title="best reconstructed net on the liquidatable feed">best net</div>
               <div class="big green" id="op-best">--</div>
             </div>
             <div class="op-stat">
-              <div class="op-stat-label">edge</div>
+              <div class="op-stat-label" title="long-tail pairs in the liquidatable feed">edge</div>
               <div class="big amber" id="op-edge-n">--</div>
             </div>
             <div class="op-stat">
-              <div class="op-stat-label">scanned</div>
+              <div class="op-stat-label" title="up to 50 lowest HF, even if still &gt;1">watch</div>
               <div class="big dim" id="op-sweep">--</div>
             </div>
           </div>
+          <div class="op-window-hint">Feed = HF&lt;1 and +EV after Aave flash. Watch = up to 50 lowest HF even if still &gt;1. 0 liquidatable is often correct.</div>
           <div id="op-meta" class="kv op-meta"></div>
         </div>
         <div class="op-hero-right">
@@ -225,7 +228,7 @@
       </div>
 
       <div class="op-mix" id="op-mix">
-        <div class="op-mix-label">pair mix</div>
+        <div class="op-mix-label">pair mix (feed)</div>
         <div class="op-mix-track" id="op-mix-track"></div>
         <div id="op-mix-keys" class="kv op-mix-keys"></div>
       </div>
@@ -234,8 +237,8 @@
       <div class="op-grid">
         <div class="op-col">
           <div class="op-section-head">
-            <h3 class="watch">Feed <span class="tag" id="op-feed-note">HF&lt;1 · skip dust</span></h3>
-            <div class="op-filters proto-pills" id="op-proto-filters">
+            <h3 class="watch">Liquidatable / feed <span class="tag" id="op-feed-note">HF&lt;1 · +EV</span></h3>
+            <div class="op-filters proto-pills" id="op-proto-filters" title="filters feed and watch">
               <button type="button" data-proto="all" class="op-f on">All</button>
               <button type="button" data-proto="aave" class="op-f proto-aave">Aave</button>
               <button type="button" data-proto="spark" class="op-f proto-spark">Spark</button>
@@ -253,22 +256,24 @@
           <div class="op-scroll">
             <table id="opps-table" class="mini">
               <thead><tr>
-                <th>proto</th><th>user</th><th>hf</th><th>coll → debt</th><th>bonus</th><th>net $</th><th>flags</th>
+                <th>proto</th><th>user</th><th>hf</th><th>coll</th><th>debt</th><th>urg</th>
+                <th>bonus</th><th>net $</th><th>flags</th>
               </tr></thead>
               <tbody></tbody>
             </table>
-            <div class="empty" id="opps-empty">scanning Aave · Spark · Compound · Morpho for HF&lt;1…</div>
+            <div class="empty" id="opps-empty">scanning Aave · Spark · Compound · Morpho for HF&lt;1 +EV…</div>
           </div>
         </div>
         <div class="op-col">
           <div class="op-section-head">
-            <h3 class="watch">Closest to liquidation <span class="tag" id="watch-note"></span></h3>
+            <h3 class="watch">Closest / watch <span class="tag" id="watch-note">up to 50 lowest HF</span></h3>
           </div>
           <div class="op-scroll">
             <table id="watch-table" class="mini">
               <thead><tr><th>proto</th><th>user</th><th>hf</th><th>coll</th><th>debt</th><th>urg</th></tr></thead>
               <tbody></tbody>
             </table>
+            <div class="empty" id="watch-empty">waiting for lowest-HF hydrates…</div>
           </div>
         </div>
       </div>
@@ -283,23 +288,27 @@
           <div class="cp-pressure-badge" id="cp-pressure">idle</div>
           <div class="cp-hero-stats">
             <div class="cp-stat">
-              <div class="cp-stat-label">1h liqs</div>
+              <div class="cp-stat-label" title="confirmed liquidations in the last hour">1h liqs</div>
               <div class="big" id="cp-count">--</div>
+              <div class="cp-stat-sub dim" id="cp-count-feed"></div>
             </div>
             <div class="cp-stat">
-              <div class="cp-stat-label">searchers</div>
+              <div class="cp-stat-label" title="unique liquidators in the last hour">searchers</div>
               <div class="big dim" id="cp-searchers">--</div>
+              <div class="cp-stat-sub dim" id="cp-searchers-feed"></div>
             </div>
             <div class="cp-stat">
-              <div class="cp-stat-label">Σ est</div>
+              <div class="cp-stat-label" title="our reconstructed bonus — only when both sides priced">\u03a3 our est</div>
               <div class="big amber" id="cp-sum-est">--</div>
             </div>
             <div class="cp-stat">
-              <div class="cp-stat-label">missed</div>
+              <div class="cp-stat-label" title="confirmed liqs we saw and did not send (last hour)">missed</div>
               <div class="big red" id="cp-missed">--</div>
             </div>
           </div>
+          <div class="cp-window-hint">1h stats above. Live feed below accumulates.</div>
           <div id="cp-meta" class="kv cp-meta"></div>
+          <div class="empty" id="cp-leftover" style="display:none"></div>
         </div>
         <div class="cp-hero-right">
           <div class="cp-chart-wrap">
@@ -313,7 +322,7 @@
       </div>
 
       <div class="cp-mix" id="cp-mix">
-        <div class="cp-mix-label">pair mix (1h)</div>
+        <div class="cp-mix-label" id="cp-mix-label">pair mix (last hour)</div>
         <div class="cp-mix-track" id="cp-mix-track"></div>
         <div id="cp-mix-keys" class="kv cp-mix-keys"></div>
       </div>
@@ -321,7 +330,7 @@
       <div class="cp-grid">
         <div class="cp-col">
           <div class="cp-section-head">
-            <h3 class="watch">Live feed <span class="tag" id="cp-feed-note">newest first</span></h3>
+            <h3 class="watch">Live feed <span class="tag" id="cp-feed-note">recent confirmed</span></h3>
             <div class="op-filters proto-pills" id="cp-proto-filters">
               <button type="button" data-proto="all" class="op-f on">All</button>
               <button type="button" data-proto="aave" class="op-f proto-aave">Aave</button>
@@ -331,9 +340,9 @@
             </div>
             <div class="cp-filters" id="cp-filters">
               <button type="button" data-f="all" class="cp-f on">all</button>
-              <button type="button" data-f="miss" class="cp-f">missed</button>
-              <button type="button" data-f="edge" class="cp-f">edge</button>
-              <button type="button" data-f="profit" class="cp-f">+$</button>
+              <button type="button" data-f="miss" class="cp-f" title="we saw this confirmed liq and did not send">missed</button>
+              <button type="button" data-f="edge" class="cp-f" title="long-tail pair">edge</button>
+              <button type="button" data-f="profit" class="cp-f" title="our reconstructed estimate is positive">+$</button>
               <button type="button" data-f="revert" class="cp-f">revert</button>
             </div>
           </div>
@@ -341,7 +350,10 @@
             <table id="comp-table" class="mini">
               <thead><tr>
                 <th>age</th><th>proto</th><th>pair</th><th>liquidator</th><th>user</th>
-                <th>gas $</th><th>est</th><th>net</th><th>flags</th><th>tx</th>
+                <th title="on-chain gas × ETH price — not their profit">gas paid</th>
+                <th title="our oracle reconstruction — blank if we cannot decode">our est</th>
+                <th title="our est minus gas paid — blank unless both are real">our net</th>
+                <th>flags</th><th>tx</th>
               </tr></thead>
               <tbody></tbody>
             </table>
@@ -354,13 +366,13 @@
           </div>
           <div class="cp-scroll">
             <table id="cp-searcher-table" class="mini">
-              <thead><tr><th>#</th><th>searcher</th><th>share</th><th>n</th><th>Σ est</th></tr></thead>
+              <thead><tr><th>#</th><th>searcher</th><th>share</th><th>n</th><th>Σ our est</th></tr></thead>
               <tbody></tbody>
             </table>
-            <div class="empty" id="cp-searcher-empty">waiting for liquidations…</div>
+            <div class="empty" id="cp-searcher-empty">no searcher share this hour · 0%</div>
           </div>
           <div class="cp-section-head" style="margin-top:10px">
-            <h3 class="watch">Hot pairs <span class="tag" id="cp-pair-note">0</span></h3>
+            <h3 class="watch">Hot pairs <span class="tag" id="cp-pair-tag">last hour</span> <span class="tag" id="cp-pair-note">0</span></h3>
           </div>
           <div class="cp-scroll cp-scroll-sm">
             <table id="cp-pair-table" class="mini">
@@ -372,119 +384,28 @@
       </div>
     </div>
 
-    <!-- DEX Arb -->
-    <div class="card span-6" id="card-arb">
-      <h2>DEX Arbitrage <span class="tag">backrun+lst · Uni/Sushi · Aave flash</span></h2>
-
-      <div class="ar-hero">
-        <div class="ar-hero-left">
-          <div class="ar-pressure-badge" id="ar-pressure">idle</div>
-          <div class="ar-hero-stats">
-            <div class="ar-stat">
-              <div class="ar-stat-label">live</div>
-              <div class="big" id="ar-live">--</div>
-            </div>
-            <div class="ar-stat">
-              <div class="ar-stat-label">actionable</div>
-              <div class="big green" id="ar-actionable">--</div>
-            </div>
-            <div class="ar-stat">
-              <div class="ar-stat-label">best net</div>
-              <div class="big amber" id="ar-best-net">--</div>
-            </div>
-            <div class="ar-stat">
-              <div class="ar-stat-label">skipped</div>
-              <div class="big dim" id="ar-skip-n">--</div>
-            </div>
-          </div>
-          <div id="arb-meta" class="kv ar-meta"></div>
-        </div>
-        <div class="ar-hero-right">
-          <div class="ar-chart-wrap">
-            <div class="ar-chart"><canvas id="chart-arb"></canvas></div>
-            <div class="ar-chart-legend">
-              <span><i style="background:#22c55e"></i>best net $</span>
-              <span><i style="background:#22d3ee"></i>actionable</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="ar-mix" id="ar-mix">
-        <div class="ar-mix-label">venue mix</div>
-        <div class="ar-mix-track" id="ar-mix-track"></div>
-        <div id="ar-mix-keys" class="kv ar-mix-keys"></div>
-      </div>
-
-      <div class="ar-grid">
-        <div class="ar-col">
-          <div class="ar-section-head">
-            <h3 class="watch">Profit routes <span class="tag" id="ar-feed-note">+EV after costs</span></h3>
-            <div class="ar-filters" id="ar-filters">
-              <button type="button" data-f="all" class="ar-f on">all</button>
-              <button type="button" data-f="live" class="ar-f">+$</button>
-              <button type="button" data-f="cross" class="ar-f">cross-DEX</button>
-              <button type="button" data-f="uni" class="ar-f">uni</button>
-              <button type="button" data-f="sushi" class="ar-f">sushi</button>
-            </div>
-          </div>
-          <div class="ar-scroll">
-            <table id="arb-table" class="mini">
-              <thead><tr>
-                <th>venue</th><th>path</th><th>route</th><th>hops</th>
-                <th>borrow</th><th>gross $</th><th>gas $</th><th>net $</th><th>flags</th>
-              </tr></thead>
-              <tbody></tbody>
-            </table>
-            <div class="empty" id="arb-empty">backrun+lst · scoring LST/stables (Aave flash)…</div>
-          </div>
-        </div>
-        <div class="ar-col">
-          <div class="ar-section-head">
-            <h3 class="watch">Scan coverage <span class="tag" id="ar-cov-note">dex</span></h3>
-          </div>
-          <div id="arb-stats" class="kv ar-cov"></div>
-          <details class="arb-debug" id="arb-debug">
-            <summary>debug skips <span class="tag" id="ar-skip-debug-n">0</span></summary>
-            <p class="arb-debug-note">Not live. Negative / below-floor / same-pool quotes, capped this cycle.</p>
-            <table id="arb-near-table" class="mini">
-              <thead><tr>
-                <th>venue</th><th>path</th><th>net $</th><th>gap $</th><th>why</th>
-              </tr></thead>
-              <tbody></tbody>
-            </table>
-            <div class="empty" id="arb-near-empty">no debug skips this scan</div>
-          </details>
-        </div>
-      </div>
-    </div>
-
     <!-- Broadcast -->
     <div class="card span-6" id="card-bcast">
-      <h2>Broadcast <span class="tag">hunter always runs · Keep Live auto-sends +EV</span></h2>
+      <h2>Broadcast <span class="tag">hunter always runs liquidations · Keep Live auto-sends +EV liqs</span></h2>
 
       <div class="bc-hero">
         <div class="bc-hero-left">
           <div class="bc-pressure-badge" id="bc-pressure">idle</div>
           <div class="bc-hero-stats">
             <div class="bc-stat">
-              <div class="bc-stat-label">liq</div>
+              <div class="bc-stat-label" title="liquidity gates — ready or blocked">gates</div>
               <div class="big" id="bc-liq">--</div>
             </div>
             <div class="bc-stat">
-              <div class="bc-stat-label">arb</div>
-              <div class="big" id="bc-arb">--</div>
+              <div class="bc-stat-label" title="current broadcast mode">mode</div>
+              <div class="big dim" id="bc-mode">--</div>
             </div>
             <div class="bc-stat">
-              <div class="bc-stat-label">dyn liq ≥</div>
+              <div class="bc-stat-label" title="dynamic min liq profit threshold">min liq</div>
               <div class="big amber" id="bc-dyn-liq">--</div>
             </div>
             <div class="bc-stat">
-              <div class="bc-stat-label">dyn arb ≥</div>
-              <div class="big amber" id="bc-dyn-arb">--</div>
-            </div>
-            <div class="bc-stat">
-              <div class="bc-stat-label">last stage</div>
+              <div class="bc-stat-label" title="last broadcast stage">last stage</div>
               <div class="big dim" id="bc-last-stage">--</div>
             </div>
           </div>
@@ -492,7 +413,7 @@
         </div>
         <div class="bc-hero-right">
           <div class="bc-controls-panel">
-            <div class="bc-controls-label">submit mode — hunter always runs; Keep Live auto-sends +EV when funded; Sim ON = dry-run</div>
+            <div class="bc-controls-label">submit mode \u2014 hunter runs liquidations; Keep Live auto-sends +EV; Sim = dry-run</div>
             <div class="fund-actions bc-controls" id="bcast-controls">
               <button id="btn-sim" class="primary">Sim-only</button>
               <button id="btn-keep-live" class="wallet" title="Stay armed. Auto-renew. Persist across restart.">Keep Live</button>
@@ -508,11 +429,10 @@
       <div class="bc-grid">
         <div class="bc-col">
           <div class="bc-section-head">
-            <h3 class="watch">History <span class="tag" id="bc-hist-note">submits · skips</span></h3>
+            <h3 class="watch">History <span class="tag" id="bc-hist-note">submits \u00b7 skips</span></h3>
             <div class="bc-filters" id="bc-filters">
               <button type="button" data-f="all" class="bc-f on">all</button>
               <button type="button" data-f="liq" class="bc-f">liq</button>
-              <button type="button" data-f="arb" class="bc-f">arb</button>
               <button type="button" data-f="skip" class="bc-f">skip</button>
               <button type="button" data-f="sent" class="bc-f">sent</button>
               <button type="button" data-f="sim" class="bc-f">sim</button>
@@ -535,19 +455,14 @@
           <div id="bcast-reasons" class="kv bc-panel"></div>
 
           <div class="bc-section-head" style="margin-top:10px">
-            <h3 class="watch">Near-miss hints <span class="tag">learning</span></h3>
-          </div>
-          <div id="bcast-near" class="kv bc-panel"></div>
-
-          <div class="bc-section-head" style="margin-top:10px">
-            <h3 class="watch">Recent submits <span class="tag" id="bc-recent-note">last</span></h3>
+            <h3 class="watch">Near-miss hints <span class="tag" id="bc-near-note">learning</span></h3>
           </div>
           <div class="bc-scroll bc-scroll-sm">
-            <table id="bc-recent-table" class="mini">
-              <thead><tr><th>kind</th><th>stage</th><th>detail</th></tr></thead>
+            <table id="bc-near-table" class="mini">
+              <thead><tr><th>pair</th><th>fee%</th><th>best</th><th>avg</th><th>n</th></tr></thead>
               <tbody></tbody>
             </table>
-            <div class="empty" id="bc-recent-empty">no recent submits</div>
+            <div class="empty" id="bc-near-empty">no near-miss data yet</div>
           </div>
         </div>
       </div>
@@ -687,6 +602,27 @@
         <div id="reserves-list" class="kv"></div>
       </div>
 
+      <div class="paper-panel" id="eth-paper-panel">
+        <div class="paper-head">
+          <h3 class="watch">Paper Bot <span class="tag" id="eth-paper-status">loading</span></h3>
+          <div class="paper-toggles">
+            <button type="button" class="paper-toggle" id="eth-range-mode" data-mode="orb">ORB (2h)</button>
+            <button type="button" class="paper-toggle" id="eth-range-mode-pd" data-mode="prev_day">Prev Day</button>
+            <button type="button" class="paper-toggle on" id="eth-paper-on">Paper ON</button>
+          </div>
+        </div>
+        <div class="paper-stats" id="eth-paper-stats">
+          <div class="paper-stat"><span class="paper-stat-label">balance</span><span class="paper-stat-val" id="eth-paper-bal">$100.00</span></div>
+          <div class="paper-stat"><span class="paper-stat-label">PnL</span><span class="paper-stat-val" id="eth-paper-pnl">$0.00</span></div>
+          <div class="paper-stat"><span class="paper-stat-label">W/L</span><span class="paper-stat-val" id="eth-paper-wl">0 / 0</span></div>
+          <div class="paper-stat"><span class="paper-stat-label">win%</span><span class="paper-stat-val" id="eth-paper-wr">--</span></div>
+          <div class="paper-stat"><span class="paper-stat-label">trades</span><span class="paper-stat-val" id="eth-paper-count">0</span></div>
+        </div>
+        <div class="paper-open" id="eth-paper-open" style="display:none">
+          <span class="paper-open-label">open:</span> <span id="eth-paper-pos">--</span>
+        </div>
+      </div>
+
       <!-- legacy ids kept for any residual refs -->
       <span id="eth-last" hidden></span>
       <span id="sol-last" hidden></span>
@@ -770,10 +706,10 @@
           <div class="bt-mode" id="sol-bots-mode"></div>
         </div>
         <div class="bt-hero-stats">
-          <div class="bt-stat"><div class="bt-stat-label">ready</div><div class="big" id="sol-bots-n-ok">--</div></div>
-          <div class="bt-stat"><div class="bt-stat-label">running</div><div class="big amber" id="sol-bots-n-run">--</div></div>
-          <div class="bt-stat"><div class="bt-stat-label">blocked</div><div class="big red" id="sol-bots-n-err">--</div></div>
-          <div class="bt-stat"><div class="bt-stat-label">idle</div><div class="big dim" id="sol-bots-n-idle">--</div></div>
+          <div class="bt-stat"><div class="bt-stat-label" title="bots with status=ok or sim mode">ready</div><div class="big" id="sol-bots-n-ok">--</div></div>
+          <div class="bt-stat"><div class="bt-stat-label" title="actively processing a tick">running</div><div class="big amber" id="sol-bots-n-run">--</div></div>
+          <div class="bt-stat"><div class="bt-stat-label" title="error or unfunded">blocked</div><div class="big red" id="sol-bots-n-err">--</div></div>
+          <div class="bt-stat"><div class="bt-stat-label" title="not yet started or no data">idle</div><div class="big dim" id="sol-bots-n-idle">--</div></div>
         </div>
       </div>
       <div class="bt-wallets" id="sol-bots-wallets"></div>
@@ -820,26 +756,26 @@
 
     <!-- Mempool -->
     <div class="card span-6" id="sol-card-mempool">
-      <h2>Mempool <span class="tag sol-tag">Solend landing · Jito tips · µl/CU</span></h2>
+      <h2>Mempool <span class="tag sol-tag">Solend landing · Jito bundles · priority fees</span></h2>
 
       <div class="mp-hero sol-mp-hero">
         <div class="mp-hero-left">
           <div class="mp-pressure-badge" id="sol-mp-pressure">--</div>
           <div class="mp-hero-stats">
             <div class="mp-stat">
-              <div class="mp-stat-label">liq hits</div>
+              <div class="mp-stat-label" title="Solend liquidation transactions seen landing on-chain">liq land</div>
               <div class="big" id="sol-mp-count">--</div>
             </div>
             <div class="mp-stat">
-              <div class="mp-stat-label">MEV / jito</div>
+              <div class="mp-stat-label" title="Jito bundles detected in the landing stream">jito</div>
               <div class="big dim" id="sol-mp-queued">--</div>
             </div>
             <div class="mp-stat">
-              <div class="mp-stat-label">median µl</div>
+              <div class="mp-stat-label" title="median priority fee in micro-lamports per compute unit">med µl/CU</div>
               <div class="big amber" id="sol-mp-mev-live-n">--</div>
             </div>
             <div class="mp-stat">
-              <div class="mp-stat-label">p90 µl</div>
+              <div class="mp-stat-label" title="cluster TPS (non-vote)">TPS</div>
               <div class="big dim" id="sol-mp-mev-share">--</div>
             </div>
           </div>
@@ -866,7 +802,7 @@
       <div class="mp-grid">
         <div class="mp-col">
           <div class="mp-section-head">
-            <h3 class="watch">Landing hits <span class="tag" id="sol-mp-mev-note">liq vs MEV</span></h3>
+            <h3 class="watch">Landing hits <span class="tag" id="sol-mp-mev-note">liq vs Jito</span></h3>
             <div class="mp-filters" id="sol-mp-filters">
               <button type="button" data-f="all" class="mp-f on">all</button>
               <button type="button" data-f="liq" class="mp-f">liq</button>
@@ -879,7 +815,7 @@
           <div class="mp-scroll">
             <table id="sol-mp-mev-live" class="mini">
               <thead><tr>
-                <th>kind</th><th>slot</th><th>pair / searcher</th><th>HF</th><th>net $</th><th>tx</th>
+                <th>kind</th><th>slot</th><th>pair / searcher</th><th>fee</th><th>vs med</th><th>tx</th>
               </tr></thead>
               <tbody></tbody>
             </table>
@@ -888,7 +824,7 @@
         </div>
         <div class="mp-col">
           <div class="mp-section-head">
-            <h3 class="watch">Fee histogram <span class="tag">µl / CU</span></h3>
+            <h3 class="watch">Fee histogram <span class="tag">µl/CU buckets</span></h3>
           </div>
           <div class="mp-scroll">
             <table id="sol-mp-top-table" class="mini">
@@ -897,15 +833,15 @@
             </table>
           </div>
           <div class="mp-section-head" style="margin-top:10px">
-            <h3 class="watch">Hottest slots <span class="tag" id="sol-mp-spoke-note">0</span></h3>
+            <h3 class="watch">Hot slots <span class="tag" id="sol-mp-spoke-note">0</span></h3>
           </div>
           <div id="sol-mp-contested" class="kv mp-contested"></div>
           <div class="mp-scroll mp-scroll-sm">
             <table id="sol-mp-spoke" class="mini">
-              <thead><tr><th>cls</th><th>slot</th><th>max µl</th><th></th></tr></thead>
+              <thead><tr><th>class</th><th>slot</th><th>max µl/CU</th><th></th></tr></thead>
               <tbody></tbody>
             </table>
-            <div class="empty" id="sol-mp-spoke-empty">no hot fee slots yet — waiting for priority samples</div>
+            <div class="empty" id="sol-mp-spoke-empty">no hot-fee slots yet — waiting for priority samples</div>
           </div>
         </div>
       </div>
@@ -913,29 +849,33 @@
 
     <!-- Opportunities -->
     <div class="card span-6" id="sol-card-opps">
-      <h2>Liquidatable Opportunities <span class="tag sol-tag">Solend · HF &lt; 1 · +EV after CU/Jito</span></h2>
+      <h2>Liquidatable Opportunities <span class="tag sol-tag">Solend · HF&lt;1 +EV after CU/Jito</span></h2>
 
       <div class="op-hero">
         <div class="op-hero-left">
-          <div class="op-pressure-badge" id="sol-op-pressure">idle</div>
+          <div class="op-hero-badges">
+            <div class="op-pressure-badge" id="sol-op-pressure">idle</div>
+            <span class="op-gate-chip blocked" id="sol-op-gate" title="Live send off until Sim off + Keep Live. Hunt still works.">send off</span>
+          </div>
           <div class="op-hero-stats">
             <div class="op-stat">
-              <div class="op-stat-label">liquidatable</div>
+              <div class="op-stat-label" title="HF&lt;1 and +EV after CU/Jito">liquidatable</div>
               <div class="big" id="sol-op-count">--</div>
             </div>
             <div class="op-stat">
-              <div class="op-stat-label">best $</div>
+              <div class="op-stat-label" title="best reconstructed net on the liquidatable feed">best net</div>
               <div class="big green" id="sol-op-best">--</div>
             </div>
             <div class="op-stat">
-              <div class="op-stat-label">edge</div>
+              <div class="op-stat-label" title="long-tail pairs in the liquidatable feed">edge</div>
               <div class="big amber" id="sol-op-edge-n">--</div>
             </div>
             <div class="op-stat">
-              <div class="op-stat-label">sweep / watch</div>
+              <div class="op-stat-label" title="up to 50 lowest HF, even if still &gt;1">watch</div>
               <div class="big dim" id="sol-op-sweep">--</div>
             </div>
           </div>
+          <div class="op-window-hint">Feed = HF&lt;1 and +EV after CU/Jito. Watch = up to 50 lowest HF even if still &gt;1. 0 liquidatable is often correct.</div>
           <div id="sol-op-meta" class="kv op-meta"></div>
         </div>
         <div class="op-hero-right">
@@ -949,15 +889,16 @@
       </div>
 
       <div class="op-mix" id="sol-op-mix">
-        <div class="op-mix-label">pair mix</div>
+        <div class="op-mix-label">pair mix (feed)</div>
         <div class="op-mix-track" id="sol-op-mix-track"></div>
         <div id="sol-op-mix-keys" class="kv op-mix-keys"></div>
       </div>
+      <div class="dim" id="sol-op-leftover" style="display:none;font-size:10px;margin:4px 0 8px"></div>
 
       <div class="op-grid">
         <div class="op-col">
           <div class="op-section-head">
-            <h3 class="watch">Liq feed <span class="tag" id="sol-op-feed-note">net after fees</span></h3>
+            <h3 class="watch">Liquidatable / feed <span class="tag" id="sol-op-feed-note">HF&lt;1 · +EV</span></h3>
             <div class="op-filters" id="sol-op-filters">
               <button type="button" data-f="all" class="op-f on">all</button>
               <button type="button" data-f="edge" class="op-f">edge</button>
@@ -978,13 +919,14 @@
         </div>
         <div class="op-col">
           <div class="op-section-head">
-            <h3 class="watch">Closest to stress (util) <span class="tag" id="sol-watch-note"></span></h3>
+            <h3 class="watch">Closest / watch <span class="tag" id="sol-watch-note">up to 50 lowest HF</span></h3>
           </div>
           <div class="op-scroll">
             <table id="sol-watch-table" class="mini">
               <thead><tr><th>user</th><th>hf</th><th>coll</th><th>debt</th><th>urg</th></tr></thead>
               <tbody></tbody>
             </table>
+            <div class="empty" id="sol-watch-empty">waiting for lowest-HF hydrates…</div>
           </div>
         </div>
       </div>
@@ -992,30 +934,34 @@
 
     <!-- Competitors -->
     <div class="card span-6" id="sol-card-competitors">
-      <h2>Competitor Liquidations <span class="tag sol-tag">Solend program · landing sigs</span></h2>
+      <h2>Competitor Liquidations <span class="tag sol-tag">Solend main market · confirmed liquidate ixs</span></h2>
 
       <div class="cp-hero">
         <div class="cp-hero-left">
           <div class="cp-pressure-badge" id="sol-cp-pressure">idle</div>
           <div class="cp-hero-stats">
             <div class="cp-stat">
-              <div class="cp-stat-label">1h liqs</div>
+              <div class="cp-stat-label" title="confirmed liquidations in the last hour">1h liqs</div>
               <div class="big" id="sol-cp-count">--</div>
+              <div class="cp-stat-sub dim" id="sol-cp-count-feed"></div>
             </div>
             <div class="cp-stat">
-              <div class="cp-stat-label">searchers</div>
+              <div class="cp-stat-label" title="unique liquidators in the last hour">searchers</div>
               <div class="big dim" id="sol-cp-searchers">--</div>
+              <div class="cp-stat-sub dim" id="sol-cp-searchers-feed"></div>
             </div>
             <div class="cp-stat">
-              <div class="cp-stat-label">Σ est</div>
+              <div class="cp-stat-label" title="our reconstructed bonus — only when decoded">\u03a3 our est</div>
               <div class="big amber" id="sol-cp-sum-est">--</div>
             </div>
             <div class="cp-stat">
-              <div class="cp-stat-label">missed</div>
+              <div class="cp-stat-label" title="confirmed liqs we saw and did not send (last hour)">missed</div>
               <div class="big red" id="sol-cp-missed">--</div>
             </div>
           </div>
+          <div class="cp-window-hint">1h stats above. Live feed below accumulates.</div>
           <div id="sol-cp-meta" class="kv cp-meta"></div>
+          <div class="empty" id="sol-cp-leftover" style="display:none"></div>
         </div>
         <div class="cp-hero-right">
           <div class="cp-chart-wrap">
@@ -1029,7 +975,7 @@
       </div>
 
       <div class="cp-mix" id="sol-cp-mix">
-        <div class="cp-mix-label">pair mix (1h)</div>
+        <div class="cp-mix-label" id="sol-cp-mix-label">pair mix (last hour)</div>
         <div class="cp-mix-track" id="sol-cp-mix-track"></div>
         <div id="sol-cp-mix-keys" class="kv cp-mix-keys"></div>
       </div>
@@ -1037,24 +983,27 @@
       <div class="cp-grid">
         <div class="cp-col">
           <div class="cp-section-head">
-            <h3 class="watch">Live feed <span class="tag" id="sol-cp-feed-note">newest first</span></h3>
+            <h3 class="watch">Live feed <span class="tag" id="sol-cp-feed-note">recent confirmed</span></h3>
             <div class="cp-filters" id="sol-cp-filters">
               <button type="button" data-f="all" class="cp-f on">all</button>
-              <button type="button" data-f="miss" class="cp-f">missed</button>
-              <button type="button" data-f="edge" class="cp-f">edge</button>
-              <button type="button" data-f="profit" class="cp-f">+$</button>
+              <button type="button" data-f="miss" class="cp-f" title="we saw this confirmed liq and did not send">missed</button>
+              <button type="button" data-f="edge" class="cp-f" title="long-tail pair">edge</button>
+              <button type="button" data-f="profit" class="cp-f" title="our reconstructed estimate is positive">+$</button>
               <button type="button" data-f="revert" class="cp-f">revert</button>
             </div>
           </div>
           <div class="cp-scroll">
             <table id="sol-comp-table" class="mini">
               <thead><tr>
-                <th>age</th><th>pair</th><th>searcher</th><th>user</th>
-                <th>gas $</th><th>est</th><th>net</th><th>flags</th><th>tx</th>
+                <th>age</th><th>pair</th><th>liquidator</th><th>user</th>
+                <th title="on-chain fee × SOL price — not their profit">gas paid</th>
+                <th title="our reconstructed bonus — blank if we cannot decode">our est</th>
+                <th title="our est minus fee — blank unless both are real">our net</th>
+                <th>flags</th><th>tx</th>
               </tr></thead>
               <tbody></tbody>
             </table>
-            <div class="empty" id="sol-comp-empty">no decoded Solend liquidations yet — scanning program sigs…</div>
+            <div class="empty" id="sol-comp-empty">scanning Solend main-market liquidate signatures…</div>
           </div>
         </div>
         <div class="cp-col">
@@ -1063,13 +1012,13 @@
           </div>
           <div class="cp-scroll">
             <table id="sol-cp-searcher-table" class="mini">
-              <thead><tr><th>#</th><th>searcher</th><th>share</th><th>n</th><th>Σ est</th></tr></thead>
+              <thead><tr><th>#</th><th>searcher</th><th>share</th><th>n</th><th>Σ our est</th></tr></thead>
               <tbody></tbody>
             </table>
-            <div class="empty" id="sol-cp-searcher-empty">waiting for liquidations…</div>
+            <div class="empty" id="sol-cp-searcher-empty">no searcher share this hour · 0%</div>
           </div>
           <div class="cp-section-head" style="margin-top:10px">
-            <h3 class="watch">Hot pairs <span class="tag" id="sol-cp-pair-note">0</span></h3>
+            <h3 class="watch">Hot pairs <span class="tag" id="sol-cp-pair-tag">last hour</span> <span class="tag" id="sol-cp-pair-note">0</span></h3>
           </div>
           <div class="cp-scroll cp-scroll-sm">
             <table id="sol-cp-pair-table" class="mini">
@@ -1081,119 +1030,28 @@
       </div>
     </div>
 
-    <!-- DEX Arb -->
-    <div class="card span-6" id="sol-card-arb">
-      <h2>MEV / DEX Arbitrage <span class="tag sol-tag">local pools · Jupiter exec · +EV only</span></h2>
-
-      <div class="ar-hero">
-        <div class="ar-hero-left">
-          <div class="ar-pressure-badge" id="sol-ar-pressure">idle</div>
-          <div class="ar-hero-stats">
-            <div class="ar-stat">
-              <div class="ar-stat-label">live</div>
-              <div class="big" id="sol-ar-live">--</div>
-            </div>
-            <div class="ar-stat">
-              <div class="ar-stat-label">actionable</div>
-              <div class="big green" id="sol-ar-actionable">--</div>
-            </div>
-            <div class="ar-stat">
-              <div class="ar-stat-label">best net</div>
-              <div class="big amber" id="sol-ar-best-net">--</div>
-            </div>
-            <div class="ar-stat">
-              <div class="ar-stat-label">skipped</div>
-              <div class="big dim" id="sol-ar-skip-n">--</div>
-            </div>
-          </div>
-          <div id="sol-arb-meta" class="kv ar-meta"></div>
-        </div>
-        <div class="ar-hero-right">
-          <div class="ar-chart-wrap">
-            <div class="ar-chart"><canvas id="sol-chart-arb"></canvas></div>
-            <div class="ar-chart-legend">
-              <span><i style="background:#22c55e"></i>best net $</span>
-              <span><i style="background:#22d3ee"></i>actionable</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="ar-mix" id="sol-ar-mix">
-        <div class="ar-mix-label">venue mix</div>
-        <div class="ar-mix-track" id="sol-ar-mix-track"></div>
-        <div id="sol-ar-mix-keys" class="kv ar-mix-keys"></div>
-      </div>
-
-      <div class="ar-grid">
-        <div class="ar-col">
-          <div class="ar-section-head">
-            <h3 class="watch">Profit routes <span class="tag" id="sol-ar-feed-note">+EV after costs</span></h3>
-            <div class="ar-filters" id="sol-ar-filters">
-              <button type="button" data-f="all" class="ar-f on">all</button>
-              <button type="button" data-f="live" class="ar-f">+$</button>
-              <button type="button" data-f="cross" class="ar-f">cross-DEX</button>
-              <button type="button" data-f="local" class="ar-f">local</button>
-              <button type="button" data-f="jup" class="ar-f">jup</button>
-            </div>
-          </div>
-          <div class="ar-scroll">
-            <table id="sol-arb-table" class="mini">
-              <thead><tr>
-                <th>venue</th><th>path</th><th>route</th><th>hops</th>
-                <th>borrow</th><th>gross $</th><th>gas $</th><th>net $</th><th>flags</th>
-              </tr></thead>
-              <tbody></tbody>
-            </table>
-            <div class="empty" id="sol-arb-empty">waiting for first pool-account scan…</div>
-          </div>
-        </div>
-        <div class="ar-col">
-          <div class="ar-section-head">
-            <h3 class="watch">Scan coverage <span class="tag" id="sol-ar-cov-note">local+jup</span></h3>
-          </div>
-          <div id="sol-arb-stats" class="kv ar-cov"></div>
-          <details class="sol-arb-debug" id="sol-arb-debug">
-            <summary>debug skips <span class="tag" id="sol-ar-skip-debug-n">0</span></summary>
-            <p class="sol-arb-debug-note">Not live. Negative / below-floor / same-pool quotes, capped this cycle.</p>
-            <table id="sol-arb-near-table" class="mini">
-              <thead><tr>
-                <th>venue</th><th>path</th><th>net $</th><th>gap $</th><th>why</th>
-              </tr></thead>
-              <tbody></tbody>
-            </table>
-            <div class="empty" id="sol-arb-near-empty">no debug skips this scan</div>
-          </details>
-        </div>
-      </div>
-    </div>
-
     <!-- Broadcast -->
     <div class="card span-6" id="sol-card-bcast">
-      <h2>Broadcast <span class="tag sol-tag">hunter always runs · Keep Live auto-sends +EV</span></h2>
+      <h2>Broadcast <span class="tag sol-tag">hunter always runs liquidations · Keep Live auto-sends +EV liqs</span></h2>
 
       <div class="bc-hero">
         <div class="bc-hero-left">
           <div class="bc-pressure-badge" id="sol-bc-pressure">idle</div>
           <div class="bc-hero-stats">
             <div class="bc-stat">
-              <div class="bc-stat-label">liq</div>
+              <div class="bc-stat-label" title="liquidity gates — ready or blocked">gates</div>
               <div class="big" id="sol-bc-liq">--</div>
             </div>
             <div class="bc-stat">
-              <div class="bc-stat-label">arb</div>
-              <div class="big" id="sol-bc-arb">--</div>
+              <div class="bc-stat-label" title="current broadcast mode">mode</div>
+              <div class="big dim" id="sol-bc-mode">--</div>
             </div>
             <div class="bc-stat">
-              <div class="bc-stat-label">dyn liq ≥</div>
+              <div class="bc-stat-label" title="dynamic min liq profit threshold">min liq</div>
               <div class="big amber" id="sol-bc-dyn-liq">--</div>
             </div>
             <div class="bc-stat">
-              <div class="bc-stat-label">dyn arb ≥</div>
-              <div class="big amber" id="sol-bc-dyn-arb">--</div>
-            </div>
-            <div class="bc-stat">
-              <div class="bc-stat-label">last stage</div>
+              <div class="bc-stat-label" title="last broadcast stage">last stage</div>
               <div class="big dim" id="sol-bc-last-stage">--</div>
             </div>
           </div>
@@ -1201,7 +1059,7 @@
         </div>
         <div class="bc-hero-right">
           <div class="bc-controls-panel">
-            <div class="bc-controls-label">submit mode — hunter always runs; Keep Live auto-sends +EV when funded; Sim ON = dry-run</div>
+            <div class="bc-controls-label">submit mode \u2014 hunter runs liquidations; Keep Live auto-sends +EV; Sim = dry-run</div>
             <div class="fund-actions bc-controls" id="sol-bcast-controls">
               <button id="sol-btn-sim" class="primary">Sim-only</button>
               <button id="sol-btn-keep-live" class="wallet" title="Stay armed. Auto-renew. Persist across restart.">Keep Live</button>
@@ -1217,11 +1075,10 @@
       <div class="bc-grid">
         <div class="bc-col">
           <div class="bc-section-head">
-            <h3 class="watch">History <span class="tag" id="sol-bc-hist-note">submits · skips</span></h3>
+            <h3 class="watch">History <span class="tag" id="sol-bc-hist-note">submits \u00b7 skips</span></h3>
             <div class="bc-filters" id="sol-bc-filters">
               <button type="button" data-f="all" class="bc-f on">all</button>
               <button type="button" data-f="liq" class="bc-f">liq</button>
-              <button type="button" data-f="arb" class="bc-f">arb</button>
               <button type="button" data-f="skip" class="bc-f">skip</button>
               <button type="button" data-f="sent" class="bc-f">sent</button>
               <button type="button" data-f="sim" class="bc-f">sim</button>
@@ -1244,19 +1101,14 @@
           <div id="sol-bcast-reasons" class="kv bc-panel"></div>
 
           <div class="bc-section-head" style="margin-top:10px">
-            <h3 class="watch">Near-miss hints <span class="tag">learning</span></h3>
-          </div>
-          <div id="sol-bcast-near" class="kv bc-panel"></div>
-
-          <div class="bc-section-head" style="margin-top:10px">
-            <h3 class="watch">Recent submits <span class="tag" id="sol-bc-recent-note">last</span></h3>
+            <h3 class="watch">Near-miss hints <span class="tag" id="sol-bc-near-note">learning</span></h3>
           </div>
           <div class="bc-scroll bc-scroll-sm">
-            <table id="sol-bc-recent-table" class="mini">
-              <thead><tr><th>kind</th><th>stage</th><th>detail</th></tr></thead>
+            <table id="sol-bc-near-table" class="mini">
+              <thead><tr><th>pair</th><th>fee%</th><th>best</th><th>avg</th><th>n</th></tr></thead>
               <tbody></tbody>
             </table>
-            <div class="empty" id="sol-bc-recent-empty">no recent submits</div>
+            <div class="empty" id="sol-bc-near-empty">no near-miss data yet</div>
           </div>
         </div>
       </div>
@@ -1398,6 +1250,27 @@
           <h3 class="watch">Solend reserve util <span class="tag" id="sol-res-delta"></span></h3>
         </div>
         <div id="sol-reserves-list" class="kv"></div>
+      </div>
+
+      <div class="paper-panel" id="sol-paper-panel">
+        <div class="paper-head">
+          <h3 class="watch">Paper Bot <span class="tag" id="sol-paper-status">loading</span></h3>
+          <div class="paper-toggles">
+            <button type="button" class="paper-toggle" id="sol-range-mode" data-mode="orb">ORB (2h)</button>
+            <button type="button" class="paper-toggle" id="sol-range-mode-pd" data-mode="prev_day">Prev Day</button>
+            <button type="button" class="paper-toggle on" id="sol-paper-on">Paper ON</button>
+          </div>
+        </div>
+        <div class="paper-stats" id="sol-paper-stats">
+          <div class="paper-stat"><span class="paper-stat-label">balance</span><span class="paper-stat-val" id="sol-paper-bal">$100.00</span></div>
+          <div class="paper-stat"><span class="paper-stat-label">PnL</span><span class="paper-stat-val" id="sol-paper-pnl">$0.00</span></div>
+          <div class="paper-stat"><span class="paper-stat-label">W/L</span><span class="paper-stat-val" id="sol-paper-wl">0 / 0</span></div>
+          <div class="paper-stat"><span class="paper-stat-label">win%</span><span class="paper-stat-val" id="sol-paper-wr">--</span></div>
+          <div class="paper-stat"><span class="paper-stat-label">trades</span><span class="paper-stat-val" id="sol-paper-count">0</span></div>
+        </div>
+        <div class="paper-open" id="sol-paper-open" style="display:none">
+          <span class="paper-open-label">open:</span> <span id="sol-paper-pos">--</span>
+        </div>
       </div>
 
       <!-- legacy ids kept for any residual refs -->
