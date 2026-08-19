@@ -776,8 +776,6 @@ class Dashboard:
                 "last_ts": None,
             },
             "sol": self._init_sol_state(),
-            "paper_eth": PaperTrader.load("ETH").state_dict(),
-            "paper_sol": PaperTrader.load("SOL").state_dict(),
         }
         self.hist = {
             "tx_count": deque(maxlen=MAXLEN),
@@ -797,6 +795,8 @@ class Dashboard:
         }
         self._paper_eth = PaperTrader.load("ETH")
         self._paper_sol = PaperTrader.load("SOL")
+        self.state["paper_eth"] = self._paper_eth.state_dict()
+        self.state["paper_sol"] = self._paper_sol.state_dict()
         self.clients = set()
         self.tx_pool = ThreadPoolExecutor(max_workers=8)
         self._uni = None
