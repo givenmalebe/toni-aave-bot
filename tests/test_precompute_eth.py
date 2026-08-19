@@ -1,3 +1,5 @@
+import asyncio
+
 import precompute_eth as pe
 
 def test_cache_miss():
@@ -47,3 +49,44 @@ def test_build_entry():
     assert entry["calldata"].startswith("0xc2fa746c")
     assert entry["estimated_profit_usd"] == 42.0
     assert entry["hf"] == 0.95
+
+
+class MockResponse:
+    def __init__(self, data):
+        self._data = data
+    async def json(self):
+        return self._data
+    async def __aenter__(self):
+        return self
+    async def __aexit__(self, *a):
+        pass
+
+
+class FakeSession:
+    def __init__(self, block_num=100):
+        self._block_num = block_num
+    async def __aenter__(self):
+        return self
+    async def __aexit__(self, *a):
+        pass
+    def post(self, url, json=None, timeout=None):
+        return MockResponse({"result": hex(self._block_num)})
+
+
+def test_refresh_updates_cache(monkeypatch):
+    pe._cache.clear()
+    pe._last_block = 0
+    import aiohttp
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda: FakeSession(200))
+
+    pos = {
+        "user": "0xabc", "protocol": "aave-v3", "collateral": "0xcoll",
+        "debt": "0xdead", "debtToCover": "1000000", "hf": 0.95,
+        "contract": "0xcontract", "liq_sig": "0xc2fa746c",
+        "liq_args": ["0xabc", "0xcoll", "0xdead", "0xf4240"],
+        "swap_path": b"\x00", "gas_limit": 1500000, "net_usd": 42.0,
+        "flash_amount": "1000000", "debt_token": "0xA0b86991", "coll_token": "0xC02aaA39",
+    }
+    asyncio.get_event_loop().run_until_complete(pe.refresh([pos], "http://mock"))
+    assert pe._last_block == 200
+    assert "0xabc" in pe._cache

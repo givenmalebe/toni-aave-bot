@@ -4,3 +4,4 @@ pynacl
 base58
 numpy
 solders
+websockets

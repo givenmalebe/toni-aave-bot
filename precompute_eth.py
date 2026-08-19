@@ -1,9 +1,10 @@
 """ETH pre-compute cache — builds calldata for hot positions on every block."""
 
 import asyncio
+import json
 import logging
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 log = logging.getLogger("precompute_eth")
 
@@ -85,3 +86,87 @@ def evict_stale(max_blocks_old: int = 3) -> int:
         del _cache[k]
         evicted += 1
     return evicted
+
+
+async def refresh(hot_positions: list[dict], rpc_url: str) -> None:
+    """Refresh cache for all hot positions. Called on each new block."""
+    global _cache, _last_block
+
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            payload = {"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []}
+            async with session.post(rpc_url, json=payload, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                data = await resp.json()
+                _last_block = int(data["result"], 16)
+    except Exception as e:
+        log.warning("Failed to get block number: %s", e)
+        return
+
+    for pos in hot_positions:
+        user = pos.get("user", "").lower()
+        if not user:
+            continue
+        try:
+            entry = build_entry(
+                protocol=pos.get("protocol", "unknown"),
+                user=pos.get("user", ""),
+                collateral=pos.get("collateral", ""),
+                debt=pos.get("debt", ""),
+                debt_amount_wei=int(pos.get("debtToCover", "0")),
+                hf=pos.get("hf", 0),
+                contract_addr=pos.get("contract", ""),
+                liq_sig=pos.get("liq_sig", "0x"),
+                liq_args=pos.get("liq_args", []),
+                swap_path=pos.get("swap_path", b""),
+                gas_limit=pos.get("gas_limit", 1500000),
+                estimated_profit_usd=pos.get("net_usd", 0),
+                flash_amount_wei=int(pos.get("flash_amount", "0")),
+                debt_token=pos.get("debt_token", ""),
+                coll_token=pos.get("coll_token", ""),
+            )
+            _cache[user] = entry
+        except Exception as e:
+            log.warning("Failed to pre-compute for %s: %s", user, e)
+
+    evict_stale()
+    log.info("ETH pre-compute refresh: %d positions, block %d", len(_cache), _last_block)
+
+
+_listener_task: Optional[asyncio.Task] = None
+
+
+async def _block_loop(rpc_urls: list[str], get_hot_positions: Callable) -> None:
+    """Background loop that listens for new blocks and refreshes cache."""
+    import websockets
+
+    rpc_url = rpc_urls[0] if rpc_urls else "https://ethereum-rpc.publicnode.com"
+    ws_url = rpc_url.replace("https://", "wss://").replace("http://", "ws://")
+
+    while True:
+        try:
+            async with websockets.connect(ws_url, ping_interval=20) as ws:
+                sub = {"jsonrpc": "2.0", "id": 1, "method": "eth_subscribe", "params": ["newHeads"]}
+                await ws.send(json.dumps(sub))
+                await ws.recv()
+
+                async for msg in ws:
+                    try:
+                        data = json.loads(msg)
+                        if "params" in data:
+                            hot = get_hot_positions()
+                            await refresh(hot, rpc_url)
+                    except Exception as e:
+                        log.warning("Block listener error: %s", e)
+        except Exception as e:
+            log.warning("WebSocket disconnected, reconnecting in 5s: %s", e)
+            await asyncio.sleep(5)
+
+
+def start_block_listener(rpc_urls: list[str], get_hot_positions: Callable) -> asyncio.Task:
+    """Start the background block listener. Returns the asyncio Task."""
+    global _listener_task
+    if _listener_task and not _listener_task.done():
+        return _listener_task
+    _listener_task = asyncio.ensure_future(_block_loop(rpc_urls, get_hot_positions))
+    return _listener_task
