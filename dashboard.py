@@ -113,7 +113,7 @@ import broadcast  # noqa: E402
 import aave_v4_monitor as avm  # noqa: E402
 import intel_collector as ic  # noqa: E402
 import intel_analyze as ia  # noqa: E402
-from intel_collector import aggregate_liq_intel
+from intel_collector import aggregate_liq_intel  # noqa: E402
 import profit_engine as pe  # noqa: E402
 import profit_brain as brain  # noqa: E402
 import sol_scanner as sols  # noqa: E402

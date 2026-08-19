@@ -982,7 +982,7 @@ button.primary:disabled { opacity: .4; cursor: not-allowed; }
 }
 
 /* learning / intel — full-width restyle */
-#card-intel { overflow: hidden; }
+#card-intel, #card-liq-intel { overflow: hidden; }
 
 .in-pressure-badge {
   display: inline-flex; align-items: center; gap: 6px;

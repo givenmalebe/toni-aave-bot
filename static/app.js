@@ -2894,7 +2894,8 @@
   };
 
   const updateLiqIntel = (s, prefix) => {
-    const li = s.intel && s.intel.liq_intel;
+    const intel = prefix === "sol" ? (s.sol && s.sol.intel) : s.intel;
+    const li = intel && intel.liq_intel;
     if (!li) return;
 
     const pfx = prefix ? prefix + "-" : "";
