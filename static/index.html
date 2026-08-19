@@ -468,81 +468,54 @@
       </div>
     </div>
 
-    <!-- Learning / Intel -->
-    <div class="card span-6" id="card-intel">
-      <h2>Learning / Intel <span class="tag">TONI-DeepProfit · online MLP</span></h2>
-
-      <div class="in-hero">
-        <div class="in-hero-left">
-          <div class="in-pressure-badge" id="in-pressure">idle</div>
-          <div class="in-hero-stats">
-            <div class="in-stat">
-              <div class="in-stat-label">act P</div>
-              <div class="big" id="intel-act">--</div>
-            </div>
-            <div class="in-stat">
-              <div class="in-stat-label">exp net</div>
-              <div class="big amber" id="intel-exp">--</div>
-            </div>
-            <div class="in-stat">
-              <div class="in-stat-label">steps</div>
-              <div class="big dim" id="intel-steps">--</div>
-            </div>
-            <div class="in-stat">
-              <div class="in-stat-label">records</div>
-              <div class="big" id="intel-records">--</div>
-            </div>
-          </div>
-          <div class="in-advice" id="in-advice">warming up</div>
-          <div id="in-meta" class="kv in-meta"></div>
-        </div>
-        <div class="in-hero-right">
-          <div class="in-gauge-wrap">
-            <div class="in-gauge">
-              <canvas id="gauge"></canvas>
-              <div class="in-gauge-center"><span id="in-ready-pct">--</span><small>%</small></div>
-            </div>
-            <div class="in-chart-legend">readiness</div>
-          </div>
-        </div>
+    <!-- Liquidation Intel -->
+    <div class="card span-3" id="card-liq-intel">
+      <div class="card-head">Liquidation Intel <span id="in-pressure" class="tag"></span></div>
+      <div class="liq-hero">
+        <div class="liq-hero-stat"><span class="liq-hero-label">Volume 24h</span><span class="liq-hero-val" id="liq-volume">$0</span></div>
+        <div class="liq-hero-stat"><span class="liq-hero-label">Liq Count</span><span class="liq-hero-val" id="liq-count">0</span></div>
+        <div class="liq-hero-stat"><span class="liq-hero-label">Avg Size</span><span class="liq-hero-val" id="liq-avg">$0</span></div>
+        <div class="liq-hero-stat"><span class="liq-hero-label">Gas/Liq</span><span class="liq-hero-val" id="liq-gas">$0</span></div>
       </div>
-
-      <div class="in-mix" id="in-mix">
-        <div class="in-mix-label">MEV mix (last poll)</div>
-        <div class="in-mix-track" id="in-mix-track"></div>
-        <div id="intel-mev" class="kv mev in-mix-keys"></div>
+      <div class="liq-protocols">
+        <div class="liq-proto-bar" id="liq-proto-bar"></div>
+        <div class="liq-proto-labels" id="liq-proto-labels"></div>
       </div>
-
-      <div class="in-grid">
-        <div class="in-col">
-          <div class="in-section-head">
-            <h3 class="watch">Activity by SAST hour <span class="tag" id="in-hours-note">24h</span></h3>
-          </div>
-          <div class="in-chart"><canvas id="chart-hours"></canvas></div>
-        </div>
-        <div class="in-col">
-          <div class="in-section-head">
-            <h3 class="watch">Activity by weekday <span class="tag">Mon–Sun</span></h3>
-          </div>
-          <div class="in-chart"><canvas id="chart-dows"></canvas></div>
-        </div>
+      <div class="liq-section-head">Health Factor Distribution</div>
+      <div id="liq-health-chart" style="height:120px"></div>
+      <div class="liq-competitors">
+        <div class="liq-comp-stat"><span class="liq-comp-label">Searchers</span><span id="liq-comp-searchers">0</span></div>
+        <div class="liq-comp-stat"><span class="liq-comp-label">Success Rate</span><span id="liq-comp-rate">0%</span></div>
+        <div class="liq-comp-stat"><span class="liq-comp-label">Missed</span><span id="liq-comp-missed">0</span></div>
       </div>
+      <div class="liq-section-head">Volume History (24h)</div>
+      <div id="liq-volume-chart" style="height:120px"></div>
+    </div>
 
-      <div class="in-grid in-grid-brain">
-        <div class="in-col">
-          <div class="in-section-head">
-            <h3 class="watch">Brain knobs <span class="tag" id="in-brain-note">policy</span></h3>
-          </div>
-          <div id="intel-brain" class="kv in-panel"></div>
-        </div>
-        <div class="in-col">
-          <div class="in-section-head">
-            <h3 class="watch">Act P trend <span class="tag">session</span></h3>
-          </div>
-          <div class="in-chart in-chart-sm"><canvas id="chart-intel-trend"></canvas></div>
-        </div>
+    <!-- Trading Intel -->
+    <div class="card span-3" id="card-intel">
+      <div class="card-head">Trading Intel</div>
+      <div class="intel-hero">
+        <div class="intel-hero-stat"><span class="intel-hero-label">Act P</span><span class="intel-hero-val" id="intel-act">—</span></div>
+        <div class="intel-hero-stat"><span class="intel-hero-label">Exp Net</span><span class="intel-hero-val" id="intel-exp">—</span></div>
+        <div class="intel-hero-stat"><span class="intel-hero-label">Steps</span><span class="intel-hero-val" id="intel-steps">0</span></div>
+        <div class="intel-hero-stat"><span class="intel-hero-label">Records</span><span class="intel-hero-val" id="intel-records">0</span></div>
       </div>
-
+      <div id="in-advice" class="intel-advice">warming up</div>
+      <div id="in-meta" class="intel-meta"></div>
+      <div class="intel-gauge-wrap">
+        <canvas id="gauge"></canvas>
+        <span id="in-ready-pct" class="intel-ready-pct">0</span>
+      </div>
+      <div class="intel-mix-track" id="in-mix-track"></div>
+      <div id="intel-mev" class="intel-mev"></div>
+      <div class="intel-brain-panel" id="intel-brain"></div>
+      <div class="intel-section-head">Hours Activity</div>
+      <div id="chart-hours" style="height:100px"></div>
+      <div class="intel-section-head">Weekday Activity</div>
+      <div id="chart-dows" style="height:100px"></div>
+      <div class="intel-section-head">Act P Trend</div>
+      <div id="chart-intel-trend" style="height:100px"></div>
       <!-- kept for updateIntel / header compatibility -->
       <span id="intel-moves" hidden></span>
       <span id="intel-block" hidden></span>
@@ -1114,81 +1087,54 @@
       </div>
     </div>
 
-    <!-- Learning / Intel -->
-    <div class="card span-6" id="sol-card-intel">
-      <h2>Learning / Intel <span class="tag sol-tag">SOL activity · Solend+Jup</span></h2>
-
-      <div class="in-hero">
-        <div class="in-hero-left">
-          <div class="in-pressure-badge" id="sol-in-pressure">idle</div>
-          <div class="in-hero-stats">
-            <div class="in-stat">
-              <div class="in-stat-label">act P</div>
-              <div class="big" id="sol-intel-act">--</div>
-            </div>
-            <div class="in-stat">
-              <div class="in-stat-label">exp net</div>
-              <div class="big amber" id="sol-intel-exp">--</div>
-            </div>
-            <div class="in-stat">
-              <div class="in-stat-label">steps</div>
-              <div class="big dim" id="sol-intel-steps">--</div>
-            </div>
-            <div class="in-stat">
-              <div class="in-stat-label">records</div>
-              <div class="big" id="sol-intel-records">--</div>
-            </div>
-          </div>
-          <div class="in-advice" id="sol-in-advice">warming up</div>
-          <div id="sol-in-meta" class="kv in-meta"></div>
-        </div>
-        <div class="in-hero-right">
-          <div class="in-gauge-wrap">
-            <div class="in-gauge">
-              <canvas id="sol-gauge"></canvas>
-              <div class="in-gauge-center"><span id="sol-in-ready-pct">--</span><small>%</small></div>
-            </div>
-            <div class="in-chart-legend">readiness</div>
-          </div>
-        </div>
+    <!-- Liquidation Intel (SOL) -->
+    <div class="card span-3" id="sol-card-liq-intel">
+      <div class="card-head">Liquidation Intel <span id="sol-in-pressure" class="tag sol-tag"></span></div>
+      <div class="liq-hero">
+        <div class="liq-hero-stat"><span class="liq-hero-label">Volume 24h</span><span class="liq-hero-val" id="sol-liq-volume">$0</span></div>
+        <div class="liq-hero-stat"><span class="liq-hero-label">Liq Count</span><span class="liq-hero-val" id="sol-liq-count">0</span></div>
+        <div class="liq-hero-stat"><span class="liq-hero-label">Avg Size</span><span class="liq-hero-val" id="sol-liq-avg">$0</span></div>
+        <div class="liq-hero-stat"><span class="liq-hero-label">Gas/Liq</span><span class="liq-hero-val" id="sol-liq-gas">$0</span></div>
       </div>
-
-      <div class="in-mix" id="sol-in-mix">
-        <div class="in-mix-label">MEV mix (last poll)</div>
-        <div class="in-mix-track" id="sol-in-mix-track"></div>
-        <div id="sol-intel-mev" class="kv mev in-mix-keys"></div>
+      <div class="liq-protocols">
+        <div class="liq-proto-bar" id="sol-liq-proto-bar"></div>
+        <div class="liq-proto-labels" id="sol-liq-proto-labels"></div>
       </div>
-
-      <div class="in-grid">
-        <div class="in-col">
-          <div class="in-section-head">
-            <h3 class="watch">Activity by SAST hour <span class="tag" id="sol-in-hours-note">24h</span></h3>
-          </div>
-          <div class="in-chart"><canvas id="sol-chart-hours"></canvas></div>
-        </div>
-        <div class="in-col">
-          <div class="in-section-head">
-            <h3 class="watch">Activity by weekday <span class="tag">Mon–Sun</span></h3>
-          </div>
-          <div class="in-chart"><canvas id="sol-chart-dows"></canvas></div>
-        </div>
+      <div class="liq-section-head">Health Factor Distribution</div>
+      <div id="sol-liq-health-chart" style="height:120px"></div>
+      <div class="liq-competitors">
+        <div class="liq-comp-stat"><span class="liq-comp-label">Searchers</span><span id="sol-liq-comp-searchers">0</span></div>
+        <div class="liq-comp-stat"><span class="liq-comp-label">Success Rate</span><span id="sol-liq-comp-rate">0%</span></div>
+        <div class="liq-comp-stat"><span class="liq-comp-label">Missed</span><span id="sol-liq-comp-missed">0</span></div>
       </div>
+      <div class="liq-section-head">Volume History (24h)</div>
+      <div id="sol-liq-volume-chart" style="height:120px"></div>
+    </div>
 
-      <div class="in-grid in-grid-brain">
-        <div class="in-col">
-          <div class="in-section-head">
-            <h3 class="watch">Brain knobs <span class="tag" id="sol-in-brain-note">policy</span></h3>
-          </div>
-          <div id="sol-intel-brain" class="kv in-panel"></div>
-        </div>
-        <div class="in-col">
-          <div class="in-section-head">
-            <h3 class="watch">Act P trend <span class="tag">session</span></h3>
-          </div>
-          <div class="in-chart in-chart-sm"><canvas id="sol-chart-intel-trend"></canvas></div>
-        </div>
+    <!-- Trading Intel (SOL) -->
+    <div class="card span-3" id="sol-card-intel">
+      <div class="card-head">Trading Intel</div>
+      <div class="intel-hero">
+        <div class="intel-hero-stat"><span class="intel-hero-label">Act P</span><span class="intel-hero-val" id="sol-intel-act">—</span></div>
+        <div class="intel-hero-stat"><span class="intel-hero-label">Exp Net</span><span class="intel-hero-val" id="sol-intel-exp">—</span></div>
+        <div class="intel-hero-stat"><span class="intel-hero-label">Steps</span><span class="intel-hero-val" id="sol-intel-steps">0</span></div>
+        <div class="intel-hero-stat"><span class="intel-hero-label">Records</span><span class="intel-hero-val" id="sol-intel-records">0</span></div>
       </div>
-
+      <div id="sol-in-advice" class="intel-advice">warming up</div>
+      <div id="sol-in-meta" class="intel-meta"></div>
+      <div class="intel-gauge-wrap">
+        <canvas id="sol-gauge"></canvas>
+        <span id="sol-in-ready-pct" class="intel-ready-pct">0</span>
+      </div>
+      <div class="intel-mix-track" id="sol-in-mix-track"></div>
+      <div id="sol-intel-mev" class="intel-mev"></div>
+      <div class="intel-brain-panel" id="sol-intel-brain"></div>
+      <div class="intel-section-head">Hours Activity</div>
+      <div id="sol-chart-hours" style="height:100px"></div>
+      <div class="intel-section-head">Weekday Activity</div>
+      <div id="sol-chart-dows" style="height:100px"></div>
+      <div class="intel-section-head">Act P Trend</div>
+      <div id="sol-chart-intel-trend" style="height:100px"></div>
       <!-- kept for updateIntel / header compatibility -->
       <span id="sol-intel-moves" hidden></span>
       <span id="sol-intel-block" hidden></span>
