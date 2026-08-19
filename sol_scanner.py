@@ -1,13 +1,11 @@
 """Solana mainnet probes for the TONI SOL dashboard twin.
 
 Primary lending target: Solend (Save) — public markets/reserves API.
-Arb: discover from on-chain Raydium AMM v4 / Orca Whirlpool accounts; execute
-via Jupiter /swap + Jito bundle. Live list is +EV only (net after CU + tip +
-slip, at/above the dynamic USD floor). Jupiter lite is fallback for tokens
-we cannot decode — not the only edge hunt.
-Landing stream: Solend program sigs (processed/confirmed) + Jito tip accounts
-as a public-RPC stand-in for mempool liquidation / MEV races.
-Honest feeds only: empty lists when nothing liquidatable; no fake MEV.
+Live liquidations execute via Solend ix + Jito; coll→debt flash swaps use
+Jupiter /swap when mints differ. Landing stream: Solend program sigs
+(processed/confirmed) + Jito tip accounts as a public-RPC stand-in for
+mempool liquidation races.
+Honest feeds only: empty lists when nothing liquidatable.
 """
 from __future__ import annotations
 
@@ -23,6 +21,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
+import precompute_sol as psol
 import requests
 
 # IPv4-first: several public Solana RPCs advertise unroutable AAAA records.
@@ -86,6 +85,7 @@ COMPUTE_BUDGET_PROGRAM = "ComputeBudget111111111111111111111111111111"
 # Solend (Save) instruction tags — token-lending packed enum
 SOLEND_IX_REFRESH_RESERVE = 3
 SOLEND_IX_REFRESH_OBLIGATION = 7
+SOLEND_IX_LIQUIDATE = 12  # LiquidateObligation
 SOLEND_IX_LIQUIDATE_AND_REDEEM = 17
 # Official solend-sdk LendingInstruction tags (not the deprecated ix 13 FlashLoan)
 SOLEND_IX_FLASH_BORROW = 19
@@ -239,11 +239,33 @@ ARB_PAIRS = [
     _arb_pair(MINT_SOL, MINT_JITOSOL), _arb_pair(MINT_JITOSOL, MINT_SOL),
 ]
 RAYDIUM_AMM_V4 = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"
+RAYDIUM_CLMM = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK"
 ORCA_WHIRLPOOL = "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc"
 Q64 = 1 << 64
 WHIRL_FEE_DEN = 1_000_000
+# Raydium CLMM PoolState layout offsets (verified from on-chain accounts).
+# disc(8) + bump(1) + ammConfig(32) + owner(32) + tokenMint0(32) + tokenMint1(32)
+# + tokenVault0(32) + tokenVault1(32) + observationKey(32) + mintDecimals0(1)
+# + mintDecimals1(1) + tickSpacing(2) + liquidity(16) + sqrtPriceX64(16)
+# + tickCurrent(4) + ... padding + feeGrowthGlobal0X64(16) + feeGrowthGlobal1X64(16)
+# → total disc 8 then pool state fields.
+_RCLMM_BUMP = 8
+_RCLMM_CONFIG = 9
+_RCLMM_OWNER = 41
+_RCLMM_MINT0 = 73
+_RCLMM_MINT1 = 105
+_RCLMM_VAULT0 = 137
+_RCLMM_VAULT1 = 169
+_RCLMM_OBS = 201
+_RCLMM_DEC0 = 233
+_RCLMM_DEC1 = 234
+_RCLMM_TICK_SPACING = 235
+_RCLMM_LIQ = 237
+_RCLMM_SQRT = 253
+_RCLMM_TICK = 269
 # Hardcoded mainnet watch set (pool accounts). Vaults are fetched after decode.
 WATCH_POOLS: list[dict[str, str]] = [
+    # --- Raydium AMM v4 ---
     {"pk": "58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2",
      "dex": "raydium", "kind": "amm_v4", "pair": "SOL-USDC", "jup": "Raydium"},
     {"pk": "7XawhbbxtsRcQA8KTkHT9f9nc6d69UwqCDh6U5EEbEmX",
@@ -252,6 +274,12 @@ WATCH_POOLS: list[dict[str, str]] = [
      "dex": "raydium", "kind": "amm_v4", "pair": "mSOL-SOL", "jup": "Raydium"},
     {"pk": "7TbGqz32RsuwXbXY7EyBCiAnMbJq1gm1wKmfjQjuwoyF",
      "dex": "raydium", "kind": "amm_v4", "pair": "USDT-USDC", "jup": "Raydium"},
+    # --- Raydium CLMM (concentrated liq — same decode as Whirlpool style) ---
+    {"pk": "2QdhepnKRTLjjSqPL1PtKNwqrUkoLee5Gqs8bvZhRdAv",
+     "dex": "raydium", "kind": "clmm", "pair": "SOL-USDC", "jup": "Raydium CLMM"},
+    {"pk": "61R1ndXxvsWXXkWSyNkCxnzwd3zUNB8Q2ibmkiLPC8ht",
+     "dex": "raydium", "kind": "clmm", "pair": "SOL-USDC", "jup": "Raydium CLMM"},
+    # --- Orca Whirlpools ---
     {"pk": "Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE",
      "dex": "orca", "kind": "whirlpool", "pair": "SOL-USDC", "jup": "Whirlpool"},
     {"pk": "HJPjoWUrhoZzkNfRpHuieeFk9WcZWjwy6PBjZ81ngndJ",
@@ -299,7 +327,7 @@ _DEX_EXCLUDE_MAX = 6
 
 # Suggested fund amounts (mainnet SOL)
 SPONSOR_TARGET_SOL = 0.08   # Jito tips + prio for bundles
-BOT_TARGET_SOL = 0.25       # CU + rent; Solend flash sizes liq/arb not inventory
+BOT_TARGET_SOL = 0.25       # CU + rent; Solend flash sizes liq not inventory
 
 KEYS_DIR = os.path.join(_HERE, "solana", "keys")
 SPONSOR_KEY_PATH = os.path.join(KEYS_DIR, "sponsor.json")
@@ -658,7 +686,7 @@ def _compact_route_plan(quote: dict | None) -> list[dict]:
 def arb_universe(jobs_n: int | None = None) -> dict[str, Any]:
     toks = sorted({SYM.get(a, "?") for a, _b, _l in ARB_PAIRS}
                   | {SYM.get(b, "?") for _a, b, _l in ARB_PAIRS})
-    venues = sorted({w["dex"] for w in WATCH_POOLS} | {"jupiter"})
+    venues = sorted({w.get("jup") or w["dex"] for w in WATCH_POOLS} | {"jupiter"})
     return {
         "pairs": len(ARB_PAIRS) + len(ARB_TRIANGLES),
         "jobs": int(jobs_n) if jobs_n is not None else (
@@ -823,6 +851,14 @@ _INDEX_TS = 0.0
 _FLASH_DISABLED: set[str] = set()
 _SEEN_SIGS: deque[str] = deque(maxlen=400)
 _LANDING_CACHE: dict[str, Any] = {"ts": 0, "hits": []}
+# Competitor liquidation scan cursor — walk main-market sigs, don't refetch.
+_COMP_SEEN: set[str] = set()
+_COMP_SEEN_ORDER: deque[str] = deque()
+_COMP_PENDING: deque[dict] = deque(maxlen=500)
+_COMP_BEFORE: str | None = None
+_COMP_HISTORY_N = 0
+_COMP_HISTORY_CAP = 400
+_COMP_SEEN_CAP = 2500
 # Real obligation pubkeys + last Solend-API hydrates (no fake HF).
 _OBLIGATION_KEYS: deque[str] = deque(maxlen=120)
 _HYDRATE_CACHE: dict[str, dict] = {}
@@ -1327,12 +1363,37 @@ def build_arb_plan(row: dict, priority_median: int | None = None,
         "min_floor_usd": row.get("min_floor_usd") or min_sol_arb_usd(),
         "use_flash": bool(row.get("use_flash")),
         "flash_fee_bps": row.get("flash_fee_bps") or 0,
+        "leftover": list(live_submit_blockers("arb")),
         "note": "Jupiter /swap + Jito when armed; Solend flash sizes large +EV",
     }
 
 
 def build_liq_plan(opp: dict, priority_median: int | None = None,
                    pressure: str | None = None) -> dict:
+    # Check pre-compute cache first
+    obl_addr = opp.get("obligation") or opp.get("user") or ""
+    cached = psol.get(obl_addr) if obl_addr else None
+    if cached:
+        return {
+            "kind": cached["kind"],
+            "mode": "dry-run",
+            "obligation": cached["obligation"],
+            "debt_reserve": cached["repay_reserve"],
+            "coll_reserve": cached["withdraw_reserve"],
+            "repay_mint": cached["repay_mint"],
+            "withdraw_mint": cached["withdraw_mint"],
+            "debt_amount": cached["debt_amount"],
+            "hf": cached["hf"],
+            "compute_units": cached["compute_units"],
+            "priority_fee_ul": cached["priority_fee_ul"],
+            "jito_tip_lamports": cached["jito_tip_lamports"],
+            "instruction_sequence": cached["instruction_sequence"],
+            "account_metas": cached["account_metas"],
+            "jupiter_route": cached["jupiter_route"],
+            "expected_profit_usd": cached["estimated_profit_usd"],
+            "precomputed": True,
+        }
+
     w = current_wallets()
     bot = w.get("bot") or ""
     sponsor = w.get("sponsor") or ""
@@ -1807,7 +1868,7 @@ def probe_solend_obligations(market: str | None = None,
     remember_obligation_keys(accounts)
 
     if not accounts:
-        watch = closest_to_stress(10)
+        watch = closest_to_stress(50)
         out["ok"] = True  # probe ran; nothing new
         out["error"] = last_err
         out["watch"] = watch
@@ -1826,9 +1887,9 @@ def probe_solend_obligations(market: str | None = None,
     liq = [o for o in opps
            if o.get("hf") is not None and o["hf"] < 1.0
            and not _dust_obligation(o)]
-    watch = closest_to_stress(10)
+    watch = closest_to_stress(50)
     if not watch:
-        watch = [_watch_row(o) for o in opps if o.get("hf") is not None][:10]
+        watch = [_watch_row(o) for o in opps if o.get("hf") is not None][:50]
     out["opportunities"] = liq[:25]
     out["watch"] = watch
     out["ok"] = True
@@ -2445,6 +2506,51 @@ def _decode_raydium_amm(pk: str, acc: dict, spec: dict) -> dict | None:
     }
 
 
+def _decode_raydium_clmm(pk: str, acc: dict, spec: dict) -> dict | None:
+    """Decode Raydium CLMM pool (concentrated liq). Same in-tick math as Whirlpool."""
+    if (acc.get("owner") or "") != RAYDIUM_CLMM:
+        return None
+    raw = _acc_bytes(acc)
+    if len(raw) < 280:
+        return None
+    try:
+        mint_a = _b58pk(raw[_RCLMM_MINT0:_RCLMM_MINT0 + 32])
+        mint_b = _b58pk(raw[_RCLMM_MINT1:_RCLMM_MINT1 + 32])
+        vault_a = _b58pk(raw[_RCLMM_VAULT0:_RCLMM_VAULT0 + 32])
+        vault_b = _b58pk(raw[_RCLMM_VAULT1:_RCLMM_VAULT1 + 32])
+    except Exception:
+        return None
+    tick_spacing = _u16le(raw, _RCLMM_TICK_SPACING)
+    liq = _u128le(raw, _RCLMM_LIQ)
+    sqrt_p = _u128le(raw, _RCLMM_SQRT)
+    tick = _i32le(raw, _RCLMM_TICK)
+    dec_a = raw[_RCLMM_DEC0]
+    dec_b = raw[_RCLMM_DEC1]
+    if tick_spacing <= 0 or sqrt_p <= 0:
+        return None
+    # fee_rate stored at offset 273 (u32) in many CLMM pools — trade_fee_rate
+    fee_rate = 0
+    if len(raw) >= 277:
+        try:
+            fee_rate = struct.unpack_from("<I", raw, 273)[0]
+        except Exception:
+            fee_rate = 2500  # 25 bps default
+    if fee_rate <= 0:
+        fee_rate = 2500
+    return {
+        "pk": pk, "dex": "raydium", "kind": "clmm",
+        "quote_src": "raydium-clmm-account", "jup": spec.get("jup") or "Raydium CLMM",
+        "label": "Raydium CLMM", "mint_a": mint_a, "mint_b": mint_b,
+        "vault_a": vault_a, "vault_b": vault_b,
+        "reserve_a": 0, "reserve_b": 0,
+        "tick_spacing": tick_spacing, "fee_rate": fee_rate,
+        "liquidity": liq, "sqrt_price": sqrt_p, "tick": tick,
+        "dec_a": dec_a, "dec_b": dec_b,
+        "pair": spec.get("pair") or (
+            f"{SYM.get(mint_a, '?')}-{SYM.get(mint_b, '?')}"),
+    }
+
+
 def _decode_whirlpool(pk: str, acc: dict, spec: dict) -> dict | None:
     """Decode sqrt_price + in-range L. Tick arrays are not fabricated."""
     if (acc.get("owner") or "") != ORCA_WHIRLPOOL:
@@ -2556,7 +2662,7 @@ def _delta_b(sqrt_0: int, sqrt_1: int, liq: int, round_up: bool) -> int:
 def _whirl_in_tick_quote(pool: dict, mint_in: str, mint_out: str,
                          amount_in: int) -> int | None:
     """In-current-tick only. Crossing a tick array → no number."""
-    if pool.get("kind") != "whirlpool" or amount_in <= 0:
+    if pool.get("kind") not in ("whirlpool", "clmm") or amount_in <= 0:
         return None
     liq = int(pool.get("liquidity") or 0)
     sqrt_p = int(pool.get("sqrt_price") or 0)
@@ -2616,7 +2722,7 @@ def _pool_quote(pool: dict, mint_in: str, mint_out: str, amount_in: int) -> int 
     kind = pool.get("kind")
     if kind == "amm_v4":
         return _amm_quote(pool, mint_in, mint_out, amount_in)
-    if kind == "whirlpool":
+    if kind in ("whirlpool", "clmm"):
         return _whirl_in_tick_quote(pool, mint_in, mint_out, amount_in)
     return None
 
@@ -2668,10 +2774,14 @@ def _load_pool_specs(specs: list[dict]) -> tuple[list[dict], dict]:
         if not kind:
             if owner == RAYDIUM_AMM_V4:
                 kind = "amm_v4"
+            elif owner == RAYDIUM_CLMM:
+                kind = "clmm"
             elif owner == ORCA_WHIRLPOOL:
                 kind = "whirlpool"
         if kind == "amm_v4":
             pool = _decode_raydium_amm(pk, acc, spec)
+        elif kind == "clmm":
+            pool = _decode_raydium_clmm(pk, acc, spec)
         elif kind == "whirlpool":
             pool = _decode_whirlpool(pk, acc, spec)
         else:
@@ -2686,11 +2796,15 @@ def _load_pool_specs(specs: list[dict]) -> tuple[list[dict], dict]:
         decoded.append(pool)
     vaults: list[str] = []
     for p in decoded:
-        if p.get("kind") == "amm_v4":
+        if p.get("kind") in ("amm_v4", "clmm"):
             vaults.extend([p["vault_a"], p["vault_b"]])
     v_accs = _get_multiple_accounts(vaults, timeout=8) if vaults else {}
     good: list[dict] = []
     for p in decoded:
+        if p.get("kind") == "clmm":
+            # CLMM quotes use pool-state liquidity/sqrt — vault balances optional.
+            good.append(p)
+            continue
         if p.get("kind") == "amm_v4":
             ra = _spl_vault_amount(_acc_bytes(v_accs.get(p["vault_a"])))
             rb = _spl_vault_amount(_acc_bytes(v_accs.get(p["vault_b"])))
@@ -2806,6 +2920,18 @@ def _local_triangle_row(
         row["debug"] = True
         row["actionable"] = False
     return row
+
+
+def _summarize_pool_skips(skipped: list | None) -> str | None:
+    """Human-readable pool decode skip summary for UI warnings."""
+    if not skipped:
+        return None
+    reasons: dict[str, int] = {}
+    for sk in skipped:
+        w = (sk or {}).get("why") or "unknown"
+        reasons[w] = reasons.get(w, 0) + 1
+    return "watch pools: " + ", ".join(
+        f"{k} ({v})" for k, v in sorted(reasons.items()))
 
 
 def fetch_local_pool_arbs(
@@ -2944,7 +3070,9 @@ def fetch_local_pool_arbs(
         atom_mix: dict[str, int] = {}
         for r in shown_live + shown_near:
             s = r.get("quote_src") or ""
-            if "raydium-account" in s:
+            if "raydium-clmm-account" in s:
+                atom_mix["raydium-clmm-account"] = atom_mix.get("raydium-clmm-account", 0) + 1
+            elif "raydium-account" in s:
                 atom_mix["raydium-account"] = atom_mix.get("raydium-account", 0) + 1
             if "orca-account" in s:
                 atom_mix["orca-account"] = atom_mix.get("orca-account", 0) + 1
@@ -2956,7 +3084,8 @@ def fetch_local_pool_arbs(
             if sample:
                 break
         mix_label = "+".join(
-            k for k in ("raydium-account", "orca-account") if atom_mix.get(k)
+            k for k in ("raydium-account", "raydium-clmm-account", "orca-account")
+            if atom_mix.get(k)
         ) or "raydium-account+orca-account"
         out["opps"] = shown_live
         out["near"] = [_slim_near(r) for r in shown_near]
@@ -2987,6 +3116,17 @@ def fetch_local_pool_arbs(
         uni2["venues"] = out["dexes"]
         uni2["quote_src"] = mix_label
         out["universe"] = uni2
+        warns: list[str] = []
+        skip_note = _summarize_pool_skips((pmeta or {}).get("skipped"))
+        if skip_note:
+            warns.append(skip_note)
+        dec = int(out.get("pools_decoded") or 0)
+        watch = int(out.get("pools_watch") or len(WATCH_POOLS))
+        if dec < watch and dec == 0:
+            warns.append(f"0/{watch} watch pools decoded (RPC or account miss)")
+        elif dec < watch:
+            warns.append(f"{dec}/{watch} watch pools decoded")
+        out["warnings"] = warns
     except Exception as e:  # noqa: BLE001
         out["error"] = f"{type(e).__name__}: {e}"
         out["last_scan"] = int(time.time())
@@ -3212,12 +3352,36 @@ def fetch_sol_dex_arbs(
     uni["quote_src"] = quote_src
     uni["local_n"] = local_n
     uni["jup_n"] = jup_n
-    err = local.get("error") or jup.get("error")
+    quoted = int(local.get("quotes") or 0) + int(jup.get("quotes") or 0)
+    warnings: list[str] = []
+    for leg, label in ((local, "local pools"), (jup, "jupiter")):
+        leg_err = leg.get("error")
+        if leg_err:
+            warnings.append(f"{label}: {leg_err}")
+    for w in (local.get("warnings") or []) + (jup.get("warnings") or []):
+        if w and w not in warnings:
+            warnings.append(str(w))
+    skip_note = _summarize_pool_skips(
+        (local.get("pools_meta") or {}).get("skipped"))
+    if skip_note and skip_note not in warnings:
+        warnings.append(skip_note)
+    pools_dec = int(local.get("pools_decoded") or 0)
+    pools_watch = int(local.get("pools_watch") or len(WATCH_POOLS))
+    if pools_dec == 0 and pools_watch and not local.get("error"):
+        note = f"0/{pools_watch} watch pools decoded (RPC or account miss)"
+        if note not in warnings:
+            warnings.append(note)
+    ok = bool(local.get("ok") or jup.get("ok"))
+    err = None
+    if not ok and quoted <= 0:
+        err = (local.get("error") or jup.get("error")
+               or "scan produced no quotes")
     return {
-        "ok": bool(local.get("ok") or jup.get("ok")),
+        "ok": ok,
         "opps": live[:16],
         "near": near[:8],
         "error": err,
+        "warnings": warnings[:8],
         "ts": now, "last_scan": now,
         "quotes": int(local.get("quotes") or 0) + int(jup.get("quotes") or 0),
         "quoted": int(local.get("quoted") or 0) + int(jup.get("quoted") or 0),
@@ -3470,122 +3634,423 @@ except Exception:
 SOL_WALLETS = current_wallets()
 
 
-def recent_program_sigs(program_id: str, limit: int = 12) -> list[dict]:
-    """Recent signatures for a program — competitor/liq event stubs."""
+def _comp_mark_seen(sig: str) -> None:
+    if not sig or sig in _COMP_SEEN:
+        return
+    _COMP_SEEN.add(sig)
+    _COMP_SEEN_ORDER.append(sig)
+    while len(_COMP_SEEN_ORDER) > _COMP_SEEN_CAP:
+        old = _COMP_SEEN_ORDER.popleft()
+        _COMP_SEEN.discard(old)
+
+
+def _ix_data_bytes(data) -> bytes:
+    """Instruction data: json RPC is base58; some nodes return [b64, enc]."""
+    blob, enc = data, ""
+    if isinstance(data, list) and data:
+        blob = data[0]
+        enc = str(data[1] if len(data) > 1 else "")
+    if not isinstance(blob, str) or not blob:
+        return b""
+    if enc and "64" in enc.lower():
+        try:
+            return base64.b64decode(blob)
+        except Exception:
+            return b""
     try:
-        res, _ = sol_rpc(
-            "getSignaturesForAddress",
-            [program_id, {"limit": limit}],
-            timeout=10,
-        )
-        rows = []
-        for s in res or []:
-            rows.append({
-                "sig": s.get("signature"),
-                "slot": s.get("slot"),
-                "err": s.get("err"),
-                "age": None,
-                "pair": "solend",
-                "searcher": "—",
-                "user": "—",
-                "gas_usd": None,
-                "est": None,
-                "net": None,
-                "flags": "revert" if s.get("err") else "ok",
-                "tx": (s.get("signature") or "")[:12] + "…",
-            })
-        return rows
+        import base58  # type: ignore
+        return base58.b58decode(blob)
     except Exception:
-        return []
+        try:
+            return base64.b64decode(blob)
+        except Exception:
+            return b""
 
 
-def decode_solend_competitors(limit: int = 16) -> dict[str, Any]:
-    """Recent Solend txs that actually liquidate — not a dump of all program sigs.
+def _resolved_account_keys(tx: dict) -> list[str]:
+    msg = (tx.get("transaction") or {}).get("message") or {}
+    keys: list[str] = []
+    for k in msg.get("accountKeys") or []:
+        pk = k if isinstance(k, str) else (k or {}).get("pubkey") or ""
+        if pk:
+            keys.append(pk)
+    loaded = (tx.get("meta") or {}).get("loadedAddresses") or {}
+    for grp in (loaded.get("writable") or [], loaded.get("readonly") or []):
+        for pk in grp or []:
+            if pk:
+                keys.append(pk)
+    return keys
 
-    Empty list is honest: none in this signature window. Does not invent PnL.
+
+def _acc_at(accs: list, idx: int) -> str:
+    if idx < 0 or idx >= len(accs):
+        return ""
+    v = accs[idx]
+    return v if isinstance(v, str) else str(v or "")
+
+
+def _iter_solend_ixs(tx: dict):
+    """Yield (tag, raw, account_pubkeys) for top-level + inner Solend ixs."""
+    keys = _resolved_account_keys(tx)
+    if not keys:
+        return
+
+    def emit(ix: dict):
+        if not isinstance(ix, dict):
+            return None
+        pid = ix.get("programId") or ix.get("programIdIndex")
+        if isinstance(pid, int):
+            pid = keys[pid] if pid < len(keys) else ""
+        if pid != SOLEND_PROGRAM:
+            return None
+        raw = _ix_data_bytes(ix.get("data"))
+        if not raw:
+            return None
+        accs = []
+        for a in ix.get("accounts") or []:
+            if isinstance(a, int):
+                accs.append(keys[a] if a < len(keys) else "")
+            elif isinstance(a, str):
+                accs.append(a)
+        return raw[0], raw, accs
+
+    msg = (tx.get("transaction") or {}).get("message") or {}
+    for ix in msg.get("instructions") or []:
+        row = emit(ix)
+        if row:
+            yield row
+    for inner in (tx.get("meta") or {}).get("innerInstructions") or []:
+        for ix in (inner.get("instructions") or []):
+            row = emit(ix)
+            if row:
+                yield row
+
+
+def _known_bonus_frac(raw) -> float | None:
+    """Reserve liquidation bonus when the config is present. None = unknown."""
+    if raw in (None, ""):
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0:
+        return None
+    if v <= 20:
+        return v / 100.0
+    if v <= 2000:
+        return v / 10_000.0
+    return None
+
+
+def _cover_usd_known(mint: str, amount: int, decimals, sol_px) -> float | None:
+    """USD cover only when the mint price is known (stables or SOL)."""
+    if amount <= 0 or decimals in (None, ""):
+        return None
+    try:
+        native = amount / (10 ** int(decimals))
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    if mint in STABLE_MINTS:
+        return native
+    if mint == MINT_SOL and sol_px:
+        try:
+            return native * float(sol_px)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _reserve_sym(pk: str) -> str:
+    row = _RESERVE_INDEX.get(pk) or {}
+    return row.get("symbol") or ""
+
+
+def recent_program_sigs(program_id: str, limit: int = 12, *,
+                        before: str | None = None,
+                        commitment: str = "confirmed") -> list[dict]:
+    """Recent confirmed signatures for a program or market account."""
+    opts: dict[str, Any] = {"limit": int(limit), "commitment": commitment}
+    if before:
+        opts["before"] = before
+    res, _ = sol_rpc(
+        "getSignaturesForAddress",
+        [program_id, opts],
+        timeout=12,
+    )
+    rows = []
+    for s in res or []:
+        if not isinstance(s, dict) or not s.get("signature"):
+            continue
+        rows.append({
+            "sig": s.get("signature"),
+            "slot": s.get("slot"),
+            "err": s.get("err"),
+            "block_time": s.get("blockTime"),
+        })
+    return rows
+
+
+def _enqueue_comp_sigs(sigs: list[dict]) -> int:
+    n = 0
+    pending_sigs = {r.get("sig") for r in _COMP_PENDING}
+    for s in sigs:
+        sig = s.get("sig")
+        if not sig or sig in _COMP_SEEN or sig in pending_sigs:
+            continue
+        _COMP_PENDING.append(s)
+        pending_sigs.add(sig)
+        n += 1
+    return n
+
+
+def _parse_solend_liq_tx(tx: dict, sig_row: dict, sol_px) -> dict | None:
+    """Decode a confirmed Solend liquidate (ix 12/17 or program logs)."""
+    meta = tx.get("meta") or {}
+    logs = meta.get("logMessages") or []
+    log_kind = _classify_solend_logs(logs)
+    liq_ix = None
+    for tag, raw, accs in _iter_solend_ixs(tx):
+        if tag in (SOLEND_IX_LIQUIDATE, SOLEND_IX_LIQUIDATE_AND_REDEEM):
+            liq_ix = (tag, raw, accs)
+            break
+    if not liq_ix and log_kind != "liq":
+        remember_obligation_keys(_obligation_candidates(tx))
+        return None
+
+    leftovers: list[str] = []
+    tag, raw, accs = liq_ix if liq_ix else (None, b"", [])
+    main = _LENDING_MARKET.get("address") or ""
+    if tag == SOLEND_IX_LIQUIDATE_AND_REDEEM:
+        repay_r = _acc_at(accs, 3)
+        withdraw_r = _acc_at(accs, 5)
+        user = _acc_at(accs, 10)
+        market = _acc_at(accs, 11)
+        searcher = _acc_at(accs, 13)
+    elif tag == SOLEND_IX_LIQUIDATE:
+        repay_r = _acc_at(accs, 2)
+        withdraw_r = _acc_at(accs, 4)
+        user = _acc_at(accs, 6)
+        market = _acc_at(accs, 7)
+        searcher = _acc_at(accs, 9)
+    else:
+        repay_r = withdraw_r = user = market = searcher = ""
+        leftovers.append("ix 12/17 not decoded — logs only")
+
+    if main and market and market != main:
+        return None
+
+    msg = (tx.get("transaction") or {}).get("message") or {}
+    keys = msg.get("accountKeys") or []
+    fee_payer = ""
+    if keys:
+        k0 = keys[0]
+        fee_payer = k0 if isinstance(k0, str) else (k0 or {}).get("pubkey") or ""
+    if not searcher:
+        searcher = fee_payer
+        if liq_ix:
+            leftovers.append("liquidator account missing — used fee payer")
+    if not user:
+        for cand in _obligation_candidates(tx):
+            if cand and cand != searcher and cand != fee_payer:
+                user = cand
+                break
+        if not user:
+            leftovers.append("obligation not decoded")
+
+    if user:
+        remember_obligation_keys([user])
+
+    coll_sym = _reserve_sym(withdraw_r) if withdraw_r else ""
+    debt_sym = _reserve_sym(repay_r) if repay_r else ""
+    if not coll_sym or not debt_sym:
+        leftovers.append("coll/debt reserve symbols unknown")
+    pair = (
+        f"{coll_sym or '?'}→{debt_sym or '?'}"
+        if (coll_sym or debt_sym) else "solend-liq"
+    )
+
+    amount = 0
+    if raw and len(raw) >= 9:
+        amount = int.from_bytes(raw[1:9], "little")
+    elif liq_ix:
+        leftovers.append("repay amount not in ix data")
+
+    repay_cfg = _RESERVE_INDEX.get(repay_r) or {}
+    withdraw_cfg = _RESERVE_INDEX.get(withdraw_r) or {}
+    debt_mint = repay_cfg.get("mint") or ""
+    decimals = repay_cfg.get("decimals")
+    cover_usd = _cover_usd_known(debt_mint, amount, decimals, sol_px)
+    bonus = _known_bonus_frac(
+        withdraw_cfg.get("liq_bonus") or repay_cfg.get("liq_bonus"))
+    proto = _protocol_fee_share(
+        withdraw_cfg.get("liq_protocol_fee") or repay_cfg.get("liq_protocol_fee"))
+    est = None
+    if cover_usd is not None and bonus is not None:
+        est = round(cover_usd * bonus * (1.0 - proto), 4)
+    elif cover_usd is None or bonus is None:
+        leftovers.append("bonus/price not decoded — no fake $")
+
+    fee_lamports = int(meta.get("fee") or 0)
+    gas_usd = None
+    if sol_px and fee_lamports:
+        try:
+            gas_usd = round(fee_lamports / 1e9 * float(sol_px), 4)
+        except (TypeError, ValueError):
+            gas_usd = None
+    net = None
+    if est is not None and est <= 0:
+        leftovers.append("reconstructed bonus ≤ 0 — not their PnL")
+        est = None
+    if est is not None and gas_usd is not None:
+        raw_net = round(est - gas_usd, 4)
+        if raw_net > 0:
+            net = raw_net
+        else:
+            leftovers.append("our-model fee ≥ bonus — net unknown")
+    elif est is not None:
+        net = est
+
+    err = sig_row.get("err") or meta.get("err")
+    ts = sig_row.get("block_time") or tx.get("blockTime")
+    try:
+        ts = int(ts) if ts else int(time.time())
+    except (TypeError, ValueError):
+        ts = int(time.time())
+
+    return {
+        "sig": sig_row.get("sig"),
+        "tx": sig_row.get("sig"),
+        "solscan": f"https://solscan.io/tx/{sig_row.get('sig')}",
+        "slot": sig_row.get("slot") or tx.get("slot"),
+        "err": err,
+        "flags": ("liq revert" if err else "liq"),
+        "pair": pair,
+        "coll_sym": coll_sym or None,
+        "debt_sym": debt_sym or None,
+        "searcher": searcher or "",
+        "user": user or "",
+        "gas_usd": gas_usd,
+        "est": est,
+        "net": net,
+        "fee_lamports": fee_lamports,
+        "kind": "liq",
+        "ix": tag,
+        "leftover": leftovers,
+        "ts": ts,
+        "protocol": "Solend",
+        "protocol_id": "solend",
+    }
+
+
+def decode_solend_competitors(limit: int = 24,
+                              sol_px: float | None = None) -> dict[str, Any]:
+    """Confirmed Solend main-market liquidations (ix 12/17).
+
+    Walks lending-market signatures, not a 16-sig program dump. Empty list
+    after a successful scan means none in this window — no invented PnL.
     """
+    global _COMP_BEFORE, _COMP_HISTORY_N
     out: dict[str, Any] = {
         "ok": False, "rows": [], "liq_n": 0, "revert_n": 0,
-        "scanned": 0, "last_slot": None, "error": None,
-        "ts": int(time.time()),
+        "scanned": 0, "decoded": 0, "last_slot": None, "error": None,
+        "leftovers": [], "market": None, "ts": int(time.time()),
     }
     try:
-        sigs = recent_program_sigs(SOLEND_PROGRAM, limit=limit)
-        out["scanned"] = len(sigs)
-        if sigs:
-            out["last_slot"] = sigs[0].get("slot")
-        rows = []
-        liq_n = revert_n = 0
-        for s in sigs:
-            sig = s.get("sig")
-            if not sig:
-                continue
-            if s.get("err"):
-                revert_n += 1
+        _ensure_solend_index()
+        market = _LENDING_MARKET.get("address") or ""
+        if not _is_pubkey(market):
+            market = SOLEND_PROGRAM
+        out["market"] = market
+        try:
+            tip = recent_program_sigs(market, limit=80)
+        except Exception as e:  # noqa: BLE001
+            out["error"] = f"getSignaturesForAddress: {type(e).__name__}: {e}"
+            return out
+        if tip:
+            out["last_slot"] = tip[0].get("slot")
+        _enqueue_comp_sigs(tip)
+        if _COMP_HISTORY_N < _COMP_HISTORY_CAP:
+            oldest = (tip[-1].get("sig") if tip else None) or _COMP_BEFORE
+            if oldest:
+                try:
+                    older = recent_program_sigs(market, limit=80, before=oldest)
+                    n = _enqueue_comp_sigs(older)
+                    _COMP_HISTORY_N += n
+                    if older:
+                        _COMP_BEFORE = older[-1].get("sig")
+                    if not older:
+                        _COMP_HISTORY_N = _COMP_HISTORY_CAP
+                except Exception:
+                    pass
+        batch: list[dict] = []
+        while _COMP_PENDING and len(batch) < max(8, int(limit)):
+            batch.append(_COMP_PENDING.popleft())
+        out["scanned"] = len(tip) + len(batch)
+
+        def _one(sig_row: dict) -> dict | None:
+            sig = sig_row.get("sig")
             try:
                 tx, _ = sol_rpc(
                     "getTransaction",
                     [sig, {"encoding": "json",
-                            "maxSupportedTransactionVersion": 0}],
+                            "maxSupportedTransactionVersion": 0,
+                            "commitment": "confirmed"}],
                     timeout=12,
                 )
             except Exception:
                 tx = None
             if not isinstance(tx, dict):
-                continue
-            meta = tx.get("meta") or {}
-            logs = meta.get("logMessages") or []
-            kind = _classify_solend_logs(logs)
-            if kind != "liq":
-                # Still seed hydrates from landing-adjacent accounts.
-                remember_obligation_keys(_obligation_candidates(tx))
-                continue
-            liq_n += 1
-            fee_payer = None
-            msg = (tx.get("transaction") or {}).get("message") or {}
-            keys = msg.get("accountKeys") or []
-            if keys:
-                k0 = keys[0]
-                fee_payer = k0 if isinstance(k0, str) else (k0 or {}).get("pubkey")
-            obl = ""
-            for cand in _obligation_candidates(tx):
-                if cand != fee_payer:
-                    obl = cand
-                    break
-            if obl:
-                remember_obligation_keys([obl])
-            hyd = _HYDRATE_CACHE.get(obl) if obl else None
-            pair = "solend-liq"
-            if hyd:
-                pair = (
-                    f"{hyd.get('coll_sym') or hyd.get('collateral_sym') or '?'}→"
-                    f"{hyd.get('debt_sym') or '?'}"
-                )
-            fee_lamports = int(meta.get("fee") or 0)
-            rows.append({
-                "sig": sig,
-                "tx": sig,
-                "solscan": f"https://solscan.io/tx/{sig}",
-                "slot": s.get("slot") or tx.get("slot"),
-                "err": s.get("err") or meta.get("err"),
-                "flags": ("liq revert"
-                          if (s.get("err") or meta.get("err")) else "liq"),
-                "pair": pair,
-                "searcher": fee_payer or "",
-                "user": obl or "",
-                "gas_usd": None,
-                "est": hyd.get("profit_usd") if hyd else None,
-                "net": hyd.get("net_usd") if hyd else None,
-                "fee_lamports": fee_lamports,
-                "kind": "liq",
-                "missed": True,
-                "edge": True,
-                "ts": out["ts"],
-            })
+                return {"_rpc_miss": True, "sig": sig}
+            return _parse_solend_liq_tx(tx, sig_row, sol_px)
+
+        rows = []
+        liq_n = revert_n = decoded = 0
+        leftovers: list[str] = []
+        rpc_miss = 0
+        workers = min(4, max(1, len(batch)))
+        if batch:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = [ex.submit(_one, s) for s in batch]
+                for fut, sig_row in zip(futs, batch):
+                    sig = sig_row.get("sig")
+                    try:
+                        parsed = fut.result()
+                    except Exception:
+                        _comp_mark_seen(sig or "")
+                        continue
+                    decoded += 1
+                    if parsed and parsed.get("_rpc_miss"):
+                        rpc_miss += 1
+                        if not sig_row.get("_retried"):
+                            sig_row["_retried"] = True
+                            _COMP_PENDING.append(sig_row)
+                        else:
+                            _comp_mark_seen(sig or "")
+                        continue
+                    _comp_mark_seen(sig or "")
+                    if not parsed:
+                        continue
+                    liq_n += 1
+                    if parsed.get("err"):
+                        revert_n += 1
+                    for bit in parsed.get("leftover") or []:
+                        if bit not in leftovers:
+                            leftovers.append(bit)
+                    rows.append(parsed)
+        out["decoded"] = decoded
         out["rows"] = rows
         out["liq_n"] = liq_n
         out["revert_n"] = revert_n
+        out["leftovers"] = leftovers[:8]
+        if rpc_miss and not rows and decoded == rpc_miss:
+            out["error"] = f"getTransaction failed for {rpc_miss} sigs"
+            return out
         out["ok"] = True
+        out["note"] = (
+            f"{liq_n} liquidate txs · decoded {decoded} · "
+            f"pending {len(_COMP_PENDING)} · market {market[:8]}…"
+        )
     except Exception as e:  # noqa: BLE001
         out["error"] = f"{type(e).__name__}: {e}"
     return out
@@ -3604,6 +4069,8 @@ def _classify_solend_logs(logs: list[str]) -> str:
     joined = "\n".join(logs or [])
     if any(k in joined for k in (
         "LiquidateObligationAndRedeemReserveCollateral",
+        "LiquidateObligationAndRedeem",
+        "LiquidateAndRedeem",
         "LiquidateObligation", "liquidate_obligation",
         "Instruction: Liquidate",
         "liquidateObligation",
@@ -3638,13 +4105,13 @@ def _obligation_candidates(tx: dict) -> list[str]:
             continue
         if pk not in out:
             out.append(pk)
-    return out[:8]
+        return out[:12]
 
 
 def _hydrate_obligations(pubkeys: list[str], source: str = "mempool") -> list[dict]:
     uniq = [p for p in pubkeys if _is_pubkey(p)]
     remember_obligation_keys(uniq)
-    opps = _hydrate_from_rpc(uniq[:24], source=source)
+    opps = _hydrate_from_rpc(uniq[:40], source=source)
     return opps
 
 
@@ -3704,7 +4171,7 @@ def fetch_jito_tip_pressure(limit: int = 8) -> dict[str, Any]:
 
 
 def watch_solend_landing(
-    limit: int = 20,
+    limit: int = 32,
     sol_px: float | None = None,
     priority_median: int | None = None,
     pressure: str | None = None,
@@ -3756,7 +4223,7 @@ def watch_solend_landing(
 
         out["method"] = method
         fresh = [s for s in sigs if s["signature"] not in _SEEN_SIGS]
-        to_decode = (fresh or sigs)[:12]
+        to_decode = (fresh or sigs)[:24]
         hits = []
         obl_keys: list[str] = []
         contested: set[str] = set()
@@ -3838,7 +4305,7 @@ def watch_solend_landing(
             hits.append(jr)
 
         remember_obligation_keys(obl_keys)
-        hyd = _hydrate_obligations(obl_keys[:24], source="mempool")
+        hyd = _hydrate_obligations(obl_keys[:40], source="mempool")
         by_obl = {h.get("obligation"): h for h in hyd if h.get("obligation")}
         opps = []
         backruns = []
@@ -3902,7 +4369,7 @@ def watch_solend_landing(
         remember_hydrates(scored_all)
         liq = [o for o in opps if o.get("hf") is not None
                and o["hf"] < 1.0 and not _dust_obligation(o)]
-        watch = closest_to_stress(10)
+        watch = closest_to_stress(50)
         out["hits"] = hits[:40]
         out["opportunities"] = liq[:25]
         out["watch"] = watch
@@ -4046,8 +4513,8 @@ def _liq_account_gaps(opp: dict | None) -> list[str]:
 def live_submit_blockers(kind: str = "liq") -> list[str]:
     """Honest gates for LIVE send. Caller still requires arm + not sim_only.
 
-    Arb/liq execute via Python (Jupiter /swap + Jito, or Solend ix + Jito).
-    Stub Arb1111/Liq1111 programs are never a reason to send — they are
+    Liq execute via Python (Solend ix + Jito; Jupiter coll→debt only inside
+    a flash liquidation when mints differ). Stub Liq1111 programs are
     ignored, not required. Keypair + solders are the real prerequisites.
     """
     reasons = []
@@ -4055,15 +4522,12 @@ def live_submit_blockers(kind: str = "liq") -> list[str]:
         reasons.append("solders missing — pip install solders to sign txs")
     if not _bot_keypair_path():
         reasons.append("bot keypair missing — SOL_KEYPAIR or solana/keys/bot.json")
-    if kind == "liq":
-        pid = (os.environ.get("SOL_LIQ_PROGRAM") or "").strip()
-        if pid and _is_stub_program(pid):
-            # stub id is ignored; Python sends to Solend itself
-            pass
-    else:
-        pid = (os.environ.get("SOL_ARB_PROGRAM") or "").strip()
-        if pid and _is_stub_program(pid):
-            pass
+    if not JITO_BUNDLE_URLS:
+        reasons.append("no Jito bundle URL configured")
+    pid = (os.environ.get("SOL_LIQ_PROGRAM") or "").strip()
+    if pid and _is_stub_program(pid):
+        # stub id is ignored; Python sends to Solend itself
+        pass
     return reasons
 
 
@@ -5436,9 +5900,10 @@ def _live_send_liq(plan: dict, funds: dict | None, rec: dict) -> dict:
 
 def submit_sol_plan(plan: dict, *, sim_only: bool, armed: bool,
                     funds: dict | None = None) -> dict[str, Any]:
-    """Sim by default. LIVE send = Jupiter /swap (or Solend ix) + Jito bundle.
+    """Sim by default. LIVE send = Solend ix + Jito bundle (Jupiter coll→debt
+    only inside flash liq when mints differ).
 
-    Never broadcasts silently. Stub Arb1111/Liq1111 programs are refused.
+    Never broadcasts silently. Stub Liq1111 programs are refused.
     +EV-only: net after CU + Jito tip + slip must stay > 0 and ≥ floor.
     """
     kind = (plan or {}).get("kind") or "liq"
@@ -5449,9 +5914,13 @@ def submit_sol_plan(plan: dict, *, sim_only: bool, armed: bool,
         "stage": "simulated",
         "detail": "",
         "reasons": [],
-        "execute": (plan or {}).get("execute") or (
-            "solend-jito" if kind == "liq" else "jupiter-jito"),
+        "execute": (plan or {}).get("execute") or "solend-jito",
     }
+    if kind == "arb":
+        rec["stage"] = "blocked"
+        rec["detail"] = "DEX arb disabled — liquidation only"
+        rec["reasons"] = ["arb disabled"]
+        return rec
     profit = (plan or {}).get("expected_profit_usd") or (plan or {}).get(
         "expected_net_usd")
     path = (plan or {}).get("path") or (plan or {}).get("obligation") or ""
@@ -5460,14 +5929,11 @@ def submit_sol_plan(plan: dict, *, sim_only: bool, armed: bool,
         rec["detail"] = (
             f"dry-run {kind} {path} profit=${profit} "
             f"jito_tip={plan.get('jito_tip_lamports', 0)}lam (sim; "
-            f"{'jupiter+jito' if kind != 'liq' else 'solend+jito'} when armed)"
+            f"solend+jito when armed)"
         )
         return rec
 
     pid = (plan or {}).get("program") or ""
-    if kind == "arb" and _is_stub_program(pid):
-        plan["program"] = JUPITER_V6
-        pid = JUPITER_V6
     if kind == "liq" and _is_stub_program(pid):
         plan["program"] = SOLEND_PROGRAM
         pid = SOLEND_PROGRAM
@@ -5477,7 +5943,7 @@ def submit_sol_plan(plan: dict, *, sim_only: bool, armed: bool,
         rec["reasons"] = ["stub program"]
         return rec
 
-    reasons = list(live_submit_blockers(kind))
+    reasons = list(live_submit_blockers("liq"))
     funded, fund_rs = wallets_funded_enough(funds)
     if not funded:
         reasons.extend(fund_rs)
@@ -5488,8 +5954,6 @@ def submit_sol_plan(plan: dict, *, sim_only: bool, armed: bool,
         return rec
 
     try:
-        if kind == "arb":
-            return _live_send_arb(plan, funds, rec)
         return _live_send_liq(plan, funds, rec)
     except Exception as e:  # noqa: BLE001
         rec["stage"] = "blocked"
