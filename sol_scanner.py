@@ -11,12 +11,16 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import math
 import os
+import random
 import socket
 import struct
 import threading
 import time
+
+log = logging.getLogger("sol_scanner")
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
@@ -45,6 +49,30 @@ SOL_RPCS = [
     "https://rpc.ankr.com/solana",
 ]
 SOL_RPCS = [u for u in SOL_RPCS if u]
+
+# Circuit breaker for RPC failover — tracks consecutive failures per URL.
+_RPC_CIRCUIT: dict[str, tuple[int, float]] = {}
+
+
+def _rpc_is_open(url: str) -> bool:
+    state = _RPC_CIRCUIT.get(url)
+    if not state:
+        return True
+    fails, open_until = state
+    if time.time() > open_until:
+        return True
+    return False
+
+
+def _rpc_record_failure(url: str) -> None:
+    state = _RPC_CIRCUIT.get(url, (0, 0))
+    fails = state[0] + 1
+    cooldown = min(60 * (2 ** min(fails - 3, 4)), 600) if fails >= 3 else 0
+    _RPC_CIRCUIT[url] = (fails, time.time() + cooldown if cooldown else 0)
+
+
+def _rpc_record_success(url: str) -> None:
+    _RPC_CIRCUIT.pop(url, None)
 
 # Persistent HTTP — reuse TCP, fail fast on public RPC stalls.
 _HTTP = requests.Session()
@@ -357,16 +385,27 @@ def sol_rpc(method: str, params: list | None = None, timeout: float = 6.0):
             "params": params if params is not None else []}
     last = None
     for url in SOL_RPCS:
+        if not _rpc_is_open(url):
+            continue
         try:
             r = _http_post(url, body, timeout=timeout)
             out = r.json()
             if "error" in out:
                 last = out["error"]
+                log.debug("SOL RPC %s failed, trying next", url)
+                _rpc_record_failure(url)
                 continue
+            _rpc_record_success(url)
             return out.get("result"), url
         except Exception as e:  # noqa: BLE001
             last = e
+            log.debug("SOL RPC %s failed, trying next", url)
+            _rpc_record_failure(url)
+            # Exponential backoff between URLs on transient errors.
+            fails = _RPC_CIRCUIT.get(url, (1, 0))[0]
+            time.sleep(min(random.uniform(0.05, 0.15) * (2 ** min(fails, 4)), 2.0))
             continue
+    log.error("All SOL RPCs failed for %s", method)
     raise RuntimeError(f"sol rpc {method} failed: {last}")
 
 
@@ -535,7 +574,9 @@ def fetch_sol_price() -> float | None:
             "https://api.binance.com/api/v3/ticker/price",
             params={"symbol": "SOLUSDT"}, timeout=5,
         )
-        return float(r.json()["price"])
+        price = float(r.json()["price"])
+        log.debug("SOL price: $%.2f", price)
+        return price
     except Exception:
         return None
 
@@ -621,6 +662,7 @@ def _jup_quote(input_mint: str, output_mint: str, amount: int,
                     return None
                 return data
             if r.status_code in (429, 502, 503) and attempt < 2:
+                log.warning("Jupiter %d, attempt %d/3", r.status_code, attempt + 1)
                 time.sleep(0.5 * (attempt + 1))
                 continue
             _bump_quote_fail()
@@ -863,6 +905,13 @@ _COMP_SEEN_CAP = 2500
 _OBLIGATION_KEYS: deque[str] = deque(maxlen=120)
 _HYDRATE_CACHE: dict[str, dict] = {}
 
+# Thread-safety locks for shared mutable state.
+_RESERVE_INDEX_LOCK = threading.Lock()
+_COMP_LOCK = threading.Lock()
+_SEEN_SIGS_LOCK = threading.Lock()
+_OBLIGATION_KEYS_LOCK = threading.Lock()
+_HYDRATE_CACHE_LOCK = threading.Lock()
+
 
 def _is_pubkey(pk: str | None) -> bool:
     s = (pk or "").strip()
@@ -870,35 +919,37 @@ def _is_pubkey(pk: str | None) -> bool:
 
 
 def remember_obligation_keys(keys) -> None:
-    for k in keys or []:
-        pk = (k or "").strip()
-        if not _is_pubkey(pk):
-            continue
-        if pk in _SKIP_ACCOUNTS or pk in JITO_TIP_ACCOUNTS:
-            continue
-        if pk not in _OBLIGATION_KEYS:
-            _OBLIGATION_KEYS.append(pk)
+    with _OBLIGATION_KEYS_LOCK:
+        for k in keys or []:
+            pk = (k or "").strip()
+            if not _is_pubkey(pk):
+                continue
+            if pk in _SKIP_ACCOUNTS or pk in JITO_TIP_ACCOUNTS:
+                continue
+            if pk not in _OBLIGATION_KEYS:
+                _OBLIGATION_KEYS.append(pk)
 
 
 def remember_hydrates(rows: list[dict] | None) -> None:
-    for o in rows or []:
-        pk = o.get("obligation") or o.get("user") or ""
-        if not _is_pubkey(pk):
-            continue
-        if o.get("proxy") or o.get("hf") is None:
-            continue
-        prev = _HYDRATE_CACHE.get(pk)
-        if prev is None or (o.get("hf") is not None):
-            row = dict(o)
-            row["user"] = pk
-            row["obligation"] = pk
-            _HYDRATE_CACHE[pk] = row
-    if len(_HYDRATE_CACHE) > 80:
-        keep = closest_to_stress(50)
-        keys = {r.get("obligation") or r.get("user") for r in keep}
-        for k in list(_HYDRATE_CACHE):
-            if k not in keys:
-                _HYDRATE_CACHE.pop(k, None)
+    with _HYDRATE_CACHE_LOCK:
+        for o in rows or []:
+            pk = o.get("obligation") or o.get("user") or ""
+            if not _is_pubkey(pk):
+                continue
+            if o.get("proxy") or o.get("hf") is None:
+                continue
+            prev = _HYDRATE_CACHE.get(pk)
+            if prev is None or (o.get("hf") is not None):
+                row = dict(o)
+                row["user"] = pk
+                row["obligation"] = pk
+                _HYDRATE_CACHE[pk] = row
+        if len(_HYDRATE_CACHE) > 80:
+            keep = closest_to_stress(50)
+            keys = {r.get("obligation") or r.get("user") for r in keep}
+            for k in list(_HYDRATE_CACHE):
+                if k not in keys:
+                    _HYDRATE_CACHE.pop(k, None)
 
 
 def closest_to_stress(n: int = 10) -> list[dict]:
@@ -1009,6 +1060,8 @@ def _ensure_solend_index() -> bool:
         fetch_solend_watchlist()
     except Exception:
         pass
+    if _RESERVE_INDEX:
+        log.info("Solend index refreshed: %d reserves", len(_RESERVE_INDEX))
     return bool(_RESERVE_INDEX)
 
 
@@ -1036,13 +1089,14 @@ def _merge_reserve_row(keys: list[str], patch: dict) -> dict:
             row[k] = v
     addr = row.get("address") or (keys[0] if keys else "")
     mint = row.get("mint") or ""
-    if mint:
-        _RESERVE_INDEX[mint] = row
-    if addr:
-        _RESERVE_INDEX[addr] = row
-    if row.get("symbol"):
-        _RESERVE_INDEX[row["symbol"]] = row
-        _RESERVE_INDEX[str(row["symbol"]).upper()] = row
+    with _RESERVE_INDEX_LOCK:
+        if mint:
+            _RESERVE_INDEX[mint] = row
+        if addr:
+            _RESERVE_INDEX[addr] = row
+        if row.get("symbol"):
+            _RESERVE_INDEX[row["symbol"]] = row
+            _RESERVE_INDEX[str(row["symbol"]).upper()] = row
     return row
 
 
@@ -1195,12 +1249,15 @@ def _index_reserve(item: dict, picked: dict | None = None) -> None:
         "flash_loan_fee_bps": _flash_fee_bps_from_cfg(cfg, prev),
     }
     if mint:
-        _RESERVE_INDEX[mint] = row
+        with _RESERVE_INDEX_LOCK:
+            _RESERVE_INDEX[mint] = row
     if addr:
-        _RESERVE_INDEX[addr] = row
+        with _RESERVE_INDEX_LOCK:
+            _RESERVE_INDEX[addr] = row
     if row.get("symbol"):
-        _RESERVE_INDEX[row["symbol"].upper()] = row
-        _RESERVE_INDEX[row["symbol"]] = row
+        with _RESERVE_INDEX_LOCK:
+            _RESERVE_INDEX[row["symbol"].upper()] = row
+            _RESERVE_INDEX[row["symbol"]] = row
 
 
 def _reserve_for(opp: dict) -> dict:
@@ -1520,12 +1577,13 @@ def fetch_solend_watchlist() -> dict[str, Any]:
                     "flash_loan_fee_bps": _flash_fee_bps_from_cfg(
                         res.get("config") or {}, None),
                 }
-                _RESERVE_INDEX[addr or mint] = row_cfg
-                if mint:
-                    _RESERVE_INDEX[mint] = _RESERVE_INDEX[addr or mint]
-                if sym:
-                    _RESERVE_INDEX[sym] = _RESERVE_INDEX[addr or mint]
-                    _RESERVE_INDEX[sym.upper()] = _RESERVE_INDEX[addr or mint]
+                with _RESERVE_INDEX_LOCK:
+                    _RESERVE_INDEX[addr or mint] = row_cfg
+                    if mint:
+                        _RESERVE_INDEX[mint] = _RESERVE_INDEX[addr or mint]
+                    if sym:
+                        _RESERVE_INDEX[sym] = _RESERVE_INDEX[addr or mint]
+                        _RESERVE_INDEX[sym.upper()] = _RESERVE_INDEX[addr or mint]
             if sym in WATCH_SYMS:
                 picked.append({
                     "symbol": sym,
@@ -3635,13 +3693,14 @@ SOL_WALLETS = current_wallets()
 
 
 def _comp_mark_seen(sig: str) -> None:
-    if not sig or sig in _COMP_SEEN:
-        return
-    _COMP_SEEN.add(sig)
-    _COMP_SEEN_ORDER.append(sig)
-    while len(_COMP_SEEN_ORDER) > _COMP_SEEN_CAP:
-        old = _COMP_SEEN_ORDER.popleft()
-        _COMP_SEEN.discard(old)
+    with _COMP_LOCK:
+        if not sig or sig in _COMP_SEEN:
+            return
+        _COMP_SEEN.add(sig)
+        _COMP_SEEN_ORDER.append(sig)
+        while len(_COMP_SEEN_ORDER) > _COMP_SEEN_CAP:
+            old = _COMP_SEEN_ORDER.popleft()
+            _COMP_SEEN.discard(old)
 
 
 def _ix_data_bytes(data) -> bytes:
@@ -3793,14 +3852,15 @@ def recent_program_sigs(program_id: str, limit: int = 12, *,
 
 def _enqueue_comp_sigs(sigs: list[dict]) -> int:
     n = 0
-    pending_sigs = {r.get("sig") for r in _COMP_PENDING}
-    for s in sigs:
-        sig = s.get("sig")
-        if not sig or sig in _COMP_SEEN or sig in pending_sigs:
-            continue
-        _COMP_PENDING.append(s)
-        pending_sigs.add(sig)
-        n += 1
+    with _COMP_LOCK:
+        pending_sigs = {r.get("sig") for r in _COMP_PENDING}
+        for s in sigs:
+            sig = s.get("sig")
+            if not sig or sig in _COMP_SEEN or sig in pending_sigs:
+                continue
+            _COMP_PENDING.append(s)
+            pending_sigs.add(sig)
+            n += 1
     return n
 
 
@@ -3984,8 +4044,9 @@ def decode_solend_competitors(limit: int = 24,
                 except Exception:
                     pass
         batch: list[dict] = []
-        while _COMP_PENDING and len(batch) < max(8, int(limit)):
-            batch.append(_COMP_PENDING.popleft())
+        with _COMP_LOCK:
+            while _COMP_PENDING and len(batch) < max(8, int(limit)):
+                batch.append(_COMP_PENDING.popleft())
         out["scanned"] = len(tip) + len(batch)
 
         def _one(sig_row: dict) -> dict | None:
@@ -4024,7 +4085,8 @@ def decode_solend_competitors(limit: int = 24,
                         rpc_miss += 1
                         if not sig_row.get("_retried"):
                             sig_row["_retried"] = True
-                            _COMP_PENDING.append(sig_row)
+                            with _COMP_LOCK:
+                                _COMP_PENDING.append(sig_row)
                         else:
                             _comp_mark_seen(sig or "")
                         continue
@@ -4047,6 +4109,7 @@ def decode_solend_competitors(limit: int = 24,
             out["error"] = f"getTransaction failed for {rpc_miss} sigs"
             return out
         out["ok"] = True
+        log.info("Decoded %d competitor txs", len(rows))
         out["note"] = (
             f"{liq_n} liquidate txs · decoded {decoded} · "
             f"pending {len(_COMP_PENDING)} · market {market[:8]}…"
@@ -4164,6 +4227,8 @@ def fetch_jito_tip_pressure(limit: int = 8) -> dict[str, Any]:
         rows.sort(key=lambda r: -(int(r.get("slot") or 0)))
         out["rows"] = rows[:20]
         out["bundles"] = len(rows)
+        log.debug("Jito tips: %d bundles, %d tip accounts live",
+                  len(rows), out["tip_accounts_live"])
         out["ok"] = True
     except Exception as e:  # noqa: BLE001
         out["error"] = f"{type(e).__name__}: {e}"
@@ -4222,7 +4287,8 @@ def watch_solend_landing(
             return out
 
         out["method"] = method
-        fresh = [s for s in sigs if s["signature"] not in _SEEN_SIGS]
+        with _SEEN_SIGS_LOCK:
+            fresh = [s for s in sigs if s["signature"] not in _SEEN_SIGS]
         to_decode = (fresh or sigs)[:24]
         hits = []
         obl_keys: list[str] = []
@@ -4286,7 +4352,8 @@ def watch_solend_landing(
                     continue
                 out["decoded"] += 1
                 if row.get("sig"):
-                    _SEEN_SIGS.append(row["sig"])
+                    with _SEEN_SIGS_LOCK:
+                        _SEEN_SIGS.append(row["sig"])
                 kind = row.get("kind")
                 if kind == "liq":
                     liq_n += 1
@@ -4382,6 +4449,9 @@ def watch_solend_landing(
         out["contested_n"] = len(contested)
         out["last_slot"] = sigs[0].get("slot") if sigs else None
         out["ok"] = True
+        total = len(hits)
+        new_count = len(fresh)
+        log.info("Watch landing: %d sigs, %d new", total, new_count)
         out["jito"] = {
             "bundles": jito.get("bundles") or 0,
             "tip_accounts_live": jito.get("tip_accounts_live") or 0,
@@ -5847,6 +5917,7 @@ def _live_send_liq(plan: dict, funds: dict | None, rec: dict) -> dict:
         return rec
     sim_err = _sim_tx_err(raw_liq)
     if sim_err:
+        log.warning("Live liq sim fail: %s", sim_err)
         rec["stage"] = "blocked"
         rec["detail"] = f"liq simulate failed: {sim_err}"
         rec["reasons"] = [sim_err]
@@ -5856,6 +5927,8 @@ def _live_send_liq(plan: dict, funds: dict | None, rec: dict) -> dict:
             "common: stale oracle / extra oracle meta",
         ]
         return rec
+    cu = int(plan.get("compute_units") or 400_000)
+    log.info("Live liq sim pass: cu=%d", cu)
     sol_px = float(plan.get("sol_px") or fetch_sol_price() or 0)
     pre = float(plan.get("expected_profit_usd") or 0)
     jito_lam = int(plan.get("jito_tip_lamports") or 0)
@@ -5888,6 +5961,7 @@ def _live_send_liq(plan: dict, funds: dict | None, rec: dict) -> dict:
     rec["stage"] = "sent"
     rec["bundle_id"] = bid
     rec["sig"] = bid
+    log.info("Live liq bundle sent: %s", bid)
     rec["detail"] = (
         f"LIVE liq Jito bundle {bid[:12]}… obl={(plan.get('obligation') or '')[:6]} "
         f"tip={jito_lam}lam payer={tip_payer}"
@@ -5907,6 +5981,7 @@ def submit_sol_plan(plan: dict, *, sim_only: bool, armed: bool,
     +EV-only: net after CU + Jito tip + slip must stay > 0 and ≥ floor.
     """
     kind = (plan or {}).get("kind") or "liq"
+    log.info("Submit plan: kind=%s mode=%s", kind, "sim" if sim_only or not armed else "live")
     rec: dict[str, Any] = {
         "ts": int(time.time()),
         "kind": kind,
@@ -5956,6 +6031,7 @@ def submit_sol_plan(plan: dict, *, sim_only: bool, armed: bool,
     try:
         return _live_send_liq(plan, funds, rec)
     except Exception as e:  # noqa: BLE001
+        log.error("Live liq failed: %s", e)
         rec["stage"] = "blocked"
         rec["detail"] = f"LIVE {kind} send failed: {type(e).__name__}: {e}"
         rec["reasons"] = [str(e)]
