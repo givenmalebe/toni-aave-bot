@@ -3872,6 +3872,7 @@ class Dashboard:
             self.log("shutdown", "warn", f"Received {sig.name}, shutting down...")
             _pre_eth.stop()
             _pre_sol.stop()
+            sols.stop()
         for sig in (signal.SIGTERM, signal.SIGINT):
             self._loop.add_signal_handler(sig, lambda s=sig: _handle_shutdown(s))
         coros = (self.mempool_loop(), self.eth_hot_loop(), self.prices_loop(),
