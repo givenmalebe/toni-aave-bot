@@ -3338,6 +3338,38 @@
     renderBcHistory();
   };
 
+  const updateHybrid = (s) => {
+    const h = s.hybrid_execution || {};
+    const phaseEl = $("hybrid-phase");
+    const rateEl = $("hybrid-success-rate");
+    const attemptsEl = $("hybrid-attempts");
+    const toggleEl = $("hybrid-toggle");
+    if (phaseEl) {
+      const phase = (h.phase || "idle").toUpperCase();
+      phaseEl.textContent = phase;
+      phaseEl.className = "status-text" + (phase === "IDLE" ? " dim" : "");
+    }
+    if (rateEl) {
+      const stats = h.stats || {};
+      rateEl.textContent = ((stats.success_rate || 0) * 100).toFixed(1) + "%";
+    }
+    if (attemptsEl) {
+      const stats = h.stats || {};
+      attemptsEl.textContent = String(stats.total_attempts || 0);
+    }
+    if (toggleEl && !toggleEl.matches(":hover")) {
+      toggleEl.checked = !!h.enabled;
+    }
+  };
+
+  window.toggleHybrid = (enabled) => {
+    fetch("/api/hybrid/toggle", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({enabled}),
+    });
+  };
+
   const postControl = async (body) => {
     try {
       const r = await fetch("/api/control", {
@@ -4250,7 +4282,7 @@
         const s = window.__lastState;
         updateHeader(s);
         updateBots(s); updateFunds(s); updateMempool(s);
-        updateOpps(s); updateCompetitors(s); updateTradingIntel(s); updateLiqIntel(s); updateBroadcast(s); updatePrices(s);
+        updateOpps(s); updateCompetitors(s); updateTradingIntel(s); updateLiqIntel(s); updateBroadcast(s); updatePrices(s); updateHybrid(s);
       }
       requestAnimationFrame(() => {
         resizeEthChart();
@@ -4314,7 +4346,7 @@
     }
     /* Heavy ETH card DOM only while ETH tab is visible — WS stays connected */
     updateBots(s); updateFunds(s); updateMempool(s);
-    updateOpps(s); updateCompetitors(s); updateTradingIntel(s); updateLiqIntel(s); updateBroadcast(s); updatePrices(s);
+    updateOpps(s); updateCompetitors(s); updateTradingIntel(s); updateLiqIntel(s); updateBroadcast(s); updatePrices(s); updateHybrid(s);
     if (!window.__logInit) { updateLog(s, s.log); window.__logInit = true; }
     if (ethSeries) ethSeries.setMarkers(buildTradeMarkers(s.paper_eth && s.paper_eth.recent_trades, mcInterval));
     updateRangeLines(ethChart, ethRangeHigh, ethRangeLow, s.paper_eth);

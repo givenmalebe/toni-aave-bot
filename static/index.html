@@ -468,6 +468,23 @@
       </div>
     </div>
 
+    <!-- Hybrid Execution -->
+    <div class="card span-6" id="card-hybrid">
+      <h2>Hybrid Execution <span class="tag">front-run → backrun → skip</span></h2>
+      <div class="hybrid-status">
+        <label class="toggle-switch">
+          <input type="checkbox" id="hybrid-toggle" onchange="toggleHybrid(this.checked)">
+          <span class="toggle-slider"></span>
+        </label>
+        <span class="kv-label">Phase:</span>
+        <span class="status-text" id="hybrid-phase">IDLE</span>
+        <span class="kv-label" style="margin-left:16px">Success:</span>
+        <span class="stat" id="hybrid-success-rate">0%</span>
+        <span class="kv-label" style="margin-left:16px">Attempts:</span>
+        <span class="stat" id="hybrid-attempts">0</span>
+      </div>
+    </div>
+
     <!-- Liquidation Intel -->
     <div class="card span-6" id="card-liq-intel">
       <h2>Liquidation Intel <span class="tag" id="liq-intel-tag">confirmed · health · mix</span></h2>
@@ -996,6 +1013,13 @@
               <button type="button" data-f="profit" class="op-f">+$</button>
               <button type="button" data-f="race" class="op-f">race</button>
               <button type="button" data-f="hf1" class="op-f">HF&lt;1</button>
+            </div>
+            <div class="op-filters" id="sol-proto-filters">
+              <button type="button" data-f="all" class="proto-f on">all</button>
+              <button type="button" data-f="solend" class="proto-f">Solend</button>
+              <button type="button" data-f="kamino" class="proto-f">Kamino</button>
+              <button type="button" data-f="marginfi" class="proto-f">MarginFi</button>
+              <button type="button" data-f="drift" class="proto-f">Drift</button>
             </div>
           </div>
           <div class="op-scroll">

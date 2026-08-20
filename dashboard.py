@@ -119,6 +119,7 @@ import precompute_eth as _pre_eth  # noqa: E402
 import precompute_sol as _pre_sol  # noqa: E402
 import profit_brain as brain  # noqa: E402
 import sol_scanner as sols  # noqa: E402
+import sol_lending as slend  # noqa: E402
 import eth_lending as elend  # noqa: E402
 
 # mev_bot (defi-arb) is optional — ARB removed; provide ETH price stub
@@ -823,6 +824,8 @@ class Dashboard:
         self._generic_liq_cached = None  # (ts, addr, ok)
         self._pending_aave_users = set()
         self._pending_aave_ok = False
+        self.hybrid_enabled = False  # default off for safety
+        self.hybrid_executor = None  # initialized in start_loops
         self._eth_hot_kick = None
         self._liq_harvest_block = 0
         self._comp_last_scanned = 0
@@ -942,7 +945,10 @@ class Dashboard:
                     "volume_24h": 0.0, "count_24h": 0, "avg_size": 0.0, "gas_per_liq": 0.0,
                     "protocols": {"aave_v3": {"count": 0, "volume": 0.0}, "compound_v3": {"count": 0, "volume": 0.0},
                                   "morpho": {"count": 0, "volume": 0.0}, "spark": {"count": 0, "volume": 0.0},
-                                  "solend": {"count": 0, "volume": 0.0}},
+                                  "solend": {"count": 0, "volume": 0.0},
+                                  "kamino": {"count": 0, "volume": 0.0},
+                                  "marginfi": {"count": 0, "volume": 0.0},
+                                  "drift": {"count": 0, "volume": 0.0}},
                     "health_dist": {"<1.0": 0, "1.0-1.05": 0, "1.05-1.1": 0, ">1.1": 0},
                     "competitors": {"searchers": 0, "success_rate": 0.0, "missed": 0},
                     "volume_history": [],
@@ -1403,6 +1409,11 @@ class Dashboard:
         }
         out["paper_eth"] = self._paper_eth.state_dict()
         out["paper_sol"] = self._paper_sol.state_dict()
+        out["hybrid_execution"] = {
+            "enabled": self.hybrid_enabled,
+            "phase": self.hybrid_executor.phase.value if self.hybrid_executor else "idle",
+            "stats": self.hybrid_executor.tracker.get_stats() if self.hybrid_executor else {},
+        }
         # Pre-compute cache stats
         try:
             import precompute_eth as pe_mod
@@ -3392,22 +3403,45 @@ class Dashboard:
                         "ok": False, "opportunities": [], "probed": 0,
                         "hydrated": 0, "note": "obligation probe timeout",
                     }
+                # Multi-protocol probe (Kamino, MarginFi, Drift)
+                multi = await self._run(slend.scan_all_obligations, 60,
+                                        max_accounts=40)
+                if not multi:
+                    multi = {"opportunities": [], "watch": [], "probed": 0,
+                             "hydrated": 0, "errors": [], "adapters": []}
                 ms = int((time.time() - t0) * 1000)
                 sol = self.state["sol"]
+                sol["sol_lending_adapters"] = multi.get("adapters") or []
+                sol["sol_lending_pills"] = multi.get("pills") or []
                 wl_res = data.get("reserves") or data.get("watchlist") or []
-                gpa_opps = [self._sol_decorate_liq(dict(o))
-                            for o in (probe.get("opportunities") or [])]
+                solend_opps = [self._sol_decorate_liq(dict(o))
+                               for o in (probe.get("opportunities") or [])]
+                for o in solend_opps:
+                    o.setdefault("protocol_id", "solend")
+                    o.setdefault("protocol", "Solend")
+                multi_opps = [self._sol_decorate_liq(dict(o))
+                              for o in (multi.get("opportunities") or [])]
+                gpa_opps = solend_opps + multi_opps
                 prio = sol.get("priority_fee")
                 pressure = ((sol.get("mempool") or {}).get("meta") or {}).get(
                     "pressure")
                 px = sol.get("sol_price_usd")
                 for o in gpa_opps:
-                    scored = sols.score_liq_profit(
-                        o, sol_px=px, priority_median=prio, pressure=pressure)
-                    o.update(scored)
                     o["source"] = o.get("source") or "gpa"
                     o["kind"] = "liq"
-                    o["plan"] = sols.build_liq_plan(o, prio, pressure)
+                    pid = o.get("protocol_id") or "solend"
+                    if pid == "solend":
+                        scored = sols.score_liq_profit(
+                            o, sol_px=px, priority_median=prio, pressure=pressure)
+                        o.update(scored)
+                        o["plan"] = sols.build_liq_plan(o, prio, pressure)
+                    else:
+                        o.setdefault("actionable", o.get("hf") is not None and o["hf"] < 1.0)
+                        o.setdefault("profit_usd", None)
+                        o.setdefault("net_usd", None)
+                        o["plan"] = {"kind": "liq", "execute": f"{pid}-jito",
+                                     "protocol_id": pid, "ready": False,
+                                     "note": f"{pid} plan builder not yet wired"}
                 existing = [o for o in (sol.get("opportunities") or [])
                             if o.get("kind") == "liq" or o.get("hf") is not None]
                 opps = [self._sol_decorate_liq(o) for o in
@@ -3418,6 +3452,8 @@ class Dashboard:
                 wl = probe.get("watch") or sols.closest_to_stress(50)
                 if not wl:
                     wl = sols.closest_to_stress(50)
+                multi_wl = multi.get("watch") or []
+                wl = sorted(wl + multi_wl, key=lambda w: w.get("hf") or 99)
                 sol["watchlist"] = wl[:50]
                 sol["opportunities"] = opps
                 mix = {}
@@ -3511,8 +3547,11 @@ class Dashboard:
                 fire = next((o for o in opps if o.get("actionable")), None)
                 if fire:
                     self._sol_maybe_submit("liq", fire, fire.get("plan") or {})
-                msg = (f"Solend watch={len(wl)} liq={len(opps)} "
-                       f"gpa={probe.get('probed')} hyd={probe.get('hydrated')} "
+                multi_n = sum(a.get("opps", 0) for a in (multi.get("adapters") or []))
+                msg = (f"watch={len(wl)} liq={len(opps)} "
+                       f"solend_gpa={probe.get('probed')} "
+                       f"multi={multi_n} "
+                       f"hyd={probe.get('hydrated')} "
                        f"reserves={data.get('reserves_n')} {ms}ms")
                 # GPA failures are expected on public RPC — don't mark sweep error
                 if data.get("error"):
@@ -3628,6 +3667,30 @@ class Dashboard:
                         "protocol_id": "solend",
                         "ix": r.get("ix"),
                     }
+                # Multi-protocol competitor scan (Kamino, MarginFi, Drift)
+                try:
+                    multi_comp = await self._run(
+                        slend.scan_all_competitors, 60,
+                        limit=12, sol_px=px or 0.0)
+                    for ev in (multi_comp or {}).get("events") or []:
+                        sig = ev.get("sig") or ""
+                        if sig and sig not in by_sig:
+                            by_sig[sig] = {
+                                "age": ev.get("slot"),
+                                "ts": ev.get("slot") or now,
+                                "pair": f"{ev.get('protocol_id', '?')}-liq",
+                                "searcher": "",
+                                "user": "",
+                                "tx": sig, "sig": sig,
+                                "solscan": f"https://solscan.io/tx/{sig}",
+                                "slot": ev.get("slot"),
+                                "missed": False, "missed_by_us": False,
+                                "protocol": ev.get("protocol", ""),
+                                "protocol_id": ev.get("protocol_id", ""),
+                                "flags": "liq",
+                            }
+                except Exception:
+                    pass
                 comps = sorted(
                     by_sig.values(),
                     key=lambda c: -(int(c.get("slot") or 0)),
@@ -4168,6 +4231,19 @@ class Dashboard:
             trader.enabled = bool(body["enabled"])
         return aiohttp.web.json_response(trader.state_dict())
 
+    async def hybrid_toggle(self, request):
+        """Toggle hybrid execution on/off."""
+        try:
+            body = await request.json()
+        except Exception:
+            return aiohttp.web.json_response({"error": "bad json"}, status=400)
+        enabled = bool(body.get("enabled", False))
+        self.hybrid_enabled = enabled
+        if self.hybrid_executor:
+            self.hybrid_executor.enabled = enabled
+        self.log("hybrid", "info", f"hybrid execution {'enabled' if enabled else 'disabled'}")
+        return aiohttp.web.json_response({"enabled": enabled})
+
 
 _EDGE = {
     "0xcdd342b2", "0x5476fbb7", "0x0e0744fe", "0xbbcbec75", "0x07cb1f8f",
@@ -4201,6 +4277,7 @@ def main():
     app.router.add_get("/api/sol/blockhash", dash.sol_blockhash_api)
     app.router.add_get("/ws", dash.ws_handler)
     app.router.add_post("/api/paper/control", dash.paper_control)
+    app.router.add_post("/api/hybrid/toggle", dash.hybrid_toggle)
 
     async def startup(app_):
         await dash.start_loops()
