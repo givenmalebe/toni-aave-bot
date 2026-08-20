@@ -1,6 +1,7 @@
 """Hybrid executor — orchestrates three-phase execution strategy."""
 
 import logging
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
@@ -28,6 +29,7 @@ class ExecutionContext:
     tx_hash: str
     signer_address: str
     signature: str
+    bid: Optional[GasBid] = None
 
 
 class HybridExecutor:
@@ -55,8 +57,15 @@ class HybridExecutor:
         current_block: int,
         current_gas_gwei: float,
         eth_usd: float,
+        signed_txs: list[str] = None,
+        signer_address: str = "",
+        signature: str = "",
     ) -> dict:
-        """Execute a liquidation opportunity with three-phase strategy."""
+        """Execute a liquidation opportunity with three-phase strategy.
+        
+        If signed_txs is provided, submits via relay. Otherwise returns bid
+        for the caller to sign and resubmit via submit_tx().
+        """
         if not self.enabled:
             return {"outcome": "disabled", "phase": "none"}
         
@@ -81,20 +90,54 @@ class HybridExecutor:
         
         # Phase 1: Front-run
         self._phase = ExecutionPhase.FRONT_RUN
-        log.info("Front-running %s with bid %.1f gwei", opp_id, bid.max_fee_per_gas)
         
         # Build context for backrun fallback
         self._pending_context = ExecutionContext(
             opportunity=opportunity,
             current_block=current_block,
-            signed_txs=[],  # would be populated by live_liquidator
+            signed_txs=signed_txs or [],
             tx_hash="",
-            signer_address="",
-            signature="",
+            signer_address=signer_address,
+            signature=signature,
+            bid=bid,
         )
         
+        # If signed txs provided, submit via relay
+        if signed_txs and signer_address and signature:
+            log.info("Front-running %s with bid %.1f gwei via relay",
+                     opp_id, bid.max_fee_per_gas)
+            result = await self.relay.send_bundle(
+                signed_txs=signed_txs,
+                block_number=current_block + 1,
+                signer_address=signer_address,
+                signature=signature,
+            )
+            if result.get("success"):
+                self._pending_context.tx_hash = result.get("result", "")
+                return {
+                    "outcome": "front_run_submitted",
+                    "phase": "front_run",
+                    "tx_hash": self._pending_context.tx_hash,
+                    "bid": {
+                        "max_fee_per_gas": bid.max_fee_per_gas,
+                        "max_priority_fee_per_gas": bid.max_priority_fee_per_gas,
+                        "gas_limit": bid.gas_limit,
+                    },
+                }
+            else:
+                log.warning("Relay submission failed: %s", result.get("error"))
+                self._phase = ExecutionPhase.IDLE
+                self._pending_context = None
+                return {
+                    "outcome": "relay_failed",
+                    "phase": "front_run",
+                    "error": result.get("error"),
+                }
+        
+        # No signed txs — return bid for caller to sign
+        log.info("Front-running %s — bid computed, awaiting signed txs", opp_id)
         return {
-            "outcome": "front_run_submitted",
+            "outcome": "bid_computed",
             "phase": "front_run",
             "bid": {
                 "max_fee_per_gas": bid.max_fee_per_gas,
@@ -102,6 +145,39 @@ class HybridExecutor:
                 "gas_limit": bid.gas_limit,
             },
         }
+
+    async def submit_tx(
+        self,
+        signed_txs: list[str],
+        block_number: int,
+        signer_address: str,
+        signature: str,
+    ) -> dict:
+        """Submit a pre-signed transaction bundle via relay."""
+        if not self._pending_context:
+            return {"outcome": "no_pending_context"}
+        
+        self._pending_context.signed_txs = signed_txs
+        self._pending_context.signer_address = signer_address
+        self._pending_context.signature = signature
+        
+        result = await self.relay.send_bundle(
+            signed_txs=signed_txs,
+            block_number=block_number,
+            signer_address=signer_address,
+            signature=signature,
+        )
+        
+        if result.get("success"):
+            self._pending_context.tx_hash = result.get("result", "")
+            log.info("Bundle submitted: %s", self._pending_context.tx_hash)
+            return {
+                "outcome": "submitted",
+                "tx_hash": self._pending_context.tx_hash,
+            }
+        else:
+            log.warning("Bundle submission failed: %s", result.get("error"))
+            return {"outcome": "failed", "error": result.get("error")}
 
     async def check_front_run_result(
         self,
@@ -113,21 +189,26 @@ class HybridExecutor:
         if self._phase != ExecutionPhase.FRONT_RUN:
             return {"outcome": "not_in_front_run"}
         
+        ctx = self._pending_context
+        if not ctx:
+            return {"outcome": "no_pending_context"}
+        
         # Check if our tx landed
         our_landed = any(tx.get("hash") == our_tx_hash for tx in block_txs)
         
         if our_landed:
             # Success!
+            profit_usd = ctx.opportunity.get("net_usd", 0)
             self.tracker.log_attempt(ExecutionAttempt(
-                timestamp=0,
+                timestamp=int(time.time()),
                 block_number=current_block,
-                opportunity_id=self._pending_context.opportunity.get("user", ""),
+                opportunity_id=ctx.opportunity.get("user", ""),
                 phase="front_run",
-                gas_bid_max_fee=0,
-                gas_bid_priority_fee=0,
+                gas_bid_max_fee=ctx.bid.max_fee_per_gas if ctx.bid else 0,
+                gas_bid_priority_fee=ctx.bid.max_priority_fee_per_gas if ctx.bid else 0,
                 competitor_gas=0,
                 outcome="success",
-                profit_usd=0,
+                profit_usd=profit_usd,
                 gas_cost_usd=0,
             ))
             self._phase = ExecutionPhase.IDLE
@@ -149,14 +230,14 @@ class HybridExecutor:
                 "competitor_tx": competitor.tx_hash,
             }
         
-        # No competitor either, skip
+        # No competitor either, log failure and skip
         self.tracker.log_attempt(ExecutionAttempt(
-            timestamp=0,
+            timestamp=int(time.time()),
             block_number=current_block,
-            opportunity_id=self._pending_context.opportunity.get("user", ""),
+            opportunity_id=ctx.opportunity.get("user", ""),
             phase="front_run",
-            gas_bid_max_fee=0,
-            gas_bid_priority_fee=0,
+            gas_bid_max_fee=ctx.bid.max_fee_per_gas if ctx.bid else 0,
+            gas_bid_priority_fee=ctx.bid.max_priority_fee_per_gas if ctx.bid else 0,
             competitor_gas=0,
             outcome="fail",
             profit_usd=0,

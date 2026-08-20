@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 import socket
 import sys
 import threading
@@ -3866,6 +3867,13 @@ class Dashboard:
         _pre_sol.start_slot_listener(
             "https://api.mainnet-beta.solana.com",
             self._get_hot_sol_obligations)
+        # Graceful shutdown handler
+        def _handle_shutdown(sig):
+            self.log("shutdown", "warn", f"Received {sig.name}, shutting down...")
+            _pre_eth.stop()
+            _pre_sol.stop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            self._loop.add_signal_handler(sig, lambda s=sig: _handle_shutdown(s))
         coros = (self.mempool_loop(), self.eth_hot_loop(), self.prices_loop(),
                  self.funds_loop(),
                  self.sweep_loop(), self.competitor_loop(),
