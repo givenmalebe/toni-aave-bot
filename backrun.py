@@ -1,6 +1,7 @@
 """Backrun engine — detect competitor txs, simulate price impact, build backruns."""
 
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Optional
 
@@ -28,6 +29,7 @@ class BackrunEngine:
     """Detect competitor liquidations and build backrun opportunities."""
 
     def __init__(self):
+        self._lock = threading.Lock()
         self._recent_competitor_txs: list[CompetitorLanding] = []
 
     def detect_competitor_tx(
@@ -50,7 +52,8 @@ class BackrunEngine:
                         protocol="aave",
                         profit_usd=0,
                     )
-                    self._recent_competitor_txs.append(landing)
+                    with self._lock:
+                        self._recent_competitor_txs.append(landing)
                     return landing
         return None
 
@@ -87,4 +90,5 @@ class BackrunEngine:
 
     def get_recent_competitors(self, count: int = 10) -> list[CompetitorLanding]:
         """Get recent competitor landings."""
-        return self._recent_competitor_txs[-count:]
+        with self._lock:
+            return list(self._recent_competitor_txs[-count:])

@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from typing import Optional
@@ -11,6 +12,7 @@ log = logging.getLogger("execution_tracker")
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 EXECUTION_LOG = os.path.join(DATA_DIR, "execution_log.jsonl")
+MAX_ATTEMPTS = 500
 
 
 @dataclass
@@ -44,10 +46,14 @@ class ExecutionTracker:
         self._attempts: list[ExecutionAttempt] = []
         self._consecutive_fails: dict[str, int] = {}  # opportunity_id -> count
         self._paused_until: dict[str, int] = {}  # opportunity_id -> block_number
+        self._lock = threading.Lock()
 
     def log_attempt(self, attempt: ExecutionAttempt) -> None:
         """Log an execution attempt."""
-        self._attempts.append(attempt)
+        with self._lock:
+            self._attempts.append(attempt)
+            if len(self._attempts) > MAX_ATTEMPTS:
+                self._attempts = self._attempts[-MAX_ATTEMPTS:]
 
         # Update consecutive fails
         oid = attempt.opportunity_id
@@ -74,12 +80,13 @@ class ExecutionTracker:
                 del self._paused_until[opportunity_id]
 
         # Check recent failures
-        recent_fails = sum(
-            1 for a in reversed(self._attempts)
-            if a.opportunity_id == opportunity_id
-            and a.outcome == "fail"
-            and current_block - a.block_number < self.skip_cooldown_blocks
-        )
+        with self._lock:
+            recent_fails = sum(
+                1 for a in reversed(self._attempts[-100:])
+                if a.opportunity_id == opportunity_id
+                and a.outcome == "fail"
+                and current_block - a.block_number < self.skip_cooldown_blocks
+            )
         return recent_fails >= 1
 
     def get_adapted_bid(
@@ -89,7 +96,8 @@ class ExecutionTracker:
         opportunity_id: str,
     ) -> tuple[float, float]:
         """Adapt bid based on consecutive failures."""
-        fails = self._consecutive_fails.get(opportunity_id, 0)
+        with self._lock:
+            fails = self._consecutive_fails.get(opportunity_id, 0)
         if fails >= 2:
             # Increase bid after 2+ failures
             multiplier = self.bid_increase_factor ** (fails - 1)
@@ -98,7 +106,8 @@ class ExecutionTracker:
 
     def get_stats(self, opportunity_id: Optional[str] = None) -> dict:
         """Get execution statistics."""
-        attempts = self._attempts
+        with self._lock:
+            attempts = list(self._attempts)
         if opportunity_id:
             attempts = [a for a in attempts if a.opportunity_id == opportunity_id]
 

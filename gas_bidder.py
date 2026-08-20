@@ -1,6 +1,8 @@
 """Gas bidding engine — competitive gas bids based on competitor analysis."""
 
 import logging
+import threading
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -37,20 +39,21 @@ class GasBiddingEngine:
         self.profit_scale_cap = profit_scale_cap
         self.min_profit_usd = min_profit_usd
         self.max_gas_cost_eth = max_gas_cost_eth
-        self._competitor_window: list[CompetitorTx] = []
+        self._lock = threading.Lock()
+        self._competitor_window: deque = deque(maxlen=100)
         self._window_size: int = 100
 
     def track_competitor(self, tx: CompetitorTx) -> None:
         """Add a competitor tx to the rolling window."""
-        self._competitor_window.append(tx)
-        if len(self._competitor_window) > self._window_size:
-            self._competitor_window = self._competitor_window[-self._window_size:]
+        with self._lock:
+            self._competitor_window.append(tx)
 
     def get_competitor_p95(self) -> float:
         """Get the 95th percentile gas price from competitors."""
-        if not self._competitor_window:
-            return 0.0
-        prices = sorted(tx.max_fee_per_gas for tx in self._competitor_window)
+        with self._lock:
+            if not self._competitor_window:
+                return 0.0
+            prices = sorted(tx.max_fee_per_gas for tx in self._competitor_window)
         idx = int(len(prices) * 0.95)
         return prices[min(idx, len(prices) - 1)]
 

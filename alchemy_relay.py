@@ -1,5 +1,6 @@
 """Alchemy relay — private mempool, Flashbots Protect, relay fallback."""
 
+import asyncio
 import json
 import logging
 import os
@@ -25,8 +26,17 @@ class AlchemyRelay:
         self.alchemy_api_key = alchemy_api_key or os.getenv("ALCHEMY_API_KEY", "")
         self.flashbots_relay = flashbots_relay
         self._session: Optional[aiohttp.ClientSession] = None
+        self._closed = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        await self.close()
 
     async def _get_session(self) -> aiohttp.ClientSession:
+        if self._closed:
+            raise RuntimeError("relay is closed")
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession()
         return self._session
@@ -73,8 +83,14 @@ class AlchemyRelay:
                     return {"success": False, "error": result["error"]}
                 log.info("Flashbots bundle submitted for block %d", block_number)
                 return {"success": True, "result": result.get("result")}
+        except aiohttp.ClientError as e:
+            log.warning("Alchemy network error: %s", e)
+            return {"success": False, "error": f"network: {e}"}
+        except asyncio.TimeoutError:
+            log.warning("Alchemy timeout")
+            return {"success": False, "error": "timeout"}
         except Exception as e:
-            log.warning("Flashbots relay error: %s", e)
+            log.error("Alchemy unexpected error: %s", e)
             return {"success": False, "error": str(e)}
 
     async def send_private_tx(
@@ -107,10 +123,17 @@ class AlchemyRelay:
                     return {"success": False, "error": result["error"]}
                 log.info("Alchemy private tx submitted")
                 return {"success": True, "result": result.get("result")}
+        except aiohttp.ClientError as e:
+            log.warning("Alchemy network error: %s", e)
+            return {"success": False, "error": f"network: {e}"}
+        except asyncio.TimeoutError:
+            log.warning("Alchemy timeout")
+            return {"success": False, "error": "timeout"}
         except Exception as e:
-            log.warning("Alchemy relay error: %s", e)
+            log.error("Alchemy unexpected error: %s", e)
             return {"success": False, "error": str(e)}
 
     async def close(self) -> None:
+        self._closed = True
         if self._session and not self._session.closed:
             await self._session.close()

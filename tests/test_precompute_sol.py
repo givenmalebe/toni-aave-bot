@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 import aiohttp
 
@@ -16,7 +17,7 @@ def test_cache_miss():
 
 def test_cache_hit():
     ps._cache.clear()
-    ps._cache["obligation_abc"] = {"kind": "liq", "updated_slot": 440333000}
+    ps._cache["obligation_abc"] = {"ts": time.time(), "data": {"kind": "liq", "updated_slot": 440333000}}
     result = ps.get("obligation_abc")
     assert result is not None
     assert result["kind"] == "liq"
@@ -25,8 +26,8 @@ def test_cache_hit():
 def test_evict_stale():
     ps._cache.clear()
     ps._last_slot = 440333100
-    ps._cache["old_obl"] = {"updated_slot": 440333000}  # 100 slots old
-    ps._cache["new_obl"] = {"updated_slot": 440333099}  # 1 slot old
+    ps._cache["old_obl"] = {"ts": time.time(), "data": {"updated_slot": 440333000}}  # 100 slots old
+    ps._cache["new_obl"] = {"ts": time.time(), "data": {"updated_slot": 440333099}}  # 1 slot old
     evicted = ps.evict_stale(max_slots_old=30)
     assert evicted == 1
     assert "old_obl" not in ps._cache
@@ -97,6 +98,6 @@ def test_sol_refresh_updates_cache(monkeypatch):
         "instruction_sequence": [], "account_metas": [], "jupiter_route": None,
         "expected_profit_usd": 42.0,
     }
-    asyncio.get_event_loop().run_until_complete(ps.refresh([obl], "http://mock"))
+    asyncio.run(ps.refresh([obl], "http://mock"))
     assert ps._last_slot == 440333000
     assert "obligation_abc" in ps._cache
