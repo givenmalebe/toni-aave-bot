@@ -55,7 +55,8 @@ _RPC_CIRCUIT: dict[str, tuple[int, float]] = {}
 
 
 def _rpc_is_open(url: str) -> bool:
-    state = _RPC_CIRCUIT.get(url)
+    with _RPC_LOCK:
+        state = _RPC_CIRCUIT.get(url)
     if not state:
         return True
     fails, open_until = state
@@ -65,14 +66,16 @@ def _rpc_is_open(url: str) -> bool:
 
 
 def _rpc_record_failure(url: str) -> None:
-    state = _RPC_CIRCUIT.get(url, (0, 0))
-    fails = state[0] + 1
-    cooldown = min(60 * (2 ** min(fails - 3, 4)), 600) if fails >= 3 else 0
-    _RPC_CIRCUIT[url] = (fails, time.time() + cooldown if cooldown else 0)
+    with _RPC_LOCK:
+        state = _RPC_CIRCUIT.get(url, (0, 0))
+        fails = state[0] + 1
+        cooldown = min(60 * (2 ** min(fails - 3, 4)), 600) if fails >= 3 else 0
+        _RPC_CIRCUIT[url] = (fails, time.time() + cooldown if cooldown else 0)
 
 
 def _rpc_record_success(url: str) -> None:
-    _RPC_CIRCUIT.pop(url, None)
+    with _RPC_LOCK:
+        _RPC_CIRCUIT.pop(url, None)
 
 # Persistent HTTP — reuse TCP, fail fast on public RPC stalls.
 _HTTP = requests.Session()
@@ -561,8 +564,8 @@ def fetch_priority_fees(limit: int = 80) -> dict[str, Any]:
                          or samples[0].get("numNonVoteTransaction") or 0)
                 out["tps"] = round(nt / sec, 1)
                 out["nv_tps"] = round(nv / sec, 1)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("TPS/fee parse failed: %s", e)
     except Exception as e:  # noqa: BLE001
         out["error"] = f"{type(e).__name__}: {e}"
     return out
@@ -577,7 +580,8 @@ def fetch_sol_price() -> float | None:
         price = float(r.json()["price"])
         log.debug("SOL price: $%.2f", price)
         return price
-    except Exception:
+    except Exception as e:
+        log.debug("TPS/fee parse failed: %s", e)
         return None
 
 
@@ -590,7 +594,8 @@ def _util_pct(reserve: dict) -> float:
         if denom <= 0:
             return 0.0
         return max(0.0, min(100.0, 100.0 * borrowed / denom))
-    except Exception:
+    except Exception as e:
+        log.debug("TPS/fee parse failed: %s", e)
         return 0.0
 
 
@@ -669,7 +674,8 @@ def _jup_quote(input_mint: str, output_mint: str, amount: int,
             return None
         _bump_quote_fail()
         return None
-    except Exception:
+    except Exception as e:
+        log.debug("Jupiter quote failed: %s", e)
         _bump_quote_fail()
         return None
 
@@ -911,6 +917,18 @@ _COMP_LOCK = threading.Lock()
 _SEEN_SIGS_LOCK = threading.Lock()
 _OBLIGATION_KEYS_LOCK = threading.Lock()
 _HYDRATE_CACHE_LOCK = threading.Lock()
+_RPC_LOCK = threading.Lock()
+
+_shutdown = False
+
+def stop():
+    """Signal all loops to stop. Called by dashboard on SIGTERM/SIGINT."""
+    global _shutdown
+    _shutdown = True
+    try:
+        _HTTP.close()
+    except Exception as e:
+        log.debug("HTTP session close failed: %s", e)
 
 
 def _is_pubkey(pk: str | None) -> bool:
@@ -1058,8 +1076,8 @@ def _ensure_solend_index() -> bool:
         return True
     try:
         fetch_solend_watchlist()
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Solend index fetch failed: %s", e)
     if _RESERVE_INDEX:
         log.info("Solend index refreshed: %d reserves", len(_RESERVE_INDEX))
     return bool(_RESERVE_INDEX)
@@ -1121,7 +1139,8 @@ def _parse_reserve_account(pk: str, raw: bytes) -> dict | None:
         avail = int.from_bytes(raw[_RES_AVAIL:_RES_AVAIL + 8], "little")
         wad = int.from_bytes(raw[_RES_FLASH_WAD:_RES_FLASH_WAD + 8], "little")
         decimals = int(raw[_RES_DECIMALS])
-    except Exception:
+    except Exception as e:
+        log.warning("Solend index fetch failed: %s", e)
         return None
     if not (_is_pubkey(market) and _is_pubkey(mint) and _is_pubkey(supply)):
         return None
@@ -1199,7 +1218,8 @@ def _hydrate_market_onchain(market: str | None = None) -> None:
         from solders.pubkey import Pubkey
         pk = str(Pubkey.from_bytes(
             raw[_MKT_WHITELIST_TAG + 4:_MKT_WHITELIST_TAG + 36]))
-    except Exception:
+    except Exception as e:
+        log.warning("Solend index fetch failed: %s", e)
         return
     if _is_pubkey(pk) and pk != SYSTEM_PROGRAM:
         _LENDING_MARKET["whitelist"] = pk
@@ -1648,7 +1668,8 @@ def _pubkey_bytes(b58: str) -> bytes | None:
         import base58  # type: ignore
         raw = base58.b58decode(b58)
         return raw if len(raw) == 32 else None
-    except Exception:
+    except Exception as e:
+        log.warning("Obligation probe failed: %s", e)
         return None
 
 
@@ -1686,7 +1707,8 @@ def parse_solend_obligation_bytes(pk: str, raw: bytes) -> dict | None:
         unhealthy = _u128_wad(raw[122:138])
         deposits_len = raw[202]
         borrows_len = raw[203]
-    except Exception:
+    except Exception as e:
+        log.warning("Obligation probe failed: %s", e)
         return None
     if borrowed <= 0:
         return None
@@ -1799,7 +1821,8 @@ def _hydrate_from_rpc(pubkeys: list[str], source: str = "rpc") -> list[dict]:
                 [chunk, {"encoding": "base64"}],
                 timeout=12,
             )
-        except Exception:
+        except Exception as e:
+            log.warning("Obligation probe failed: %s", e)
             continue
         vals = (res or {}).get("value") if isinstance(res, dict) else (res or [])
         for pk, acc in zip(chunk, vals or []):
@@ -1814,7 +1837,8 @@ def _hydrate_from_rpc(pubkeys: list[str], source: str = "rpc") -> list[dict]:
                 import base64
                 try:
                     raw = base64.b64decode(data[0])
-                except Exception:
+                except Exception as e:
+                    log.warning("Obligation probe failed: %s", e)
                     continue
             parsed = parse_solend_obligation_bytes(pk, raw)
             if not parsed:
@@ -1848,7 +1872,8 @@ def probe_solend_obligations(market: str | None = None,
         try:
             wl = fetch_solend_watchlist()
             market = wl.get("market")
-        except Exception:
+        except Exception as e:
+            log.warning("Obligation probe failed: %s", e)
             market = None
     if not market:
         out["error"] = "no Solend market address"
@@ -2468,7 +2493,8 @@ def _acc_bytes(acc: dict | None) -> bytes:
         return b""
     try:
         return base64.b64decode(blob)
-    except Exception:
+    except Exception as e:
+        log.debug("AMM decode failed: %s", e)
         return b""
 
 
@@ -2490,7 +2516,8 @@ def _get_multiple_accounts(pks: list[str], timeout: float = 10.0) -> dict[str, d
                 res, _ = sol_rpc(
                     "getMultipleAccounts", [chunk, extra], timeout=timeout)
                 break
-            except Exception:
+            except Exception as e:
+                log.debug("AMM decode failed: %s", e)
                 res = None
         if res is None:
             continue
@@ -2533,7 +2560,8 @@ def _decode_raydium_amm(pk: str, acc: dict, spec: dict) -> dict | None:
         quote_mint = _b58pk(raw[_RAY_QUOTE_MINT:_RAY_QUOTE_MINT + 32])
         base_vault = _b58pk(raw[_RAY_BASE_VAULT:_RAY_BASE_VAULT + 32])
         quote_vault = _b58pk(raw[_RAY_QUOTE_VAULT:_RAY_QUOTE_VAULT + 32])
-    except Exception:
+    except Exception as e:
+        log.debug("AMM decode failed: %s", e)
         return None
     extra = {}
     if len(raw) >= 624:
@@ -2546,7 +2574,8 @@ def _decode_raydium_amm(pk: str, acc: dict, spec: dict) -> dict | None:
                 "market_program": _b58pk(raw[_RAY_MARKET_PROG:_RAY_MARKET_PROG + 32]),
                 "target_orders": _b58pk(raw[_RAY_TARGET_ORDERS:_RAY_TARGET_ORDERS + 32]),
             }
-        except Exception:
+        except Exception as e:
+            log.debug("AMM decode failed: %s", e)
             extra = {}
     return {
         "pk": pk, "dex": "raydium", "kind": "amm_v4",
@@ -2576,7 +2605,8 @@ def _decode_raydium_clmm(pk: str, acc: dict, spec: dict) -> dict | None:
         mint_b = _b58pk(raw[_RCLMM_MINT1:_RCLMM_MINT1 + 32])
         vault_a = _b58pk(raw[_RCLMM_VAULT0:_RCLMM_VAULT0 + 32])
         vault_b = _b58pk(raw[_RCLMM_VAULT1:_RCLMM_VAULT1 + 32])
-    except Exception:
+    except Exception as e:
+        log.debug("AMM decode failed: %s", e)
         return None
     tick_spacing = _u16le(raw, _RCLMM_TICK_SPACING)
     liq = _u128le(raw, _RCLMM_LIQ)
@@ -2591,7 +2621,8 @@ def _decode_raydium_clmm(pk: str, acc: dict, spec: dict) -> dict | None:
     if len(raw) >= 277:
         try:
             fee_rate = struct.unpack_from("<I", raw, 273)[0]
-        except Exception:
+        except Exception as e:
+            log.debug("AMM decode failed: %s", e)
             fee_rate = 2500  # 25 bps default
     if fee_rate <= 0:
         fee_rate = 2500
@@ -2628,7 +2659,8 @@ def _decode_whirlpool(pk: str, acc: dict, spec: dict) -> dict | None:
         mint_b = _b58pk(raw[181:213])
         vault_a = _b58pk(raw[133:165]) if len(raw) >= 245 else ""
         vault_b = _b58pk(raw[213:245]) if len(raw) >= 245 else ""
-    except Exception:
+    except Exception as e:
+        log.debug("Orca decode failed: %s", e)
         return None
     # WhirlpoolRewardInfo[3] starts at disc+261 = 269. Omit if account too short.
     reward_infos = None
@@ -2640,7 +2672,8 @@ def _decode_whirlpool(pk: str, acc: dict, spec: dict) -> dict | None:
                 break
             try:
                 mint_r = _b58pk(raw[off:off + 32])
-            except Exception:
+            except Exception as e:
+                log.debug("Orca decode failed: %s", e)
                 off += 128
                 continue
             em_x64 = _u128le(raw, off + 96)
@@ -3271,7 +3304,8 @@ def fetch_jupiter_roundtrips(
             for fut in as_completed(futs):
                 try:
                     row, nq = fut.result()
-                except Exception:
+                except Exception as e:
+                    log.debug("Roundtrip fetch failed: %s", e)
                     skip_no_route += 1
                     skipped += 1
                     continue
@@ -3579,7 +3613,8 @@ def _pubkey_from_keypair_file(path: str) -> str | None:
             secret = bytes(raw[:64])
             pub = secret[32:]
             return base58.b58encode(pub).decode()
-    except Exception:
+    except Exception as e:
+        log.debug("Roundtrip fetch failed: %s", e)
         return None
     return None
 
@@ -3687,8 +3722,8 @@ def ensure_runtime_keypairs() -> dict[str, str]:
 # Create wallets on import so the dashboard always has fundable addresses
 try:
     ensure_runtime_keypairs()
-except Exception:
-    pass
+except Exception as e:
+    log.debug("Roundtrip fetch failed: %s", e)
 SOL_WALLETS = current_wallets()
 
 
@@ -3714,15 +3749,18 @@ def _ix_data_bytes(data) -> bytes:
     if enc and "64" in enc.lower():
         try:
             return base64.b64decode(blob)
-        except Exception:
+        except Exception as e:
+            log.debug("ix data decode failed: %s", e)
             return b""
     try:
         import base58  # type: ignore
         return base58.b58decode(blob)
-    except Exception:
+    except Exception as e:
+        log.debug("ix data decode failed: %s", e)
         try:
             return base64.b64decode(blob)
-        except Exception:
+        except Exception as e:
+            log.debug("ix data decode failed: %s", e)
             return b""
 
 
@@ -4041,8 +4079,8 @@ def decode_solend_competitors(limit: int = 24,
                         _COMP_BEFORE = older[-1].get("sig")
                     if not older:
                         _COMP_HISTORY_N = _COMP_HISTORY_CAP
-                except Exception:
-                    pass
+                except Exception as e:
+                    log.debug("Competitor decode failed: %s", e)
         batch: list[dict] = []
         with _COMP_LOCK:
             while _COMP_PENDING and len(batch) < max(8, int(limit)):
@@ -4059,7 +4097,8 @@ def decode_solend_competitors(limit: int = 24,
                             "commitment": "confirmed"}],
                     timeout=12,
                 )
-            except Exception:
+            except Exception as e:
+                log.debug("Competitor decode failed: %s", e)
                 tx = None
             if not isinstance(tx, dict):
                 return {"_rpc_miss": True, "sig": sig}
@@ -4077,7 +4116,8 @@ def decode_solend_competitors(limit: int = 24,
                     sig = sig_row.get("sig")
                     try:
                         parsed = fut.result()
-                    except Exception:
+                    except Exception as e:
+                        log.debug("Competitor decode failed: %s", e)
                         _comp_mark_seen(sig or "")
                         continue
                     decoded += 1
@@ -4196,7 +4236,8 @@ def fetch_jito_tip_pressure(limit: int = 8) -> dict[str, Any]:
                 if isinstance(tips, list) and tips:
                     out["tip_accounts_live"] = len(tips)
                     break
-            except Exception:
+            except Exception as e:
+                log.debug("Landing watch failed: %s", e)
                 continue
         for tip in JITO_TIP_ACCOUNTS[:3]:
             try:
@@ -4222,7 +4263,8 @@ def fetch_jito_tip_pressure(limit: int = 8) -> dict[str, Any]:
                             if s.get("signature") else None
                         ),
                     })
-            except Exception:
+            except Exception as e:
+                log.debug("Landing watch failed: %s", e)
                 continue
         rows.sort(key=lambda r: -(int(r.get("slot") or 0)))
         out["rows"] = rows[:20]
@@ -4258,8 +4300,8 @@ def watch_solend_landing(
         if not _RESERVE_INDEX:
             try:
                 fetch_solend_watchlist()
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("Landing watch failed: %s", e)
         px = sol_px if sol_px is not None else (fetch_sol_price() or 0.0)
         sigs = []
         method = None
@@ -4304,7 +4346,8 @@ def watch_solend_landing(
                            "maxSupportedTransactionVersion": 0}],
                     timeout=10,
                 )
-            except Exception:
+            except Exception as e:
+                log.debug("Landing watch failed: %s", e)
                 return None
             if not isinstance(tx, dict):
                 return None
@@ -4346,7 +4389,8 @@ def watch_solend_landing(
             for fut in as_completed(futs):
                 try:
                     row = fut.result()
-                except Exception:
+                except Exception as e:
+                    log.debug("Landing watch failed: %s", e)
                     continue
                 if not row:
                     continue
@@ -4486,7 +4530,8 @@ def program_is_live(program_id: str) -> bool:
             return False
         owner = val.get("owner") or ""
         return owner in BPF_LOADERS or "BPFLoader" in owner
-    except Exception:
+    except Exception as e:
+        log.debug("Program check failed: %s", e)
         return False
 
 
@@ -4504,7 +4549,8 @@ def _solders_ok() -> bool:
         from solders.keypair import Keypair  # noqa: F401
         from solders.transaction import VersionedTransaction  # noqa: F401
         return True
-    except Exception:
+    except Exception as e:
+        log.debug("Program check failed: %s", e)
         return False
 
 
@@ -4674,7 +4720,8 @@ def _account_info(pk: str) -> dict | None:
         acc, _ = sol_rpc("getAccountInfo", [pk, {"encoding": "base64"}], timeout=6)
         val = (acc or {}).get("value") if isinstance(acc, dict) else None
         return val if isinstance(val, dict) else None
-    except Exception:
+    except Exception as e:
+        log.debug("TX compile failed: %s", e)
         return None
 
 
@@ -4693,7 +4740,8 @@ def _spl_amount(ata: str) -> int:
         acc, _ = sol_rpc("getTokenAccountBalance", [ata], timeout=6)
         val = (acc or {}).get("value") if isinstance(acc, dict) else {}
         return int((val or {}).get("amount") or 0)
-    except Exception:
+    except Exception as e:
+        log.debug("TX compile failed: %s", e)
         return 0
 
 
@@ -4734,7 +4782,8 @@ def _jup_swap_tx(quote: dict, user_pk: str,
         data = r.json()
         tx = (data or {}).get("swapTransaction")
         return tx if isinstance(tx, str) and len(tx) > 80 else None
-    except Exception:
+    except Exception as e:
+        log.debug("TX compile failed: %s", e)
         return None
 
 
@@ -4755,7 +4804,8 @@ def _json_ix(obj: dict | None):
                 bool(a.get("isWritable") or a.get("is_writable")),
             ))
         return Instruction(_pk(obj["programId"]), data, metas)
-    except Exception:
+    except Exception as e:
+        log.debug("TX compile failed: %s", e)
         return None
 
 
@@ -4821,20 +4871,22 @@ def _parse_alt_addresses(raw: bytes):
             addrs = list(tbl.addresses)
             if addrs:
                 return addrs
-        except Exception:
+        except Exception as e:
+            log.debug("ALT load failed: %s", e)
             try:
                 tbl = AddressLookupTable.from_bytes(raw)
                 addrs = list(tbl.addresses)
                 if addrs:
                     return addrs
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as e:
+                log.debug("ALT load failed: %s", e)
+    except Exception as e:
+        log.debug("ALT load failed: %s", e)
     try:
         from solders.address_lookup_table_account import LOOKUP_TABLE_META_SIZE
         meta = int(LOOKUP_TABLE_META_SIZE)
-    except Exception:
+    except Exception as e:
+        log.debug("ALT load failed: %s", e)
         meta = LOOKUP_TABLE_META
     blob = raw[meta:] if len(raw) >= meta else b""
     n = len(blob) // 32
@@ -4844,7 +4896,8 @@ def _parse_alt_addresses(raw: bytes):
     for i in range(n):
         try:
             addrs.append(_pk_bytes(blob[i * 32:(i + 1) * 32]))
-        except Exception:
+        except Exception as e:
+            log.debug("ALT load failed: %s", e)
             return None
     return addrs or None
 
@@ -4869,7 +4922,8 @@ def _load_alts(pks: list[str]) -> tuple[list, list[str]]:
             continue
         try:
             out.append(AddressLookupTableAccount(key=_pk(pk), addresses=addrs))
-        except Exception:
+        except Exception as e:
+            log.debug("ALT load failed: %s", e)
             failed.append(pk)
     return out, failed
 
@@ -4986,7 +5040,8 @@ def _ix_flash_borrow_index(ixs) -> int | None:
             data = bytes(ix.data)
             if data[:1] == bytes([SOLEND_IX_FLASH_BORROW]):
                 return i
-        except Exception:
+        except Exception as e:
+            log.warning("Flash compile failed: %s", e)
             continue
     return None
 
@@ -5345,7 +5400,8 @@ def _live_send_arb(plan: dict, funds: dict | None, rec: dict) -> dict:
         try:
             res, _ = sol_rpc("getBalance", [bot_pk], timeout=6)
             bot_lam = int((res or {}).get("value") or 0) if isinstance(res, dict) else int(res or 0)
-        except Exception:
+        except Exception as e:
+            log.debug("Balance check failed: %s", e)
             bot_lam = 0
     tip_guess = int(plan.get("jito_tip_lamports") or JITO_MIN_TIP_LAMPORTS)
     if inp == MINT_SOL:
@@ -5904,7 +5960,8 @@ def _live_send_liq(plan: dict, funds: dict | None, rec: dict) -> dict:
             set_compute_unit_limit(int(plan.get("compute_units") or 400_000)),
             set_compute_unit_price(int(plan.get("priority_fee_ul") or 1_000)),
         ]
-    except Exception:
+    except Exception as e:
+        log.warning("Live submit failed: %s", e)
         prio_ixs = []
     try:
         raw_refresh = _compile_v0(bot_kp, ixs_refresh, bh)
