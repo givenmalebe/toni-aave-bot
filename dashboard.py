@@ -51,6 +51,11 @@ except ImportError:
     EthEventFeed = None
     SolEventFeed = None
 
+try:
+    import sol_fees as solfee
+except ImportError:
+    solfee = None
+
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
@@ -721,6 +726,9 @@ class Dashboard:
         self._reg_cache = ({}, 0.0)
         self._last_prices = {}
         self._sol_hot_kick = None
+        self._sol_kick_pubkeys = set()
+        self.sol_tip_floor = (solfee.TipFloor() if solfee else None)
+        self.sol_breaker = (solfee.LossBreaker() if solfee else None)
         self.state = {
             "chain": "mainnet",
             "block": None,
@@ -1358,6 +1366,15 @@ class Dashboard:
             }
             self._sol_record(rec, skip=True)
             return rec
+        if self.sol_breaker and self.sol_breaker.paused:
+            rec = {
+                "ts": int(time.time()), "kind": kind, "stage": "blocked",
+                "why": ("loss circuit breaker paused "
+                        f"({self.sol_breaker.snapshot()['lost_sol']} SOL/24h)"),
+                "plan": plan,
+            }
+            self._sol_record(rec)
+            return rec
         if kind == "liq" and self.sol_edge_bias:
             contested = bool(opp.get("contested"))
             if contested and not pe.sol_is_edge_opp(opp):
@@ -1411,6 +1428,7 @@ class Dashboard:
             "bots": s["bots"],
             "broadcast": s["broadcast"],
             "feeds": self._feeds_status(),
+            "sol_fees": self._sol_fees_status(),
             "shadow": s.get("shadow", {}),
             "log": s["log"],
             "log_meta": self._log_meta_snapshot(),
@@ -3989,6 +4007,8 @@ class Dashboard:
                                               "eth_crossings": 0,
                                               "sol_events": 0})
         sh["sol_events"] += 1
+        if pubkey:
+            self._sol_kick_pubkeys.add(str(pubkey))
         if self._sol_hot_kick:
             self._sol_hot_kick.set()
 
@@ -3997,6 +4017,127 @@ class Dashboard:
             "eth": self.eth_feed.stats() if self.eth_feed else {"mode": "off"},
             "sol": self.sol_feed.stats() if self.sol_feed else {"mode": "off"},
         }
+
+    def _sol_fees_status(self):
+        if not solfee:
+            return {"mode": "off"}
+        return {"tip_floor": dict(self.sol_tip_floor.pcts) if
+                self.sol_tip_floor else {},
+                "tip_floor_age_s": (round(time.time() -
+                                          self.sol_tip_floor.updated, 1)
+                                    if self.sol_tip_floor and
+                                    self.sol_tip_floor.updated else None),
+                "breaker": self.sol_breaker.snapshot()
+                if self.sol_breaker else {},
+                "float_floor_sol": solfee.FLOAT_FLOOR_SOL}
+
+    async def _sol_tipfloor_loop(self):
+        """Poll Jito public tip-floor percentiles every 60s."""
+        if not solfee:
+            return
+        while True:
+            try:
+                async def _fetch():
+                    import aiohttp as _ah
+                    async with _ah.ClientSession(
+                            timeout=_ah.ClientTimeout(total=8)) as s:
+                        async with s.get(solfee.TIP_FLOOR_URL) as r:
+                            return await r.json(content_type=None)
+                data = await _fetch()
+                if self.sol_tip_floor and self.sol_tip_floor.update(data):
+                    self.log("sol-fees", "debug",
+                             f"tip floor p50="
+                             f"{self.sol_tip_floor.pcts['p50'] / 1e9:.6f} SOL")
+            except Exception:
+                await asyncio.sleep(5)
+            await asyncio.sleep(60)
+
+    def _find_sol_opp(self, pubkey: str) -> dict | None:
+        for o in ((self.state.get("sol") or {}).get("opportunities") or []):
+            if str(o.get("obligation") or "") == pubkey:
+                return o
+        return None
+
+    def _hot_plan_for(self, opp: dict) -> dict | None:
+        plan = opp.get("plan") or {}
+        pid = opp.get("protocol_id") or plan.get("protocol_id") or "solend"
+        if not plan or (pid == "kamino" and not plan.get("ready", True)):
+            # Minimal real Kamino plan — sender decodes the rest on-chain.
+            obl = str(opp.get("obligation") or "")
+            if pid == "kamino" and obl:
+                return {"kind": "liq", "protocol_id": "kamino",
+                        "obligation": obl, "execute": "kamino-jito",
+                        "ready": True}
+            return None
+        return plan
+
+    def _apply_calibrated_fees(self, plan: dict, opp: dict) -> None:
+        """Overwrite static tip/prio with live-calibrated values."""
+        if not (solfee and self.sol_tip_floor):
+            return
+        px = float((self.state.get("sol") or {}).get("sol_price_usd") or 0)
+        pre_tip = float(opp.get("net_usd") or opp.get("profit_usd") or 0)
+        contested = bool(opp.get("contested"))
+        tip = solfee.adaptive_tip_lamports(self.sol_tip_floor, pre_tip,
+                                           px, contested)
+        if tip > 0:
+            plan["jito_tip_lamports"] = int(tip)
+
+    def _record_live_outcome(self, rec: dict, plan: dict) -> None:
+        """Feed realized losses into the circuit breaker."""
+        if not (self.sol_breaker and solfee):
+            return
+        stage = str(rec.get("stage") or "")
+        if stage == "sent":
+            return
+        tip = int((plan or {}).get("jito_tip_lamports") or 0)
+        if tip > 0:
+            self.sol_breaker.record_loss(tip)
+
+    async def _sol_hot_executor(self):
+        """Consume feed kicks: debounce, then fast-path submit per obligation.
+
+        Every submission flows through _sol_maybe_submit — same gates,
+        floors and records as the scan path. Nothing silent-sends.
+        """
+        while True:
+            try:
+                if self._sol_hot_kick is None:
+                    await asyncio.sleep(1)
+                    continue
+                await self._sol_hot_kick.wait()
+                await asyncio.sleep(0.25)  # coalesce bursts
+                self._sol_hot_kick.clear()
+                kicked, self._sol_kick_pubkeys = (
+                    self._sol_kick_pubkeys, set())
+                sh = self.state.setdefault(
+                    "shadow", {"eth_ticks": 0, "eth_crossings": 0,
+                               "sol_events": 0})
+                for pk in list(kicked)[:16]:
+                    opp = self._find_sol_opp(pk)
+                    if not opp:
+                        sh["sol_kick_no_opp"] = sh.get("sol_kick_no_opp", 0) + 1
+                        continue
+                    plan = self._hot_plan_for(opp)
+                    if not plan:
+                        sh["sol_kick_no_plan"] = sh.get("sol_kick_no_plan",
+                                                        0) + 1
+                        continue
+                    self._apply_calibrated_fees(plan, opp)
+                    funds = (self.state.get("sol") or {}).get("funds") or {}
+                    bot = float(((funds.get("bot") or {})).get("sol") or 0)
+                    if solfee and bot < solfee.FLOAT_FLOOR_SOL:
+                        sh["sol_kick_low_float"] = (
+                            sh.get("sol_kick_low_float", 0) + 1)
+                        continue
+                    rec = self._sol_maybe_submit("liq", dict(opp), plan)
+                    self._record_live_outcome(rec, plan)
+                    sh["sol_kick_submits"] = sh.get("sol_kick_submits", 0) + 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.log("sol-feeds", "warn", f"hot executor error: {e}")
+                await asyncio.sleep(2)
 
     async def start_loops(self):
         self._loop = asyncio.get_running_loop()
@@ -4081,6 +4222,7 @@ class Dashboard:
             coros = coros + (self.eth_feed.run(),)
         if self.sol_feed:
             coros = coros + (self.sol_feed.run(),)
+        coros = coros + (self._sol_hot_executor(), self._sol_tipfloor_loop())
         for i, c in enumerate(coros):
             asyncio.create_task(self._late(i * 3.0, c))
 

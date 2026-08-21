@@ -66,3 +66,22 @@ def test_sharding_across_providers(monkeypatch):
     asyncio.run(drive())
     all_subs = sum(got.values(), [])
     assert sorted(all_subs) == [f"obl{i}" for i in range(5)]
+
+
+def test_subscribes_solend_and_kamino_logs(monkeypatch):
+    import feeds.sol_feed as sf
+    f = SolEventFeed(["ws://fake"], lambda: ["Obl1"],
+                     lambda p: None, lambda n: None)
+    progs = []
+    class WS3(FakeWS):
+        async def send(self, raw):
+            m = json.loads(raw)
+            if m.get("method") == "logsSubscribe":
+                progs.append(m["params"][0])
+    def fake_connect(url, **k):
+        return WS3([])
+    monkeypatch.setattr(sf.websockets, "connect", fake_connect)
+    import asyncio
+    asyncio.run(f._consume_one("ws://fake", shard_idx=0, total=1,
+                               single_pass=True))
+    assert set(progs) == {sf.SOLEND_PROGRAM, sf.KAMINO_PROGRAM}

@@ -18,6 +18,7 @@ def _make_fake_dash():
             self._last_prices = {}
             self._eth_hot_kick = None
             self._sol_hot_kick = None
+            self._sol_kick_pubkeys = set()
             self.eth_feed = None
             self.sol_feed = None
 

@@ -9,6 +9,8 @@ from feeds.common import ProviderHealth, shard
 log = logging.getLogger("sol_feed")
 
 SOLEND_PROGRAM = "So1endDgqrzd2skUgnsnCHupjG5CLQYp3LPJwCviYb"
+KAMINO_PROGRAM = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+LOG_PROGRAMS = (SOLEND_PROGRAM, KAMINO_PROGRAM)
 
 
 class SolEventFeed:
@@ -68,10 +70,13 @@ class SolEventFeed:
                             "params": [obl, {"encoding": "base64",
                                              "commitment": "confirmed"}]}))
                         rid += 1
-                    await ws.send(json.dumps({
-                        "jsonrpc": "2.0", "id": rid, "method": "logsSubscribe",
-                        "params": [SOLEND_PROGRAM,
-                                   {"commitment": "confirmed"}]}))
+                    for prog in LOG_PROGRAMS:
+                        await ws.send(json.dumps({
+                            "jsonrpc": "2.0", "id": rid,
+                            "method": "logsSubscribe",
+                            "params": [prog,
+                                       {"commitment": "confirmed"}]}))
+                        rid += 1
                     for _ in range(rid):
                         await ws.recv()
                     h.record_ok()
