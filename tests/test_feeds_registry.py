@@ -6,7 +6,7 @@ from feeds.registry import (build_eth_registry, affected, recomputed_hf,
 
 
 WL = [
-    {"user": "0xA", "collateral": "0xC1", "hf": 1.04, "coll_usd": 1000.0,
+    {"user": "0xA", "collateral": "0xC1", "hf": 1.04, "coll_usd": 1101.2,
      "debt_usd": 900.0, "liq_threshold": 0.85, "side": "collateral"},
     {"user": "0xB", "collateral": "0xC2", "hf": 1.5, "coll_usd": 500.0,
      "debt_usd": 300.0, "liq_threshold": 0.8, "side": "collateral"},
