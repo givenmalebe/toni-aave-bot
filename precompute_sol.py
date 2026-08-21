@@ -9,6 +9,20 @@ from typing import Optional
 
 log = logging.getLogger("precompute_sol")
 
+
+def _num(value, default=0):
+    if isinstance(value, bool) or value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
 _lock = threading.Lock()
 _shutdown = False
 CACHE_TTL = 120  # seconds
@@ -100,7 +114,7 @@ def evict_stale(max_slots_old: int = 30) -> int:
         if not _cache or _last_slot == 0:
             return 0
         evicted = 0
-        stale = [k for k, v in _cache.items() if _last_slot - v.get("data", {}).get("updated_slot", 0) > max_slots_old]
+        stale = [k for k, v in _cache.items() if _last_slot - _num(v.get("data", {}).get("updated_slot", 0)) > max_slots_old]
         for k in stale:
             del _cache[k]
             evicted += 1
@@ -136,15 +150,15 @@ async def refresh(hot_obligations: list[dict], rpc_url: str) -> None:
                 withdraw_reserve=obl.get("coll_reserve", ""),
                 repay_mint=obl.get("repay_mint", ""),
                 withdraw_mint=obl.get("withdraw_mint", ""),
-                debt_amount=obl.get("debt_amount", 0),
-                hf=obl.get("hf", 0),
-                compute_units=obl.get("compute_units", 400000),
-                priority_fee_ul=obl.get("priority_fee_ul", 50000),
-                jito_tip_lamports=obl.get("jito_tip_lamports", 50000),
+                debt_amount=_num(obl.get("debt_amount")),
+                hf=_num(obl.get("hf"), 0),
+                compute_units=_num(obl.get("compute_units"), 400000),
+                priority_fee_ul=_num(obl.get("priority_fee_ul"), 50000),
+                jito_tip_lamports=_num(obl.get("jito_tip_lamports"), 50000),
                 instruction_sequence=obl.get("instruction_sequence", []),
                 account_metas=obl.get("account_metas", []),
                 jupiter_route=obl.get("jupiter_route"),
-                estimated_profit_usd=obl.get("expected_profit_usd", 0),
+                estimated_profit_usd=_num(obl.get("expected_profit_usd"), 0),
             )
             new_cache[addr] = {"ts": time.time(), "data": entry}
         except Exception as e:

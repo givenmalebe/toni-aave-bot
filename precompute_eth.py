@@ -9,6 +9,20 @@ from typing import Any, Callable, Optional
 
 log = logging.getLogger("precompute_eth")
 
+
+def _num(value, default=0):
+    if isinstance(value, bool) or value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
 _lock = threading.Lock()
 _shutdown = False
 CACHE_TTL = 120  # seconds
@@ -100,7 +114,7 @@ def evict_stale(max_blocks_old: int = 3) -> int:
         if not _cache or _last_block == 0:
             return 0
         evicted = 0
-        stale = [k for k, v in _cache.items() if _last_block - v.get("data", {}).get("updated_block", 0) > max_blocks_old]
+        stale = [k for k, v in _cache.items() if _last_block - _num(v.get("data", {}).get("updated_block", 0)) > max_blocks_old]
         for k in stale:
             del _cache[k]
             evicted += 1
@@ -134,15 +148,15 @@ async def refresh(hot_positions: list[dict], rpc_url: str) -> None:
                 user=pos.get("user", ""),
                 collateral=pos.get("collateral", ""),
                 debt=pos.get("debt", ""),
-                debt_amount_wei=int(pos.get("debtToCover", "0")),
-                hf=pos.get("hf", 0),
+                debt_amount_wei=_num(pos.get("debtToCover")),
+                hf=_num(pos.get("hf"), 0),
                 contract_addr=pos.get("contract", ""),
                 liq_sig=pos.get("liq_sig", "0x"),
                 liq_args=pos.get("liq_args", []),
                 swap_path=pos.get("swap_path", b""),
-                gas_limit=pos.get("gas_limit", 1500000),
-                estimated_profit_usd=pos.get("net_usd", 0),
-                flash_amount_wei=int(pos.get("flash_amount", "0")),
+                gas_limit=_num(pos.get("gas_limit"), 1500000),
+                estimated_profit_usd=_num(pos.get("net_usd"), 0),
+                flash_amount_wei=_num(pos.get("flash_amount")),
                 debt_token=pos.get("debt_token", ""),
                 coll_token=pos.get("coll_token", ""),
             )
