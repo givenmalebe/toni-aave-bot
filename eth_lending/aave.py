@@ -14,6 +14,30 @@ def enabled() -> bool:
     return u.has_code(lb.V3_POOL) or u.has_code(lb.SPOKE)
 
 
+_SEL_GET_SOURCE = "0x3850c7bd"  # getSource(address)
+
+
+def oracle_feed_for_assets(assets) -> dict[str, str]:
+    """Map lowercase asset -> lowercase Chainlink feed via Aave V3 oracle."""
+    out: dict[str, str] = {}
+    oracle = getattr(lb, "V3_ORACLE", None)
+    if not oracle:
+        return out
+    for a in assets or []:
+        addr = (a or "").lower()
+        if not addr or addr in out:
+            continue
+        try:
+            raw = u.call(oracle, _SEL_GET_SOURCE + u.pad_addr(addr)[2:])
+            if raw and len(raw) >= 66:
+                feed = "0x" + raw[-40:]
+                if int(feed, 16):
+                    out[addr] = feed.lower()
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
 def harvest_users(from_block: int, to_block: int) -> dict:
     try:
         return lb.harvest_event_users(from_block, to_block)
