@@ -328,7 +328,7 @@
     },
   });
   const solIntelTrendHist = [];
-  let solMpFilter = "all", solOpFilter = "all", solBcFilter = "all", solCpFilter = "all";
+  let solMpFilter = "all", solOpFilter = "all", solOpProto = "all", solBcFilter = "all", solCpFilter = "all", solCpProto = "all";
   let solMpLiveCache = [], solOpCache = [], solBcRowsCache = [], solCpCache = [];
   let solWatchCache = [];
   let solOpLastMeta = {}, solCpLastMeta = {};
@@ -372,7 +372,7 @@
     if (hf == null || hf >= 100) return { cls: "ok", label: "—" };
     if (hf < 1.0) return { cls: "crit", label: "liq" };
     if (hf < 1.05) return { cls: "hot", label: "hot" };
-    if (hf < 1.1) return { cls: "warm", label: "warm" };
+    if (hf < 1.1) return { cls: "warn", label: "warn" };
     if (hf < 1.25) return { cls: "ok", label: "ok" };
     return { cls: "ok", label: "safe" };
   };
@@ -380,7 +380,7 @@
     if (hf == null) return "op-hf-ok";
     if (hf < 1.0) return "op-hf-crit";
     if (hf < 1.05) return "op-hf-hot";
-    if (hf < 1.1) return "op-hf-warm";
+    if (hf < 1.1) return "op-hf-warn";
     return "op-hf-ok";
   };
   const solShortPk = (pk) => {
@@ -614,6 +614,7 @@
       bcastEl.style.color = (!bc.enabled ? "var(--amber)"
         : ready.liq ? "var(--green)" : "var(--red)");
     }
+    renderFeedPills(s.feeds);
   };
 
   const updateSolBots = (sol) => {
@@ -890,6 +891,23 @@
     }
   };
 
+  const solProtoId = (o) => {
+    const p = String((o && (o.protocol_id || o.protocol)) || "").toLowerCase();
+    if (!p || p === "solend" || p === "save") return "solend";
+    if (p.indexOf("kamino") >= 0 || p === "klend") return "kamino";
+    if (p.indexOf("marginfi") >= 0 || p === "mfi") return "marginfi";
+    if (p.indexOf("drift") >= 0) return "drift";
+    return p || "solend";
+  };
+  const solProtoLabel = (o) => {
+    const map = { solend: "Solend", kamino: "Kamino", marginfi: "MarginFi", drift: "Drift" };
+    return map[solProtoId(o)] || solProtoId(o);
+  };
+  const solProtoPill = (o) => {
+    const id = solProtoId(o);
+    return `<span class="pill proto proto-${id}">${solProtoLabel(o)}</span>`;
+  };
+
   const renderSolOpps = () => {
     const body = $("sol-opps-table") && $("sol-opps-table").querySelector("tbody");
     const empty = $("sol-opps-empty");
@@ -899,13 +917,15 @@
     else if (solOpFilter === "profit") rows = rows.filter((o) => Number(o.net_usd != null ? o.net_usd : o.profit_usd) > 0);
     else if (solOpFilter === "race") rows = rows.filter((o) => o.race || o.contested);
     else if (solOpFilter === "hf1") rows = rows.filter((o) => o.hf != null && o.hf < 1);
+    if (solOpProto !== "all") rows = rows.filter((o) => solProtoId(o) === solOpProto);
     const note = $("sol-op-feed-note");
     const watchN = (solOpLastMeta && solOpLastMeta.watch_n) != null
       ? solOpLastMeta.watch_n
       : solWatchCache.length;
     if (note) {
+      const protoTag = solOpProto !== "all" ? ` · ${solProtoLabel({protocol_id: solOpProto})}` : "";
       note.textContent = solOpCache.length
-        ? `${rows.length}/${solOpCache.length} in feed · HF<1 +EV`
+        ? `${rows.length}/${solOpCache.length} in feed · HF<1 +EV${protoTag}`
         : `0 in feed · ${fmt.num(watchN, 0)} in watch`;
     }
     if (empty) {
@@ -919,20 +939,20 @@
         if (fatal || (m.status === "error" && !m.last_scan)) {
           empty.classList.add("err");
           empty.textContent = "sweep error: " + (m.note || m.status);
-        } else if (solOpFilter !== "all") {
+        } else if (solOpFilter !== "all" || solOpProto !== "all") {
           empty.classList.remove("err");
-          empty.textContent = `no HF<1 +EV match this filter · ${solOpFilter} · ${solOpCache.length} in feed · ${fmt.num(watchN, 0)} in watch`;
+          empty.textContent = `no HF<1 +EV match this filter · ${solOpProto !== "all" ? solProtoLabel({protocol_id: solOpProto}) : solOpFilter} · ${solOpCache.length} in feed · ${fmt.num(watchN, 0)} in watch`;
         } else if (m.last_scan || m.last_slot) {
           empty.classList.remove("err");
           empty.textContent = `no HF<1 +EV this sweep · watch ${fmt.num(watchN, 0)}`
             + (m.last_scan ? ` · last scan ${fmt.age(m.last_scan)} ago` : "");
         } else {
           empty.classList.remove("err");
-          empty.textContent = "scanning Solend obligations for HF<1 +EV…";
+          empty.textContent = "scanning Solend + Kamino + MarginFi + Drift for HF<1 +EV…";
         }
       }
     }
-    body.innerHTML = rows.slice(0, 60).map((o) => {
+    body.innerHTML = rows.slice(0, 80).map((o) => {
       const user = o.obligation || o.user || "";
       const short = solShortPk(user);
       const hf = o.hf;
@@ -945,6 +965,7 @@
       const netColor = net == null ? "var(--dim)" : net > 0 ? "var(--green)" : "var(--red)";
       return `<tr>
         <td class="mono copy" data-addr="${user}" title="${user}">${short}</td>
+        <td>${solProtoPill(o)}</td>
         <td class="${solHfClass(hf)}">${hfCell}</td>
         <td><b>${pair}</b>${sizes}</td>
         <td style="color:var(--amber)">${o.liq_bonus_pct != null ? o.liq_bonus_pct + "%" : (o.bonus_usd != null ? fmt.usd(o.bonus_usd) : "--")}</td>
@@ -958,7 +979,7 @@
     const meta = sol.opportunities_meta || {};
     solOpLastMeta = meta;
     const opps = (sol.opportunities || []).filter((o) => !o.proxy && o.hf != null && o.hf < 1);
-    const wl = (sol.watchlist || []).filter((w) => !w.proxy && w.hf != null).slice(0, 50);
+    const wl = (sol.watchlist || []).filter((w) => !w.proxy && w.hf != null && w.hf >= 1.0).slice(0, 50);
     const set = (id, v, cls) => {
       const e = $(id); if (!e) return;
       e.textContent = v;
@@ -1060,7 +1081,8 @@
     }
     const wbody = $("sol-watch-table") && $("sol-watch-table").querySelector("tbody");
     if (wbody) {
-      wbody.innerHTML = wl.slice(0, 50).map((w) => {
+      const wlFilt = solOpProto !== "all" ? wl.filter((w) => solProtoId(w) === solOpProto) : wl;
+      wbody.innerHTML = wlFilt.slice(0, 50).map((w) => {
         const hf = w.hf == null ? null : Number(w.hf);
         const hfCell = hf == null || !Number.isFinite(hf) ? "—" : (hf >= 100 ? "∞" : hf.toFixed(3));
         const urg = solHfUrgency(hf);
@@ -1071,6 +1093,7 @@
           : `<span class="op-urg ${urg.cls}">${urg.label}</span>`;
         return `<tr>
           <td class="mono copy" data-addr="${user}" title="click to copy">${solShortPk(user)}</td>
+          <td>${solProtoPill(w)}</td>
           <td class="${solHfClass(hf)}">${hfCell}</td>
           <td>${w.coll_usd != null ? fmt.usd(w.coll_usd) : "—"}</td>
           <td>${w.debt_usd != null ? fmt.usd(w.debt_usd) : "—"}</td>
@@ -1089,6 +1112,7 @@
     else if (solCpFilter === "edge") rows = rows.filter((r) => r.edge);
     else if (solCpFilter === "profit") rows = rows.filter((r) => rowEstUsd(r) != null || rowNetUsd(r) != null);
     else if (solCpFilter === "revert") rows = rows.filter((r) => /revert/i.test(r.flags || ""));
+    if (solCpProto !== "all") rows = rows.filter((r) => solProtoId(r) === solCpProto);
     const m = solCpLastMeta || {};
     const note = $("sol-cp-feed-note");
     if (note) note.textContent = feedWindowNote(
@@ -1104,9 +1128,9 @@
         if (isErr && st && st !== "ok") {
           empty.classList.add("err");
           empty.textContent = "scan error: " + (m.error || st.replace(/^err\s*/i, "") || "RPC failed");
-        } else if (solCpFilter !== "all") {
+        } else if (solCpFilter !== "all" || solCpProto !== "all") {
           empty.classList.remove("err");
-          empty.textContent = `no rows match filter ${solCpFilter} · ${solCpCache.length} in feed · ${fmt.num(m.count_1h, 0)} in last hour`;
+          empty.textContent = `no rows match filter ${solCpProto !== "all" ? solProtoLabel({protocol_id: solCpProto}) : solCpFilter} · ${solCpCache.length} in feed · ${fmt.num(m.count_1h, 0)} in last hour`;
         } else if (m.last_scan || m.last_slot) {
           empty.classList.remove("err");
           empty.textContent = `no confirmed liquidations in feed yet`
@@ -1116,7 +1140,7 @@
             + (m.last_scan ? ` · ${fmt.age(m.last_scan)} ago` : "");
         } else {
           empty.classList.remove("err");
-          empty.textContent = "scanning Solend main-market liquidate signatures…";
+          empty.textContent = "scanning Solend + Kamino + MarginFi + Drift liquidation signatures…";
         }
       }
     }
@@ -1132,7 +1156,6 @@
       if (c.edge)
         flags.push(`<span class="cp-flag edge" title="long-tail pair">edge</span>`);
       if (/revert/i.test(c.flags || "")) flags.push(`<span class="cp-flag revert">revert</span>`);
-      flags.push(`<span class="pill">solend</span>`);
       const left = cpLeftoverBits(c);
       if (left.length)
         flags.push(`<span class="cp-flag left" title="${left.join(", ")}">leftover</span>`);
@@ -1142,7 +1165,8 @@
         : `<span class="dim">--</span>`;
       return `<tr>
         <td class="dim" title="slot ${c.slot || "?"}">${c.ts ? fmt.age(c.ts) : (c.slot || "--")}</td>
-        <td><b>${c.pair || "solend-liq"}</b></td>
+        <td>${solProtoPill(c)}</td>
+        <td><b>${c.pair || "liq"}</b></td>
         <td class="mono copy" data-addr="${searcher}" title="${searcher}">${solShortPk(searcher)}</td>
         <td class="mono copy dim" data-addr="${user}" title="${user}">${solShortPk(user)}</td>
         <td class="dim" title="on-chain fee × SOL price — not their profit">${c.gas_usd != null ? fmt.usd(c.gas_usd) : "—"}</td>
@@ -1671,7 +1695,9 @@
     };
     bind("sol-mp-filters", "mp-f", (v) => { solMpFilter = v; }, renderSolMpLive);
     bind("sol-op-filters", "op-f", (v) => { solOpFilter = v; }, renderSolOpps);
+    bind("sol-proto-filters", "proto-f", (v) => { solOpProto = v; }, renderSolOpps);
     bind("sol-cp-filters", "cp-f", (v) => { solCpFilter = v; }, renderSolComps);
+    bind("sol-cp-proto-filters", "proto-f", (v) => { solCpProto = v; }, renderSolComps);
     bind("sol-bc-filters", "bc-f", (v) => { solBcFilter = v; }, () => {
       if (window.__lastState) updateSolBroadcast(window.__lastState.sol || {});
     });
@@ -1731,6 +1757,7 @@
       bcastEl.style.color = (!bc.enabled ? "var(--amber)"
         : ready.liq ? "var(--green)" : "var(--red)");
     }
+    renderFeedPills(s.feeds);
     $("sys-info").textContent = "uptime " + fmt.age(s.started) + " | ws " + (s.now ? "live" : "--");
   };
 
@@ -1739,6 +1766,23 @@
     { id: "scan", label: "scan", keys: ["sweep", "competitors"] },
     { id: "execute", label: "execute", keys: ["broadcast", "funds", "intel"] },
   ];
+
+  function renderFeedPills(feeds) {
+    const f = feeds || {};
+    [["p-feed-eth", "p-feed-eth-v", f.eth], ["p-feed-sol", "p-feed-sol-v", f.sol]]
+      .forEach(([id, vid, feed]) => {
+        const el = $(id), val = $(vid);
+        if (!el || !val) return;
+        const mode = String((feed || {}).mode || "off").toLowerCase();
+        val.textContent = mode.toUpperCase();
+        el.style.color = mode === "live" ? "var(--green)"
+          : mode === "degraded" ? "var(--amber)" : "var(--muted, #888)";
+        const provs = (feed || {}).providers || [];
+        el.title = provs.length
+          ? provs.map((p) => `${p.name}: ok=${p.ok} fail=${p.fail}`).join("\n")
+          : "disabled (no ETH_FEED_WSS_URLS / SOL_FEED_WS_URLS)";
+      });
+  }
 
   function renderBotsFleet(opts) {
     const el = $(opts.listId);
@@ -2348,7 +2392,7 @@
         }
       }
     }
-    body.innerHTML = rows.slice(0, 60).map((o) => {
+    body.innerHTML = rows.slice(0, 80).map((o) => {
       const user = o.user || "";
       const short = user ? `${user.slice(0, 6)}…${user.slice(-4)}` : "--";
       const hf = oppHf(o);
@@ -2414,7 +2458,7 @@
     if (hf == null || hf >= 100) return { cls: "ok", label: "—", bar: 0 };
     if (hf < 1.0) return { cls: "crit", label: "liq", bar: 100 };
     if (hf < 1.05) return { cls: "hot", label: "hot", bar: 90 };
-    if (hf < 1.1) return { cls: "warm", label: "warm", bar: 65 };
+    if (hf < 1.1) return { cls: "warn", label: "warn", bar: 65 };
     if (hf < 1.25) return { cls: "ok", label: "ok", bar: 35 };
     return { cls: "ok", label: "safe", bar: 12 };
   };
@@ -2423,7 +2467,7 @@
     if (hf == null) return "op-hf-ok";
     if (hf < 1.0) return "op-hf-crit";
     if (hf < 1.05) return "op-hf-hot";
-    if (hf < 1.1) return "op-hf-warm";
+    if (hf < 1.1) return "op-hf-warn";
     return "op-hf-ok";
   };
 
@@ -2453,7 +2497,7 @@
     const opps = s.opportunities || [];
     const wl = (s.watchlist || []).filter((w) => {
       const hf = Number(w.hf);
-      return Number.isFinite(hf) && hf < 1e38;
+      return Number.isFinite(hf) && hf >= 1e18 && hf < 1e38;
     }).slice(0, 50);
     const m = s.opportunities_meta || {};
     opLastMeta = m;

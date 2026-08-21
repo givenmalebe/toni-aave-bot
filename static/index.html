@@ -29,6 +29,8 @@
     <span class="pill">SAST <b id="p-sast">--</b></span>
     <span class="pill">ready <b id="p-ready">--</b></span>
     <span class="pill" id="p-bcast-pill">bcast <b id="p-bcast">--</b></span>
+    <span class="pill" id="p-feed-eth" title="ETH event feed">ETH FEED <b id="p-feed-eth-v">--</b></span>
+    <span class="pill" id="p-feed-sol" title="SOL event feed">SOL FEED <b id="p-feed-sol-v">--</b></span>
   </div>
 </header>
 
@@ -1025,11 +1027,11 @@
           <div class="op-scroll">
             <table id="sol-opps-table" class="mini">
               <thead><tr>
-                <th>user</th><th>hf</th><th>coll → debt</th><th>bonus</th><th>net $</th><th>flags</th>
+                <th>user</th><th>proto</th><th>hf</th><th>coll → debt</th><th>bonus</th><th>net $</th><th>flags</th>
               </tr></thead>
               <tbody></tbody>
             </table>
-            <div class="empty" id="sol-opps-empty">no HF&lt;1 Solend obligations yet — mempool landing + GPA probe each cycle</div>
+            <div class="empty" id="sol-opps-empty">scanning Solend + Kamino + MarginFi + Drift for HF&lt;1 +EV…</div>
           </div>
         </div>
         <div class="op-col">
@@ -1038,7 +1040,7 @@
           </div>
           <div class="op-scroll">
             <table id="sol-watch-table" class="mini">
-              <thead><tr><th>user</th><th>hf</th><th>coll</th><th>debt</th><th>urg</th></tr></thead>
+              <thead><tr><th>user</th><th>proto</th><th>hf</th><th>coll</th><th>debt</th><th>urg</th></tr></thead>
               <tbody></tbody>
             </table>
             <div class="empty" id="sol-watch-empty">waiting for lowest-HF hydrates…</div>
@@ -1049,7 +1051,7 @@
 
     <!-- Competitors -->
     <div class="card span-6" id="sol-card-competitors">
-      <h2>Competitor Liquidations <span class="tag sol-tag">Solend main market · confirmed liquidate ixs</span></h2>
+      <h2>Competitor Liquidations <span class="tag sol-tag">Solend + Kamino + MarginFi + Drift · confirmed liquidation txs</span></h2>
 
       <div class="cp-hero">
         <div class="cp-hero-left">
@@ -1106,11 +1108,18 @@
               <button type="button" data-f="profit" class="cp-f" title="our reconstructed estimate is positive">+$</button>
               <button type="button" data-f="revert" class="cp-f">revert</button>
             </div>
+            <div class="op-filters" id="sol-cp-proto-filters">
+              <button type="button" data-f="all" class="proto-f on">all</button>
+              <button type="button" data-f="solend" class="proto-f">Solend</button>
+              <button type="button" data-f="kamino" class="proto-f">Kamino</button>
+              <button type="button" data-f="marginfi" class="proto-f">MarginFi</button>
+              <button type="button" data-f="drift" class="proto-f">Drift</button>
+            </div>
           </div>
           <div class="cp-scroll">
             <table id="sol-comp-table" class="mini">
               <thead><tr>
-                <th>age</th><th>pair</th><th>liquidator</th><th>user</th>
+                <th>age</th><th>proto</th><th>pair</th><th>liquidator</th><th>user</th>
                 <th title="on-chain fee × SOL price — not their profit">gas paid</th>
                 <th title="our reconstructed bonus — blank if we cannot decode">our est</th>
                 <th title="our est minus fee — blank unless both are real">our net</th>
@@ -1118,7 +1127,7 @@
               </tr></thead>
               <tbody></tbody>
             </table>
-            <div class="empty" id="sol-comp-empty">scanning Solend main-market liquidate signatures…</div>
+            <div class="empty" id="sol-comp-empty">scanning Solend + Kamino + MarginFi + Drift liquidation signatures…</div>
           </div>
         </div>
         <div class="cp-col">
