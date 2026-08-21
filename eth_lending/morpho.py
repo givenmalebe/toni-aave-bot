@@ -4,6 +4,8 @@ Live send: Aave V3 flash of the loan asset → Morpho Blue `liquidate`.
 """
 from __future__ import annotations
 
+import time
+
 import requests
 import liquidation_bot as lb
 
@@ -15,6 +17,8 @@ LABEL = "Morpho"
 # Canonical Morpho Blue singleton (docs + deployments).
 MORPHO = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb"
 GRAPHQL = "https://api.morpho.org/graphql"
+_GQL_BACKOFF_S = 600
+_gql_fail_until = 0.0
 WAD = 10 ** 18
 ORACLE_SCALE = 10 ** 36
 MAX_LIF = int(1.15e18)
@@ -68,7 +72,10 @@ def _lif(lltv: int) -> int:
 
 
 def _gql_positions() -> tuple[list[dict], list[str]]:
+    global _gql_fail_until
     errs = []
+    if time.time() < _gql_fail_until:
+        return [], ["morpho gql backing off"]
     queries = [_position_query, """
 query LiqPositionsSimple {
   marketPositions(first: 80, where: { chainId_in: [1] }) {
@@ -113,7 +120,16 @@ query LiqPositionsSimple {
                      or [])
             return items, errs
         except Exception as e:  # noqa: BLE001
-            errs.append(str(e)[:160])
+            body = ""
+            resp = getattr(e, "response", None)
+            if resp is not None:
+                try:
+                    body = str(getattr(resp, "text", ""))[:200]
+                except Exception:  # noqa: BLE001
+                    body = ""
+            errs.append((str(e)[:160] + (f" | {body}" if body else "")))
+    if errs:
+        _gql_fail_until = time.time() + _GQL_BACKOFF_S
     return [], errs
 
 
