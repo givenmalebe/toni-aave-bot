@@ -1674,6 +1674,18 @@ class Dashboard:
             return {"stage": "skip",
                     "reason": f"profit ${profit_usd} < dyn min ${min_p:.2f}",
                     "user": user, "protocol": pid}
+        debt_usd = None
+        if isinstance(opp, dict):
+            debt_usd = opp.get("debt_usd")
+            if debt_usd is None:
+                debt_usd = (opp.get("plan") or {}).get("debt_usd")
+        band_skip, band_why = pe.liq_debt_band_skip(debt_usd)
+        if band_skip:
+            self.state["broadcast"]["skipped"].insert(
+                0, {"ts": int(time.time()), "user": user[:12], "why": band_why})
+            self.state["broadcast"]["skipped"] = self.state["broadcast"]["skipped"][:30]
+            return {"stage": "skip", "reason": band_why, "user": user,
+                    "protocol": pid}
         skip, why = pe.should_skip_user(
             user, self._contested,
             pe.recent_competitor_users(self.state.get("competitors") or []),
@@ -2057,6 +2069,9 @@ class Dashboard:
             if not plan.get("liquidatable"):
                 continue
             if not self._liq_live_ok(plan):
+                continue
+            band_skip, band_why = pe.liq_debt_band_skip(plan.get("debt_usd"))
+            if band_skip:
                 continue
             net = plan.get("net_usd")
             if net is None or float(net) < min_p:

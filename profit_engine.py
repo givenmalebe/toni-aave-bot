@@ -16,6 +16,12 @@ SAST_OFFSET = 2 * 3600  # UTC+2, no DST
 # Long-tail symbols where public competition is thinner.
 LONG_TAIL = {"EURC", "RLUSD", "FRAX", "GDOLLAR", "GHO", "cbBTC", "weETH", "wstETH"}
 
+# ETH long-tail debt band: only target positions inside [min, max].
+# Below the band gas/effort outweighs edge; above it, top-firm races are
+# unwinnable and each failed attempt burns gas.
+MIN_LIQ_DEBT_USD = float(os.environ.get("MIN_LIQ_DEBT_USD", "10000"))
+MAX_LIQ_DEBT_USD = float(os.environ.get("MAX_LIQ_DEBT_USD", "500000"))
+
 # Near-miss learning persistence
 _NEAR_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "near_miss_learning.json")
 
@@ -37,6 +43,30 @@ def dynamic_min_liq_profit_usd(gas_gwei: Optional[float], base: float = 10.0) ->
     if g <= 50:
         return base * 2.5
     return base * 4.0
+
+
+def liq_debt_band_skip(debt_usd: Any,
+                       min_usd: Optional[float] = None,
+                       max_usd: Optional[float] = None) -> Tuple[bool, str]:
+    """ETH long-tail band gate: target only debts in [min_usd, max_usd].
+
+    Unknown/invalid debt passes through — the +EV profit floor still applies.
+    """
+    if debt_usd is None:
+        return False, ""
+    try:
+        d = float(debt_usd)
+    except (TypeError, ValueError):
+        return False, ""
+    if d <= 0:
+        return False, ""
+    lo = float(min_usd) if min_usd is not None else MIN_LIQ_DEBT_USD
+    hi = float(max_usd) if max_usd is not None else MAX_LIQ_DEBT_USD
+    if d < lo:
+        return True, f"debt ${d:,.0f} < band min ${lo:,.0f}"
+    if d > hi:
+        return True, f"debt ${d:,.0f} > band max ${hi:,.0f}"
+    return False, ""
 
 
 def dynamic_min_arb_profit_usd(gas_gwei: Optional[float], eth_usd: Optional[float],
