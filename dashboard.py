@@ -42,6 +42,15 @@ socket.getaddrinfo = _ipv4_only
 
 import requests as _req  # noqa: E402
 
+try:
+    from feeds import registry as feed_registry
+    from feeds.eth_feed import EthEventFeed
+    from feeds.sol_feed import SolEventFeed
+except ImportError:
+    feed_registry = None
+    EthEventFeed = None
+    SolEventFeed = None
+
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
@@ -707,6 +716,11 @@ def aggregate_searcher_share(rows, now=None, last_slot=None, top_n=10):
 class Dashboard:
     def __init__(self):
         self.started = time.time()
+        self.eth_feed = None
+        self.sol_feed = None
+        self._reg_cache = ({}, 0.0)
+        self._last_prices = {}
+        self._sol_hot_kick = None
         self.state = {
             "chain": "mainnet",
             "block": None,
@@ -1396,6 +1410,8 @@ class Dashboard:
             "intel": s["intel"],
             "bots": s["bots"],
             "broadcast": s["broadcast"],
+            "feeds": self._feeds_status(),
+            "shadow": s.get("shadow", {}),
             "log": s["log"],
             "log_meta": self._log_meta_snapshot(),
             "sol": {
@@ -3926,9 +3942,81 @@ class Dashboard:
         sol = self.state.get("sol", {})
         return sol.get("watchlist", [])
 
+    def _get_hot_sol_pubkeys(self):
+        return [w.get("obligation") for w in (self.state.get("sol", {})
+                .get("watchlist") or []) if w.get("obligation")]
+
+    def _rebuild_registries(self):
+        wl = self.state.get("watchlist", [])
+        feed_for_asset = {}
+        try:
+            from eth_lending.aave import oracle_feed_for_assets
+            feed_for_asset = oracle_feed_for_assets(
+                [w.get("collateral") for w in wl if w.get("collateral")])
+        except Exception:
+            feed_for_asset = {}
+        self._reg_cache = (feed_registry.build_eth_registry(wl, feed_for_asset)
+                           if feed_registry else {}, time.time())
+
+    def _on_oracle_tick(self, feed_addr: str, price: float):
+        sh = self.state.setdefault("shadow", {"eth_ticks": 0,
+                                              "eth_crossings": 0,
+                                              "sol_events": 0})
+        sh["eth_ticks"] += 1
+        reg, built_ts = self._reg_cache
+        if not reg or time.time() - built_ts > 300:
+            self._rebuild_registries()
+            reg = self._reg_cache[0]
+        last = self._last_prices
+        old = last.get(feed_addr)
+        last[feed_addr] = price
+        ratio = 1.0 if not old else (price / old if old else 1.0)
+        crossed = []
+        for pos in (feed_registry.affected(reg, feed_addr) if feed_registry
+                    else []):
+            hf = feed_registry.recomputed_hf(pos, ratio)
+            if hf < 1.0:
+                crossed.append(pos["user"])
+        if crossed:
+            sh["eth_crossings"] += 1
+            self.log("eth-feed", "warn",
+                     f"oracle tick {feed_addr} -> crossed: {crossed}")
+            if self._eth_hot_kick:
+                self._eth_hot_kick.set()
+
+    def _on_sol_account_change(self, pubkey: str):
+        sh = self.state.setdefault("shadow", {"eth_ticks": 0,
+                                              "eth_crossings": 0,
+                                              "sol_events": 0})
+        sh["sol_events"] += 1
+        if self._sol_hot_kick:
+            self._sol_hot_kick.set()
+
+    def _feeds_status(self):
+        return {
+            "eth": self.eth_feed.stats() if self.eth_feed else {"mode": "off"},
+            "sol": self.sol_feed.stats() if self.sol_feed else {"mode": "off"},
+        }
+
     async def start_loops(self):
         self._loop = asyncio.get_running_loop()
         self._eth_hot_kick = asyncio.Event()
+        self._sol_hot_kick = asyncio.Event()
+        if EthEventFeed is not None and os.environ.get(
+                "ETH_FEED_ENABLED", "1") == "1":
+            raw = os.environ.get("ETH_FEED_WSS_URLS", "")
+            urls = [u.strip() for u in raw.split(",") if u.strip()]
+            if urls:
+                self.eth_feed = EthEventFeed(urls, self._on_oracle_tick,
+                                             lambda b: None)
+        if SolEventFeed is not None and os.environ.get(
+                "SOL_FEED_ENABLED", "1") == "1":
+            raw = os.environ.get("SOL_FEED_WS_URLS", "")
+            surls = [u.strip() for u in raw.split(",") if u.strip()]
+            if surls:
+                self.sol_feed = SolEventFeed(surls, self._get_hot_sol_pubkeys,
+                                             self._on_sol_account_change,
+                                             lambda n: None)
         # Initialize hybrid execution engine
         gas_bidder = GasBiddingEngine(
             aggressive_factor=1.15,
@@ -3968,6 +4056,10 @@ class Dashboard:
         # Graceful shutdown handler
         def _handle_shutdown(sig):
             self.log("shutdown", "warn", f"Received {sig.name}, shutting down...")
+            if self.eth_feed:
+                self.eth_feed.stop()
+            if self.sol_feed:
+                self.sol_feed.stop()
             _pre_eth.stop()
             _pre_sol.stop()
             sols.stop()
@@ -3985,6 +4077,10 @@ class Dashboard:
                  self.sol_funds_loop(), self.sol_sweep_loop(),
                  self.sol_competitor_loop(),
                  self.sol_intel_loop())
+        if self.eth_feed:
+            coros = coros + (self.eth_feed.run(),)
+        if self.sol_feed:
+            coros = coros + (self.sol_feed.run(),)
         for i, c in enumerate(coros):
             asyncio.create_task(self._late(i * 3.0, c))
 
