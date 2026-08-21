@@ -73,6 +73,14 @@ def _rpc_requests(url, method, params, timeout=10, retries=2):
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def coerce_hf(value, default: float = 999.0) -> float:
+    try:
+        f = float(value)
+        return f if f == f else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _load_dotenv(path):
     """Load KEY=VALUE from .env without overriding a real process env. No secrets logged."""
     if not os.path.isfile(path):
@@ -122,6 +130,11 @@ import profit_brain as brain  # noqa: E402
 import sol_scanner as sols  # noqa: E402
 import sol_lending as slend  # noqa: E402
 import eth_lending as elend  # noqa: E402
+from hybrid_executor import HybridExecutor
+from gas_bidder import GasBiddingEngine, CompetitorTx
+from backrun import BackrunEngine
+from execution_tracker import ExecutionTracker
+from alchemy_relay import AlchemyRelay
 
 # mev_bot (defi-arb) is optional — ARB removed; provide ETH price stub
 try:
@@ -1717,6 +1730,21 @@ class Dashboard:
                     "reason": f"net ${net_f:.2f} < dyn min ${min_p:.2f}",
                     "user": user}
         out["gas_gwei"] = float(self.state.get("gas_gwei") or out.get("gas_gwei") or 2)
+        # Use competitor-adaptive gas bidding when hybrid executor is available
+        if self.hybrid_executor and self.hybrid_executor.enabled:
+            try:
+                from gas_bidder import CompetitorTx as _CTx
+                he = self.hybrid_executor
+                bid = he.gas_bidder.calculate_bid(
+                    out, out.get("gas_gwei", 2.0), float(self.state.get("eth_price_usd") or 2000)
+                )
+                if bid:
+                    out["gas_gwei"] = bid.max_fee_per_gas
+                    out["prio_gas_gwei"] = bid.max_priority_fee_per_gas
+                    out["gas_limit"] = bid.gas_limit
+                    out["gas_bid_competitive"] = True
+            except Exception:
+                pass  # fall through to static formula
         if pid == "aave":
             out["contract"] = out.get("contract") or ml.CONTRACT or ""
         prio_mult = pe.race_prio_mult(why)
@@ -2981,6 +3009,33 @@ class Dashboard:
             self.state["intel"]["brain"] = brain.policy(self.state)
         except Exception:
             pass
+        # Feed competitor gas data to hybrid executor for adaptive bidding
+        if self.hybrid_executor and self.hybrid_executor.enabled:
+            try:
+                from gas_bidder import CompetitorTx as _CTx
+                he = self.hybrid_executor
+                he.gas_bidder.track_competitor(_CTx(
+                    block_number=rec.get("block", 0),
+                    max_fee_per_gas=float(rec.get("gas_price_gwei") or 0),
+                    max_priority_fee_per_gas=float(rec.get("gas_price_gwei") or 0) * 0.15,
+                    success=rec.get("status") != 0,
+                ))
+            except Exception:
+                pass
+        # Track competitor backruns
+        if self.hybrid_executor and self.hybrid_executor.enabled:
+            try:
+                from backrun import CompetitorLanding as _CL
+                he = self.hybrid_executor
+                he.backrun_engine._recent_competitor_txs.append(_CL(
+                    tx_hash=rec.get("tx", ""),
+                    block_number=rec.get("block", 0),
+                    user=rec.get("user", ""),
+                    protocol=rec.get("protocol", "aave"),
+                    profit_usd=float(rec.get("est_profit_usd") or 0),
+                ))
+            except Exception:
+                pass
         tag = "MISSED" if missed else "comp"
         self.log("competitor", "warn",
                  f"[{tag}] {rec.get('protocol')} blk={rec['block']} "
@@ -3440,8 +3495,15 @@ class Dashboard:
                         o.setdefault("actionable", o.get("hf") is not None and o["hf"] < 1.0)
                         o.setdefault("profit_usd", None)
                         o.setdefault("net_usd", None)
+                        if (pid == "kamino" and o.get("hf") is not None
+                                and o["hf"] < 1.0):
+                            # Rough edge: 20% close factor x ~5% liq bonus on debt
+                            debt_usd = float(o.get("debt_usd") or 0)
+                            o["profit_usd"] = round(debt_usd * 0.20 * 0.05, 2)
+                            o["net_usd"] = o["profit_usd"]
                         o["plan"] = {"kind": "liq", "execute": f"{pid}-jito",
                                      "protocol_id": pid, "ready": False,
+                                     "obligation": o.get("obligation"),
                                      "note": f"{pid} plan builder not yet wired"}
                 existing = [o for o in (sol.get("opportunities") or [])
                             if o.get("kind") == "liq" or o.get("hf") is not None]
@@ -3453,6 +3515,8 @@ class Dashboard:
                 wl = probe.get("watch") or sols.closest_to_stress(50)
                 if not wl:
                     wl = sols.closest_to_stress(50)
+                for w in wl:
+                    w.setdefault("protocol_id", "solend")
                 multi_wl = multi.get("watch") or []
                 wl = sorted(wl + multi_wl, key=lambda w: w.get("hf") or 99)
                 sol["watchlist"] = wl[:50]
@@ -3569,7 +3633,12 @@ class Dashboard:
                 om["errors"] = [str(e)[:160]]
                 self.sol_bot("sweep", "error", e)
                 self.log("sol-sweep", "error", e)
-            await asyncio.sleep(90)
+            # Adaptive sweep: 5s when there are hot opportunities, 15s otherwise
+            sol_state = self.state.get("sol") or {}
+            sol_opps = sol_state.get("opportunities") or []
+            hot = any((o.get("hf") or 99) < 1.0 for o in sol_opps)
+            interval = 5 if hot else 15
+            await asyncio.sleep(interval)
 
     async def sol_competitor_loop(self):
         while True:
@@ -3851,7 +3920,7 @@ class Dashboard:
     # ------------------------------------------------------------ server
     def _get_hot_eth_positions(self):
         watchlist = self.state.get("watchlist", [])
-        return [w for w in watchlist if w.get("hf", 999) < 1.05]
+        return [w for w in watchlist if coerce_hf(w.get("hf")) < 1.05]
 
     def _get_hot_sol_obligations(self):
         sol = self.state.get("sol", {})
@@ -3860,6 +3929,35 @@ class Dashboard:
     async def start_loops(self):
         self._loop = asyncio.get_running_loop()
         self._eth_hot_kick = asyncio.Event()
+        # Initialize hybrid execution engine
+        gas_bidder = GasBiddingEngine(
+            aggressive_factor=1.15,
+            profit_scale_cap=2.0,
+            min_profit_usd=10.0,
+            max_gas_cost_eth=0.1,
+        )
+        backrun_engine = BackrunEngine()
+        tracker = ExecutionTracker(
+            skip_cooldown_blocks=3,
+            bid_increase_factor=1.25,
+            pause_threshold=5,
+            pause_blocks=10,
+        )
+        # Try to use stealth module for 7-builder spray; fall back to AlchemyRelay
+        try:
+            import sys as _sys
+            _sys.path.insert(0, os.path.join(os.path.dirname(__file__), "aave-v4-liquidation-bot"))
+            import stealth as _stealth_mod
+            relay_or_stealth = _stealth_mod
+        except ImportError:
+            relay_or_stealth = AlchemyRelay()
+        self.hybrid_executor = HybridExecutor(
+            gas_bidder=gas_bidder,
+            backrun_engine=backrun_engine,
+            relay=relay_or_stealth,
+            tracker=tracker,
+            enabled=True,  # ALWAYS ON — competative mode, contract deployment later
+        )
         self._enforce_keep_live()
         self.refresh_broadcast_ready()
         self.refresh_sol_broadcast_ready()
@@ -3873,8 +3971,11 @@ class Dashboard:
             _pre_eth.stop()
             _pre_sol.stop()
             sols.stop()
-        for sig in (signal.SIGTERM, signal.SIGINT):
-            self._loop.add_signal_handler(sig, lambda s=sig: _handle_shutdown(s))
+        try:
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                self._loop.add_signal_handler(sig, lambda s=sig: _handle_shutdown(s))
+        except NotImplementedError:
+            pass
         coros = (self.mempool_loop(), self.eth_hot_loop(), self.prices_loop(),
                  self.funds_loop(),
                  self.sweep_loop(), self.competitor_loop(),
@@ -4241,17 +4342,34 @@ class Dashboard:
         return aiohttp.web.json_response(trader.state_dict())
 
     async def hybrid_toggle(self, request):
-        """Toggle hybrid execution on/off."""
-        try:
-            body = await request.json()
-        except Exception:
-            return aiohttp.web.json_response({"error": "bad json"}, status=400)
-        enabled = bool(body.get("enabled", False))
-        self.hybrid_enabled = enabled
+        """Ensure hybrid execution is always enabled."""
         if self.hybrid_executor:
-            self.hybrid_executor.enabled = enabled
-        self.log("hybrid", "info", f"hybrid execution {'enabled' if enabled else 'disabled'}")
-        return aiohttp.web.json_response({"enabled": enabled})
+            # Always enable — hybrid executor initialized in start_loops() with enabled=True
+            self.hybrid_executor.enabled = True
+            self.hybrid_enabled = True
+            self.log("hybrid", "info", "hybrid execution enabled — ALWAYS ON competitive mode")
+            return aiohttp.web.json_response({"enabled": True, "message": "hybrid mode fixed ON"})
+        # Fallback: initialize and enable
+        self.hybrid_executor = HybridExecutor(
+            gas_bidder=GasBiddingEngine(
+                aggressive_factor=1.15,
+                profit_scale_cap=2.0,
+                min_profit_usd=10.0,
+                max_gas_cost_eth=0.1,
+            ),
+            backrun_engine=BackrunEngine(),
+            relay=None,  # will use stealth from import
+            tracker=ExecutionTracker(
+                skip_cooldown_blocks=3,
+                bid_increase_factor=1.25,
+                pause_threshold=5,
+                pause_blocks=10,
+            ),
+            enabled=True,
+        )
+        self.hybrid_enabled = True
+        self.log("hybrid", "info", "hybrid executor initialized and enabled — ALWAYS ON")
+        return aiohttp.web.json_response({"enabled": True, "message": "hybrid executor initialized and enabled"})
 
 
 _EDGE = {
