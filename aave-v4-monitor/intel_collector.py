@@ -186,8 +186,17 @@ def append(rec):
         f.write(json.dumps(rec) + "\n")
 
 
-def aggregate_liq_intel(spoke_rows, eth_price=3500.0):
-    """Aggregate liquidation intel from spoke transaction rows."""
+def aggregate_liq_intel(spoke_rows, eth_price=3500.0,
+                        competitors=None, watchlist=None,
+                        opportunities=None, competitors_meta=None):
+    """Aggregate liquidation intel from spoke transaction rows.
+
+    Optional kwargs (used by both ETH and SOL intel loops):
+      competitors: raw competitor rows (deduped for searcher count fallback)
+      watchlist: current watchlist rows → watchlist_size
+      opportunities: open opps → open_opps / best_opp_usd
+      competitors_meta: aggregated meta → competitors block when present
+    """
     LIQ_SEL_PREFIXES = ("0xc2fa746c", "0xd8eabcb8")  # Aave liquidationCall, Morpho liquidate
     PROTO_MAP = {
         "Aave V3 Pool": "aave_v3",
@@ -212,8 +221,31 @@ def aggregate_liq_intel(spoke_rows, eth_price=3500.0):
         },
         "health_dist": {"<1.0": 0, "1.0-1.05": 0, "1.05-1.1": 0, ">1.1": 0},
         "competitors": {"searchers": 0, "success_rate": 0.0, "missed": 0},
+        "watchlist_size": len(watchlist or []),
+        "open_opps": 0,
+        "best_opp_usd": 0.0,
         "volume_history": [],
     }
+
+    cm = competitors_meta or {}
+    comp = result["competitors"]
+    if cm.get("unique_searchers") is not None:
+        comp["searchers"] = int(cm.get("unique_searchers") or 0)
+    elif competitors:
+        comp["searchers"] = len({str(c.get("searcher") or "")
+                                 for c in competitors
+                                 if c.get("searcher")})
+    missed = float(cm.get("missed_by_us") or 0)
+    comp["missed"] = int(missed)
+    total_1h = float(cm.get("count_1h") or 0)
+    if total_1h > 0:
+        comp["success_rate"] = round(max(total_1h - missed, 0.0) / total_1h, 3)
+
+    opps = opportunities or []
+    profits = [float(o.get("profit_usd") or o.get("net_usd") or 0)
+               for o in opps]
+    result["open_opps"] = sum(1 for p in profits if p > 0)
+    result["best_opp_usd"] = max(profits or [0.0])
 
     liq_rows = [r for r in spoke_rows if r.get("sel") in LIQ_SEL_PREFIXES or r.get("name", "").startswith("liquidat")]
     if not liq_rows:

@@ -40,8 +40,10 @@ def _relu(x: np.ndarray) -> np.ndarray:
 class OnlineDeepMLP:
     """Small deep net trained online; persists weights to disk."""
 
-    def __init__(self, rng: Optional[np.random.Generator] = None):
+    def __init__(self, rng: Optional[np.random.Generator] = None,
+                 in_dim: int = FEAT_DIM):
         self.rng = rng or np.random.default_rng(42)
+        self.in_dim = in_dim
         self.steps = 0
         self.loss_ema = 0.5
         self.acc_ema = 0.5
@@ -51,7 +53,7 @@ class OnlineDeepMLP:
         self._init_adam()
 
     def _init_weights(self) -> None:
-        dims = [FEAT_DIM, *HIDDEN, 2]
+        dims = [self.in_dim, *HIDDEN, 2]
         self.W: List[np.ndarray] = []
         self.b: List[np.ndarray] = []
         for i in range(len(dims) - 1):
@@ -197,7 +199,7 @@ class OnlineDeepMLP:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "OnlineDeepMLP":
-        m = cls()
+        m = cls(in_dim=(len(d["W"][0]) if d.get("W") else FEAT_DIM))
         if not d or "W" not in d:
             return m
         try:
@@ -411,6 +413,163 @@ def policy(state: Dict[str, Any]) -> Dict[str, Any]:
         "prefer_edge": prefer_edge,
         "min_liq_mult": round(min_liq_mult, 3),
         "min_arb_mult": round(min_arb_mult, 3),
+        "cadence_mult": round(cadence_mult, 3),
+        "steps": brain.steps,
+        "loss_ema": round(brain.loss_ema, 5),
+        "acc_ema": round(brain.acc_ema, 4),
+        "replay": len(brain.replay),
+        "updated": brain.updated,
+    }
+
+
+# ---------------------------------------------------------------- SOL twin --
+# Same architecture, separate weights: Solana economics (Jito tips, CU fees,
+# quiet-market small obligations) differ enough to warrant its own model.
+
+SOL_STATE_PATH = os.path.join(HERE, "profit_brain_state_sol.json")
+SOL_FEAT_DIM = 16
+SOL_MODEL_NAME = "TONI-SOL-DeepProfit-v1 (residual MLP + Adam + replay)"
+_sol_brain: Optional[OnlineDeepMLP] = None
+
+
+def get_sol_brain() -> OnlineDeepMLP:
+    global _sol_brain
+    if _sol_brain is None:
+        _sol_brain = load_sol()
+    return _sol_brain
+
+
+def load_sol() -> OnlineDeepMLP:
+    if not os.path.exists(SOL_STATE_PATH):
+        return OnlineDeepMLP(in_dim=SOL_FEAT_DIM)
+    try:
+        with open(SOL_STATE_PATH) as f:
+            return OnlineDeepMLP.from_dict(json.load(f))
+    except Exception:
+        return OnlineDeepMLP(in_dim=SOL_FEAT_DIM)
+
+
+def save_sol(brain: Optional[OnlineDeepMLP] = None) -> None:
+    b = brain or get_sol_brain()
+    try:
+        with open(SOL_STATE_PATH, "w") as f:
+            json.dump(b.to_dict(), f)
+    except OSError:
+        pass
+
+
+def features_from_sol_state(state: Dict[str, Any]) -> np.ndarray:
+    """Build SOL_FEAT_DIM vector from live dashboard state (SOL side)."""
+    sol = state.get("sol") or {}
+    fees = state.get("sol_fees") or {}
+    tf = fees.get("tip_floor") or {}
+    breaker = fees.get("breaker") or {}
+    feeds = (state.get("feeds") or {}).get("sol") or {}
+    intel = sol.get("intel") or {}
+    mem = sol.get("mempool") or {}
+    bc = sol.get("broadcast") or {}
+    funds = sol.get("funds") or {}
+    bot = (funds.get("bot") or {}) if isinstance(funds, dict) else {}
+
+    px = float(sol.get("sol_price_usd") or 0)
+    hour = time.gmtime(int(time.time()) + 2 * 3600).tm_hour
+    dow = time.gmtime(int(time.time()) + 2 * 3600).tm_wday
+    opps = sol.get("opportunities") or []
+    best_opp = max([float(o.get("profit_usd") or 0) for o in opps] or [0.0])
+    wl = sol.get("watchlist") or []
+    best_hf = min([float(w.get("hf") or 99) for w in wl] or [99.0])
+
+    x = np.array([
+        px / 200.0,
+        math.sin(2 * math.pi * hour / 24),
+        math.cos(2 * math.pi * hour / 24),
+        dow / 6.0,
+        float(intel.get("readiness") or 0) / 100.0,
+        min(float(tf.get("p50") or 0) / 100_000.0, 2.0),
+        min(float(tf.get("p95") or 0) / 1_000_000.0, 2.0),
+        min(float(fees.get("tip_floor_age_s") or 9999) / 300.0, 2.0),
+        min(len(opps) / 10.0, 1.5),
+        min(best_opp / 50.0, 2.0),
+        min(best_hf / 2.0, 2.5),
+        min(float(breaker.get("lost_sol") or 0) / 0.05, 1.5),
+        min(float(feeds.get("events_seen") or 0) / 500.0, 2.0),
+        min(float(mem.get("count") or 0) / 150.0, 1.5),
+        1.0 if bc.get("edge_bias") else 0.0,
+        min(float(bot.get("sol") or 0) / 0.25, 2.0),
+    ], dtype=np.float64)
+    assert x.shape == (SOL_FEAT_DIM,)
+    return x
+
+
+def learn_sol_broadcast(state: Dict[str, Any], rec: Dict[str, Any]) -> None:
+    """Train the SOL twin on hot-executor / broadcast outcomes."""
+    brain = get_sol_brain()
+    x = features_from_sol_state(state)
+    stage = str(rec.get("stage") or rec.get("status") or "").lower()
+    ok = stage in ("sent", "ok", "simulated", "dry-run", "cast-ok")
+    profit = float(rec.get("profit_usd") or rec.get("net_usd")
+                   or rec.get("expected_profit_usd") or 0)
+    if stage.startswith("skip") or stage == "blocked":
+        act, profit = 0.0, min(profit, 0.0)
+    elif ok:
+        act = 1.0
+    else:
+        act = 0.0
+        profit = min(profit, 0.0)
+    brain.observe(x, act, profit)
+    save_sol(brain)
+
+
+def sol_policy(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Emit SOL policy knobs + human advice from the SOL twin."""
+    brain = get_sol_brain()
+    x = features_from_sol_state(state)
+    p_act, exp_net = brain.predict(x)
+    conf = abs(p_act - 0.5) * 2.0
+
+    fees = state.get("sol_fees") or {}
+    tf = fees.get("tip_floor") or {}
+    tips_hot = float(tf.get("p95") or 0) > 500_000  # lamports: congestion
+    breaker_paused = bool((fees.get("breaker") or {}).get("paused"))
+
+    min_liq_mult = 1.0
+    cadence_mult = 1.0
+    prefer_edge = False
+    advice = "observe"
+
+    if brain.steps < 20:
+        advice = "warmup — collecting SOL outcome labels"
+    elif breaker_paused:
+        advice = "breaker paused — standing down until reset"
+        min_liq_mult = 1.6
+        cadence_mult = 1.3
+    elif p_act >= 0.62 and exp_net > 0.5 and not tips_hot:
+        advice = "hunt — cheap tips, model expects beatable edge"
+        min_liq_mult = 0.75
+        cadence_mult = 0.7
+        prefer_edge = True
+    elif tips_hot:
+        advice = "tip floor hot — raise floors during congestion"
+        min_liq_mult = 1.4
+        cadence_mult = 1.15
+        prefer_edge = True
+    elif p_act < 0.35:
+        advice = "stand down — low win probability"
+        min_liq_mult = 1.5
+        cadence_mult = 1.25
+    else:
+        advice = "selective — take clear net-positive only"
+        prefer_edge = True
+        cadence_mult = 0.85
+
+    return {
+        "model": SOL_MODEL_NAME,
+        "act_prob": round(p_act, 4),
+        "exp_net_usd": round(exp_net, 2),
+        "confidence": round(conf, 3),
+        "advice": advice,
+        "prefer_edge": prefer_edge,
+        "min_liq_mult": round(min_liq_mult, 3),
         "cadence_mult": round(cadence_mult, 3),
         "steps": brain.steps,
         "loss_ema": round(brain.loss_ema, 5),

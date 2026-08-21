@@ -1335,6 +1335,10 @@ class Dashboard:
             if rec.get("kind") == "liq":
                 bc["last_liq"] = rec
         self.refresh_sol_broadcast_ready()
+        try:
+            brain.learn_sol_broadcast(self.state, rec)
+        except Exception:
+            pass
 
     def _sol_maybe_submit(self, kind: str, opp: dict, plan: dict) -> dict:
         """Sim-only by default; LIVE stays gated. Never silent-sends."""
@@ -1342,6 +1346,11 @@ class Dashboard:
         min_usd = float(
             floor.get("dyn_min_liq") or MIN_SOL_LIQ_USD
         )
+        try:
+            min_usd *= float(
+                brain.sol_policy(self.state).get("min_liq_mult") or 1.0)
+        except Exception:
+            pass
         profit = float(
             opp.get("profit_usd") or opp.get("net_usd")
             or plan.get("expected_profit_usd") or plan.get("expected_net_usd")
@@ -3908,6 +3917,7 @@ class Dashboard:
                     hours[str(lt.tm_hour)] = hours.get(str(lt.tm_hour), 0) + 1
                     dows[str(lt.tm_wday)] = dows.get(str(lt.tm_wday), 0) + 1
                 mp = sol.get("mempool") or {}
+                sol_pol = brain.sol_policy(self.state)
                 # --- liquidation intel aggregation (SOL) ---
                 sol_spoke_rows = mp.get("spoke_txs") or mp.get("landing") or []
                 sol_liq_data = aggregate_liq_intel(
@@ -3938,12 +3948,9 @@ class Dashboard:
                                 .get("best_profit")),
                     "steps": int((sol.get("intel") or {}).get("steps") or 0) + 1,
                     "brain": {
-                        "advice": (
-                            f"liq={len(sol.get('opportunities') or [])} "
-                            f"mempool={(sol.get('mempool') or {}).get('meta', {}).get('liq_hits', 0)}"
-                        ),
-                        "min_liq_mult": 1.0,
-                        "prefer_edge": self.sol_edge_bias,
+                        **sol_pol,
+                        "prefer_edge": bool(
+                            self.sol_edge_bias or sol_pol.get("prefer_edge")),
                         "protocol": sols.PROTOCOL,
                     },
                     "liq_intel": sol_liq_data,
