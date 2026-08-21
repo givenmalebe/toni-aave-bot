@@ -10,7 +10,7 @@ import collections
 
 TIP_FLOOR_URL = os.environ.get(
     "JITO_TIP_FLOOR_URL",
-    "https://bundles.jito.wtf/api/v1/tip_floor")
+    "https://bundles.jito.wtf/api/v1/bundles/tip_floor")
 
 # Conservative default before first successful fetch (SOL lamports).
 _DEFAULT_TIP_LAMPORTS = int(
@@ -56,8 +56,9 @@ class TipFloor:
         self.ever_fetched = False
 
     def update(self, data) -> bool:
-        """data = parsed tip_floor JSON. Returns True when applied."""
-        rows = (data or {}).get("data") or []
+        """data = parsed tip_floor JSON (list or {"data": list}).
+        Returns True when applied."""
+        rows = data if isinstance(data, list) else (data or {}).get("data") or []
         if not rows:
             return False
         row = rows[0] if isinstance(rows[0], dict) else {}
