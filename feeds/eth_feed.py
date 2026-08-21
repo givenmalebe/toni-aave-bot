@@ -94,8 +94,6 @@ class EthEventFeed:
                     async for raw in ws:
                         h.note_event()
                         self._handle(raw)
-                        if single_pass:
-                            return
             except Exception as e:
                 log.warning("eth feed %s error: %s", url, e)
                 h.record_fail()
