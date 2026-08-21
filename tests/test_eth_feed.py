@@ -46,7 +46,8 @@ def test_stats_mode_off_when_disabled():
 def test_run_consumes_events(monkeypatch):
     import feeds.eth_feed as ef
     ticks, blocks = [], []
-    f = EthEventFeed(["wss://fake"], ticks.append, blocks.append)
+    f = EthEventFeed(["wss://fake"], lambda a, p: ticks.append((a, p)),
+                     blocks.append)
     def fake_connect(url, **k):
         return FakeWS([TICK, HEAD])
     monkeypatch.setattr(ef.websockets, "connect", fake_connect)
