@@ -2,6 +2,7 @@
 
 import logging
 import threading
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -87,6 +88,37 @@ class BackrunEngine:
             estimated_profit_usd=estimated_profit_usd,
             swap_path="",
         )
+
+    def encode_backrun_swap(
+        self,
+        token_in: str,
+        token_out: str,
+        amount_in: int,
+        min_amount_out: int,
+        fee: int,
+        recipient: str,
+    ) -> str:
+        """Encode a Uniswap V3 swapExactInputSingle calldata.
+
+        Selector: 0x414bf389 (exactInputSingle)
+        """
+        def pad_addr(a):
+            return a.lower().replace("0x", "").rjust(64, "0")
+
+        def pad_u256(n):
+            return hex(int(n) & ((1 << 256) - 1))[2:].rjust(64, "0")
+
+        selector = "0x414bf389"
+        data = selector
+        data += pad_addr(token_in)
+        data += pad_addr(token_out)
+        data += pad_u256(fee)
+        data += pad_addr(recipient)
+        data += pad_u256(int(time.time()) + 300)  # deadline
+        data += pad_u256(amount_in)
+        data += pad_u256(min_amount_out)
+        data += pad_u256(0)  # sqrtPriceLimitX96 = 0 (no limit)
+        return data
 
     def get_recent_competitors(self, count: int = 10) -> list[CompetitorLanding]:
         """Get recent competitor landings."""

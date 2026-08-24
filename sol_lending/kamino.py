@@ -160,8 +160,117 @@ def parse_obligation(pk: str, raw: bytes) -> dict | None:
     }
 
 
+def score_profit(opp: dict, *, sol_px: float = 0.0,
+                 priority_median: int | None = None,
+                 pressure: str | None = None) -> dict:
+    """20% close factor, ~5% liq bonus — Kamino kLend defaults."""
+    hf = opp.get("hf")
+    debt = float(opp.get("debt_usd") or opp.get("borrowed_usd") or 0)
+    close = 0.20
+    bonus = 0.05
+    repay = debt * close if debt > 0 else 0.0
+    seized = repay * (1.0 + bonus)
+    gross = seized - repay
+    cu_usd = 0.03 if (sol_px or 0) <= 0 else max(0.01, 250_000 * 50e-6 * (sol_px / 150.0))
+    if str(pressure or "") in ("hot", "elevated"):
+        cu_usd *= 1.4
+    net = gross - cu_usd
+    out = dict(opp)
+    out["close_factor"] = close
+    out["liq_bonus_pct"] = bonus * 100.0
+    out["repay_usd"] = round(repay, 4)
+    out["seized_usd"] = round(seized, 4)
+    out["profit_usd"] = round(net, 4)
+    out["net_usd"] = round(net, 4)
+    out["actionable"] = bool(hf is not None and hf < 1.0 and net > 0.5)
+    return out
+
+
+def build_plan(opp: dict, priority_median: int | None = None,
+               pressure: str | None = None) -> dict:
+    """Sweep/hot-path plan for `_live_send_kamino` in sol_scanner."""
+    scored = score_profit(opp, pressure=pressure)
+    obl = str(opp.get("obligation") or opp.get("user") or "")
+    borrows = [r for r in (opp.get("borrow_reserves") or []) if r]
+    deposits = [r for r in (opp.get("deposit_reserves") or []) if r]
+    debt_r = str(opp.get("debt_reserve") or (borrows[0] if borrows else ""))
+    coll_r = str(opp.get("coll_reserve") or (deposits[0] if deposits else ""))
+    hf = opp.get("hf")
+    ready = bool(obl) and (hf is None or float(hf) < 1.0)
+    return {
+        "kind": "liq",
+        "protocol_id": ID,
+        "protocol": LABEL,
+        "execute": "kamino-jito",
+        "program": KAMINO_PROGRAM,
+        "obligation": obl,
+        "debt_reserve": debt_r,
+        "coll_reserve": coll_r,
+        "borrow_reserves": borrows,
+        "deposit_reserves": deposits,
+        "hf": hf,
+        "ready": ready,
+        "close_factor": scored["close_factor"],
+        "profit_usd": scored.get("profit_usd"),
+        "net_usd": scored.get("net_usd"),
+        "repay_usd": scored.get("repay_usd"),
+        "seized_usd": scored.get("seized_usd"),
+        "note": ("" if ready else "kamino plan waiting on HF<1 obligation"),
+    }
+
+
+def hydrate_pubkeys(pubkeys: list[str], *, max_accounts: int = 40) -> dict:
+    """getMultipleAccounts hydrate — no GPA. Used by event-driven discovery."""
+    import sol_scanner as sols
+
+    keys = [p for p in pubkeys if p][:max_accounts]
+    opps: list[dict] = []
+    watch: list[dict] = []
+    errors: list[str] = []
+    hydrated = 0
+    if not keys:
+        return {"ok": True, "opportunities": [], "watch": [], "probed": 0,
+                "hydrated": 0, "errors": [], "method": "gma"}
+    try:
+        res, _url = sols.sol_rpc(
+            "getMultipleAccounts",
+            [keys, {"encoding": "base64", "commitment": "confirmed"}],
+            timeout=12.0)
+        vals = (res or {}).get("value") if isinstance(res, dict) else (res or [])
+        for pk, acc in zip(keys, vals or []):
+            if not isinstance(acc, dict):
+                continue
+            if (acc.get("owner") or "") != KAMINO_PROGRAM:
+                continue
+            data = acc.get("data")
+            b64 = data[0] if isinstance(data, list) and data else ""
+            if not b64:
+                continue
+            raw = base64.b64decode(b64)
+            parsed = parse_obligation(pk, raw)
+            if not parsed:
+                continue
+            hydrated += 1
+            if parsed["hf"] < 1.0 and parsed["borrowed_usd"] > 0.50:
+                opps.append(parsed)
+            elif parsed["hf"] < 1.15:
+                watch.append(parsed)
+    except Exception as e:
+        errors.append(f"kamino gma: {str(e)[:140]}")
+    watch.sort(key=lambda w: w.get("hf") or 99)
+    return {
+        "ok": hydrated > 0 or not errors,
+        "opportunities": opps,
+        "watch": watch[:50],
+        "probed": len(keys),
+        "hydrated": hydrated,
+        "errors": errors,
+        "method": "gma",
+    }
+
+
 def scan_obligations(*, max_accounts: int = 40) -> dict:
-    """GPA probe Kamino obligations for HF < 1 opportunities."""
+    """GPA probe Kamino obligations for HF < 1 opportunities (fallback)."""
     import sol_scanner as sols
 
     probed = 0
@@ -174,8 +283,6 @@ def scan_obligations(*, max_accounts: int = 40) -> dict:
         try:
             filters = [{"dataSize": data_size}]
             if KAMINO_MAIN_MARKET:
-                market_bytes = base64.b64decode(
-                    _pubkey_to_b64(KAMINO_MAIN_MARKET))
                 filters.append({
                     "memcmp": {
                         "offset": OBLIGATION_MARKET_OFFSET,

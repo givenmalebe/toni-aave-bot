@@ -68,7 +68,7 @@ def test_sharding_across_providers(monkeypatch):
     assert sorted(all_subs) == [f"obl{i}" for i in range(5)]
 
 
-def test_subscribes_solend_and_kamino_logs(monkeypatch):
+def test_subscribes_solend_and_kamino_programs(monkeypatch):
     import feeds.sol_feed as sf
     f = SolEventFeed(["ws://fake"], lambda: ["Obl1"],
                      lambda p: None, lambda n: None)
@@ -76,7 +76,7 @@ def test_subscribes_solend_and_kamino_logs(monkeypatch):
     class WS3(FakeWS):
         async def send(self, raw):
             m = json.loads(raw)
-            if m.get("method") == "logsSubscribe":
+            if m.get("method") == "programSubscribe":
                 progs.append(m["params"][0])
     def fake_connect(url, **k):
         return WS3([])

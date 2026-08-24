@@ -8,6 +8,7 @@ solana/keys/*.tmp
 intel_data/
 profit_performance.json
 profit_brain_state.json
+profit_brain_state_sol.json
 near_miss_learning.json
 contracts.json
 solana/target/
@@ -15,3 +16,6 @@ solana/target/
 broadcast_prefs.json
 contracts/out/
 contracts/cache/
+keystores/
+paper_trades.json
+data/

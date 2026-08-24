@@ -33,7 +33,7 @@ class GasBiddingEngine:
         aggressive_factor: float = 1.15,
         profit_scale_cap: float = 2.0,
         min_profit_usd: float = 10.0,
-        max_gas_cost_eth: float = 0.01,
+        max_gas_cost_eth: float = 0.1,
     ):
         self.aggressive_factor = aggressive_factor
         self.profit_scale_cap = profit_scale_cap
@@ -86,7 +86,7 @@ class GasBiddingEngine:
 
         # Final bid
         max_fee = base_bid * profit_multiplier
-        priority_fee = base_bid * 0.1 * profit_multiplier  # 10% of base
+        priority_fee = max(base_bid * 0.2 * profit_multiplier, 2.0)
 
         # Apply 20% buffer to gas limit
         buffered_gas_limit = int(gas_limit * 1.2)

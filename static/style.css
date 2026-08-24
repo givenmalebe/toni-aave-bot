@@ -803,6 +803,25 @@ button.primary:disabled { opacity: .4; cursor: not-allowed; }
 .pill.proto {
   padding: 1px 6px; font-size: 9px; text-transform: uppercase; letter-spacing: .04em;
 }
+.proto-f {
+  padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line);
+  background: transparent; color: var(--dim); font-family: var(--mono);
+  font-size: 10px; cursor: pointer;
+}
+.proto-f:hover { color: var(--text); border-color: #334155; }
+.proto-f.on { color: var(--cyan); border-color: rgba(34,211,238,.45); background: rgba(34,211,238,.08); }
+.proto-f.proto-solend.on, .pill.proto-solend {
+  color: #f472b6; border-color: rgba(244,114,182,.5); background: rgba(244,114,182,.12);
+}
+.proto-f.proto-kamino.on, .pill.proto-kamino {
+  color: #a78bfa; border-color: rgba(167,139,250,.5); background: rgba(167,139,250,.12);
+}
+.proto-f.proto-marginfi.on, .pill.proto-marginfi {
+  color: #34d399; border-color: rgba(52,211,153,.5); background: rgba(52,211,153,.12);
+}
+.proto-f.proto-drift.on, .pill.proto-drift {
+  color: #38bdf8; border-color: rgba(56,189,248,.5); background: rgba(56,189,248,.12);
+}
 .op-scroll {
   max-height: 320px; overflow: auto;
   border: 1px solid var(--line); border-radius: 8px; background: rgba(0,0,0,.15);
@@ -821,7 +840,7 @@ button.primary:disabled { opacity: .4; cursor: not-allowed; }
 .op-flag.profit { color: var(--green); border-color: rgba(34,197,94,.35); background: rgba(34,197,94,.08); }
 .op-hf-crit { color: #f87171; font-weight: 700; }
 .op-hf-hot { color: var(--amber); font-weight: 700; }
-.op-hf-warm { color: #fbbf24; }
+.op-hf-warn { color: #fbbf24; }
 .op-hf-ok { color: var(--text); }
 .op-urg {
   font-size: 9px; text-transform: uppercase; letter-spacing: .3px;
@@ -829,7 +848,7 @@ button.primary:disabled { opacity: .4; cursor: not-allowed; }
 }
 .op-urg.crit { color: #fff; background: rgba(239,68,68,.3); border-color: rgba(239,68,68,.55); }
 .op-urg.hot { color: var(--red); border-color: rgba(239,68,68,.4); background: rgba(239,68,68,.1); }
-.op-urg.warm { color: var(--amber); border-color: rgba(245,158,11,.4); background: rgba(245,158,11,.1); }
+.op-urg.warn { color: var(--amber); border-color: rgba(245,158,11,.4); background: rgba(245,158,11,.1); }
 .op-urg.ok { color: var(--dim); }
 .op-link {
   color: var(--cyan); text-decoration: none; font-size: 10px; margin-right: 4px;

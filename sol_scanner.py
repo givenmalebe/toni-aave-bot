@@ -41,14 +41,18 @@ if not getattr(socket.getaddrinfo, "_toni_ipv4", False):
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
-SOL_RPCS = [
-    os.environ.get("SOLANA_RPC") or "",
+_SOL_RPCS_STATIC = [
     "https://api.mainnet-beta.solana.com",
     "https://solana-rpc.publicnode.com",
     "https://solana.publicnode.com",
     "https://rpc.ankr.com/solana",
 ]
-SOL_RPCS = [u for u in SOL_RPCS if u]
+
+
+def _sol_rpcs() -> list[str]:
+    """Build RPC list at call time so .env is loaded first."""
+    env_rpc = os.environ.get("SOLANA_RPC") or ""
+    return [u for u in [env_rpc] + _SOL_RPCS_STATIC if u]
 
 # Circuit breaker for RPC failover — tracks consecutive failures per URL.
 _RPC_CIRCUIT: dict[str, tuple[int, float]] = {}
@@ -141,6 +145,16 @@ _RES_FEE_RECV = 339
 # LendingMarket: 5 pubkeys after version/bump (162) + RateLimiter (56)
 # → COption<Pubkey> whitelisted_liquidator at 218 (verified len=290).
 _MKT_WHITELIST_TAG = 218
+# Kamino (kLend) — Solend fork: same ix account metas, own program + tags.
+# Mirrors sol_lending/kamino.py (obligation/market verified on-chain 2026-08-20).
+KAMINO_PROGRAM = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+KAMINO_MAIN_MARKET = "7u3HeHxYDLhnCoErrtycNokbQYbWGzLs6JSDqGAv5PfF"
+KAMINO_IX_REFRESH_RESERVE = 3
+KAMINO_IX_REFRESH_OBLIGATION = 7
+KAMINO_IX_LIQUIDATE_AND_REDEEM = 14
+KAMINO_OBLIGATION_SIZE = 3344
+KAMINO_RESERVE_SIZE = 1032
+KAMINO_CLOSE_FACTOR = 0.20
 
 # Stub program IDs from solana/programs — never treat as live-ready
 STUB_LIQ_PROGRAM = "Liq1111111111111111111111111111111111111112"
@@ -387,7 +401,7 @@ def sol_rpc(method: str, params: list | None = None, timeout: float = 6.0):
     body = {"jsonrpc": "2.0", "id": 1, "method": method,
             "params": params if params is not None else []}
     last = None
-    for url in SOL_RPCS:
+    for url in _sol_rpcs():
         if not _rpc_is_open(url):
             continue
         try:
@@ -412,7 +426,80 @@ def sol_rpc(method: str, params: list | None = None, timeout: float = 6.0):
     raise RuntimeError(f"sol rpc {method} failed: {last}")
 
 
-def latest_blockhash() -> dict[str, Any]:
+def sol_gpa(program_id: str, filters: list | None = None,
+            encoding: str = "base64", timeout: float = 30.0) -> list:
+    """getProgramAccounts with Helius V2 pagination fallback.
+
+    Returns a flat list of {pubkey, account} dicts, same as standard GPA.
+    Uses ``getProgramAccountsV2`` when the primary RPC is Helius (cursor-based
+    pagination up to 10 000 accounts per page) and falls back to plain GPA
+    for other providers.
+    """
+    rpcs = _sol_rpcs()
+    primary = rpcs[0] if rpcs else ""
+    is_helius = "helius" in primary.lower()
+
+    if is_helius:
+        return _gpa_helius_v2(program_id, primary, filters, encoding, timeout)
+
+    opts: dict = {"encoding": encoding, "withContext": True}
+    if filters:
+        opts["filters"] = filters
+    result, _ = sol_rpc("getProgramAccounts", [program_id, opts], timeout=timeout)
+    val = result.get("value") if isinstance(result, dict) and "value" in result else result
+    return val if isinstance(val, list) else []
+
+
+def _gpa_helius_v2(program_id: str, url: str, filters: list | None,
+                    encoding: str, timeout: float) -> list:
+    """Paginated getProgramAccountsV2 for Helius RPC."""
+    all_accounts: list = []
+    cursor = None
+    page = 0
+    while True:
+        page += 1
+        opts: dict = {"encoding": encoding, "limit": 10000}
+        if filters:
+            opts["filters"] = filters
+        if cursor:
+            opts["cursor"] = cursor
+        body = {
+            "jsonrpc": "2.0", "id": page,
+            "method": "getProgramAccountsV2",
+            "params": [program_id, opts],
+        }
+        try:
+            r = _http_post(url, body, timeout=timeout)
+            data = r.json()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("Helius V2 GPA page %d failed: %s", page, exc)
+            # Fall back to standard GPA on other RPCs.
+            log.info("Falling back to standard GPA via other RPCs")
+            opts2: dict = {"encoding": encoding, "withContext": True}
+            if filters:
+                opts2["filters"] = filters
+            result, _ = sol_rpc("getProgramAccounts", [program_id, opts2],
+                                timeout=timeout)
+            val = result.get("value") if isinstance(result, dict) and "value" in result else result
+            return val if isinstance(val, list) else []
+
+        err = data.get("error")
+        if err:
+            log.debug("Helius V2 GPA error page %d: %s", page, err)
+            break
+
+        res = data.get("result", {})
+        accts = res.get("accounts", [])
+        all_accounts.extend(accts)
+        cursor = res.get("cursor")
+        log.debug("Helius V2 GPA page %d: %d accounts (cursor=%s)",
+                  page, len(accts), "yes" if cursor else "no")
+        if not cursor or not accts:
+            break
+
+    return all_accounts
+
+
     """Recent blockhash for user-initiated browser SOL transfers (not a send)."""
     res, url = sol_rpc("getLatestBlockhash", [{"commitment": "confirmed"}])
     val = (res or {}).get("value") if isinstance(res, dict) else {}
@@ -755,7 +842,7 @@ def _cu_estimate(hops: int) -> int:
 
 
 # Jito tip receivers (bundle tip tx when LIVE; metadata-only while sim_only)
-JITO_TIP_ACCOUNTS = (
+JITO_TIP_ACCOUNTS = {
     "96gYZGLnJYVFmbjzopPSU6QiECT5fJcpQNqEwGPNL6X",
     "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe",
     "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY",
@@ -764,13 +851,16 @@ JITO_TIP_ACCOUNTS = (
     "ADuUkR4vqLUMWXxW9gh6Ds3Pce2sAgdtBvuaYTjRtonj",
     "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL",
     "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT",
-)
+}
+
+
+_JITO_TIP_LIST = sorted(JITO_TIP_ACCOUNTS)
 
 
 def _jito_tip_account(seed: str) -> str:
     if not seed:
-        return JITO_TIP_ACCOUNTS[0]
-    return JITO_TIP_ACCOUNTS[sum(seed.encode()) % len(JITO_TIP_ACCOUNTS)]
+        return _JITO_TIP_LIST[0]
+    return _JITO_TIP_LIST[sum(seed.encode()) % len(_JITO_TIP_LIST)]
 
 
 def _jito_tip_sol(pressure: str | None = None) -> float:
@@ -801,11 +891,9 @@ def _cu_fee_usd(median_ul: int | None, sol_px: float,
 def _dynamic_jito_lamports(pre_tip_usd: float, sol_px: float,
                            pressure: str | None = None,
                            floor_usd: float = 0.0) -> int:
-    """Tip = min(share of expected net, net - floor - eps).
+    """Tip = max(min_formula, competitor_p95 * 1.15), capped at net - floor.
 
-    Remaining net stays ≥ floor after tip. A 15% share must not eat a
-    floor-sized ($0.05) trade. Min Jito tip is used only when that still
-    leaves net at/above the floor.
+    Uses competition-aware bidding when competitor data is available.
     """
     px = max(float(sol_px or 0.0), 1e-9)
     base_sol = _jito_tip_sol(pressure)
@@ -813,6 +901,8 @@ def _dynamic_jito_lamports(pre_tip_usd: float, sol_px: float,
     pre = float(pre_tip_usd or 0.0)
     floor = max(float(floor_usd or 0.0), 0.0)
     eps = 1e-6
+
+    # Base formula (same as before)
     if pre <= 0:
         return min_lam
     room = pre - floor - eps
@@ -822,8 +912,19 @@ def _dynamic_jito_lamports(pre_tip_usd: float, sol_px: float,
     min_usd = (min_lam / 1e9) * px
     if tip_usd < min_usd and (pre - min_usd) >= floor + eps:
         tip_usd = min_usd
-    lam = int(tip_usd / px * 1e9)
-    return max(lam, JITO_MIN_TIP_LAMPORTS)
+    base_lam = int(tip_usd / px * 1e9)
+
+    # Competition boost: bid 15% above competitor p95
+    cp95 = comp_tip_p95()
+    if cp95 > 0:
+        comp_boost_lam = int(cp95 * 1.15)
+        base_lam = max(base_lam, comp_boost_lam)
+
+    # Ensure we don't eat all profit
+    max_tip_lam = int((pre - floor - eps) / px * 1e9) if (pre - floor) > eps else min_lam
+    base_lam = min(base_lam, max_tip_lam)
+
+    return max(base_lam, JITO_MIN_TIP_LAMPORTS)
 
 
 def _prio_cost_usd(median_ul: int | None, sol_px: float,
@@ -918,6 +1019,58 @@ _SEEN_SIGS_LOCK = threading.Lock()
 _OBLIGATION_KEYS_LOCK = threading.Lock()
 _HYDRATE_CACHE_LOCK = threading.Lock()
 _RPC_LOCK = threading.Lock()
+_KAMINO_CACHE_LOCK = threading.Lock()
+
+# --- Competitor Jito tip tracking ---
+_COMP_TIP_WINDOW = []  # list of (timestamp, tip_lamports)
+_COMP_TIP_LOCK = threading.Lock()
+COMP_TIP_WINDOW_MAX = 50
+
+
+def _extract_jito_tip(meta: dict) -> int:
+    """Extract Jito tip amount (in lamports) from a Solana tx meta."""
+    if not meta:
+        return 0
+    keys = meta.get("accountKeys") or []
+    idx_map = {}
+    for i, k in enumerate(keys):
+        pk = k if isinstance(k, str) else (k or {}).get("pubkey") or ""
+        if pk:
+            idx_map[pk] = i
+    pre = meta.get("preBalances") or []
+    post = meta.get("postBalances") or []
+    total_tip = 0
+    for tip_acct in JITO_TIP_ACCOUNTS:
+        i = idx_map.get(tip_acct)
+        if i is None:
+            continue
+        pre_lam = pre[i] if i < len(pre) else 0
+        post_lam = post[i] if i < len(post) else 0
+        if post_lam > pre_lam:
+            total_tip += (post_lam - pre_lam)
+    return total_tip
+
+
+def track_comp_jito_tip(tip_lamports: int):
+    """Record a competitor's observed Jito tip."""
+    with _COMP_TIP_LOCK:
+        _COMP_TIP_WINDOW.append((time.time(), tip_lamports))
+        if len(_COMP_TIP_WINDOW) > COMP_TIP_WINDOW_MAX:
+            _COMP_TIP_WINDOW[:] = _COMP_TIP_WINDOW[-COMP_TIP_WINDOW_MAX:]
+
+def comp_tip_p95() -> int:
+    """Get 95th percentile of recent competitor tips in lamports."""
+    with _COMP_TIP_LOCK:
+        if not _COMP_TIP_WINDOW:
+            return 0
+        # Only use tips from last 5 minutes
+        cutoff = time.time() - 300
+        recent = [t for ts, t in _COMP_TIP_WINDOW if ts > cutoff]
+    if not recent:
+        return 0
+    recent.sort()
+    idx = int(len(recent) * 0.95)
+    return recent[min(idx, len(recent) - 1)]
 
 _shutdown = False
 
@@ -1021,10 +1174,12 @@ def _hf_urg_label(hf) -> str:
 
 def _dust_obligation(o: dict, min_debt_usd: float = 10.0) -> bool:
     try:
-        debt = float(o.get("debt_usd") or 0)
-        coll = float(o.get("coll_usd") or 0)
+        debt = float(o.get("debt_usd") or o.get("borrowed_usd") or 0)
+        coll = float(o.get("coll_usd") or o.get("deposited_usd") or 0)
     except (TypeError, ValueError):
         return True
+    if debt == 0 and coll == 0:
+        return False
     return debt < min_debt_usd and coll < min_debt_usd
 
 
@@ -1535,6 +1690,26 @@ def build_liq_plan(opp: dict, priority_median: int | None = None,
             "liq plan — remaining accounts: " + ", ".join(gaps)
         ),
     }
+
+
+def build_kamino_liq_plan(opp: dict, priority_median: int | None = None,
+                          pressure: str | None = None) -> dict:
+    """Ready Kamino plan for sweep + hot executor. Live send fills remaining metas."""
+    from sol_lending import kamino as _kamino
+    plan = _kamino.build_plan(opp, priority_median=priority_median,
+                              pressure=pressure)
+    plan["execute"] = "kamino-jito"
+    plan["program"] = KAMINO_PROGRAM
+    plan["kind"] = "liq"
+    tip_lam = int(opp.get("jito_tip_lamports") or 0)
+    if tip_lam <= 0:
+        px = float(opp.get("sol_px") or 0.0)
+        pre = float(plan.get("net_usd") or plan.get("profit_usd") or 0)
+        tip_lam = _dynamic_jito_lamports(pre, px, pressure, min_sol_liq_usd())
+    plan["jito_tip_lamports"] = tip_lam
+    plan["priority_median"] = priority_median
+    plan["pressure"] = pressure
+    return plan
 
 
 def fetch_solend_watchlist() -> dict[str, Any]:
@@ -4016,6 +4191,8 @@ def _parse_solend_liq_tx(tx: dict, sig_row: dict, sol_px) -> dict | None:
     except (TypeError, ValueError):
         ts = int(time.time())
 
+    jito_tip = _extract_jito_tip(meta)
+
     return {
         "sig": sig_row.get("sig"),
         "tx": sig_row.get("sig"),
@@ -4032,6 +4209,7 @@ def _parse_solend_liq_tx(tx: dict, sig_row: dict, sol_px) -> dict | None:
         "est": est,
         "net": net,
         "fee_lamports": fee_lamports,
+        "jito_tip_lamports": jito_tip,
         "kind": "liq",
         "ix": tag,
         "leftover": leftovers,
@@ -4136,6 +4314,9 @@ def decode_solend_competitors(limit: int = 24,
                     liq_n += 1
                     if parsed.get("err"):
                         revert_n += 1
+                    jito_tip = parsed.get("jito_tip_lamports") or 0
+                    if jito_tip > 0:
+                        track_comp_jito_tip(jito_tip)
                     for bit in parsed.get("leftover") or []:
                         if bit not in leftovers:
                             leftovers.append(bit)
@@ -4239,7 +4420,7 @@ def fetch_jito_tip_pressure(limit: int = 8) -> dict[str, Any]:
             except Exception as e:
                 log.debug("Landing watch failed: %s", e)
                 continue
-        for tip in JITO_TIP_ACCOUNTS[:3]:
+        for tip in _JITO_TIP_LIST[:3]:
             try:
                 res, _ = sol_rpc(
                     "getSignaturesForAddress",
@@ -4978,6 +5159,94 @@ def _jito_send_bundle(raw_txs: list[bytes]) -> tuple[str | None, str | None]:
             last_err = f"{type(e).__name__}: {e}"
             continue
     return None, last_err
+
+
+def _jito_confirm_bundle(bundle_id: str, max_wait_sec: float = 12.0) -> dict:
+    """Poll Jito bundle status until landed or timeout.
+
+    Returns {"landed": bool, "slot": int|None, "error": str|None}
+    """
+    if not bundle_id:
+        return {"landed": False, "slot": None, "error": "no bundle_id"}
+
+    uuid = (os.environ.get("JITO_UUID") or os.environ.get("JITO_AUTH") or "").strip()
+    url = None
+    for u in JITO_BUNDLE_URLS:
+        if "mainnet" in u or "amsterdam" in u:
+            url = u
+            break
+    if not url:
+        url = JITO_BUNDLE_URLS[0] if JITO_BUNDLE_URLS else ""
+    if not url:
+        return {"landed": False, "slot": None, "error": "no jito endpoint"}
+
+    dest = url if "?" in url or not uuid else f"{url}?uuid={uuid}"
+    deadline = time.time() + max_wait_sec
+
+    while time.time() < deadline:
+        try:
+            r = _HTTP.post(
+                dest,
+                json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "method": "getBundleStatuses",
+                    "params": [[bundle_id]],
+                },
+                headers=_hdr(),
+                timeout=5,
+            )
+            out = r.json()
+            statuses = (out.get("result") or {}).get("value") or []
+            if statuses:
+                st = statuses[0]
+                confirmation_status = st.get("confirmation_status") or ""
+                if confirmation_status in ("confirmed", "finalized"):
+                    return {
+                        "landed": True,
+                        "slot": st.get("slot"),
+                        "error": None,
+                        "status": confirmation_status,
+                    }
+                err = st.get("err")
+                if err:
+                    return {"landed": False, "slot": None, "error": str(err)[:160]}
+        except Exception:
+            pass
+        time.sleep(0.8)
+
+    return {"landed": False, "slot": None, "error": "timeout"}
+
+
+def _confirm_sol_tx(sig_b58: str, max_wait_sec: float = 8.0) -> dict:
+    """Poll getSignatureStatuses for a Solana tx signature."""
+    if not sig_b58:
+        return {"confirmed": False, "error": "no signature"}
+    deadline = time.time() + max_wait_sec
+    rpc = _sol_rpcs()[0] if _sol_rpcs() else ""
+    if not rpc:
+        return {"confirmed": False, "error": "no rpc"}
+    while time.time() < deadline:
+        try:
+            body = json.dumps({
+                "jsonrpc": "2.0", "id": 1,
+                "method": "getSignatureStatuses",
+                "params": [[sig_b58], {"searchTransactionHistory": False}],
+            })
+            r = _HTTP.post(rpc, data=body, headers=_hdr(), timeout=5)
+            out = r.json()
+            vals = (out.get("result") or {}).get("value") or []
+            if vals and vals[0]:
+                st = vals[0]
+                err = st.get("err")
+                if err is not None:
+                    return {"confirmed": False, "error": str(err)[:160]}
+                status = (st.get("confirmationStatus") or "").lower()
+                if status in ("confirmed", "finalized"):
+                    return {"confirmed": True, "slot": st.get("slot"), "status": status}
+        except Exception:
+            pass
+        time.sleep(0.6)
+    return {"confirmed": False, "error": "timeout"}
 
 
 def _sim_tx_detail(raw: bytes) -> dict:
@@ -5794,6 +6063,7 @@ def _live_send_liq_flash(
     else:
         tip_raw = _build_tip_tx(bot_kp, tip_acct, jito_lam, bh)
         tip_payer = "bot"
+    plan["_raw_tx_0"] = raw
     bid, err = _jito_send_bundle([raw, tip_raw])
     rec["jito_tip_lamports"] = jito_lam
     rec["tip_payer"] = tip_payer
@@ -5812,6 +6082,35 @@ def _live_send_liq_flash(
         f"LIVE flash liq Jito {bid[:12]}… obl={(plan.get('obligation') or '')[:6]} "
         f"repay={repay_amt} fee_bps={flash_bps} tip={jito_lam}lam"
     )
+    # Confirm bundle landed
+    confirm = _jito_confirm_bundle(bid, max_wait_sec=10.0)
+    rec["bundle_confirmed"] = confirm.get("landed", False)
+    rec["bundle_slot"] = confirm.get("slot")
+    if confirm.get("landed"):
+        rec["stage"] = "confirmed"
+        rec["detail"] = (
+            f"LIVE flash liq CONFIRMED slot={confirm.get('slot')} "
+            f"obl={(plan.get('obligation') or '')[:6]} tip={jito_lam}lam"
+        )
+        log.info("Live flash liq bundle CONFIRMED: slot=%s", confirm.get("slot"))
+    elif confirm.get("error"):
+        rec["detail"] = (
+            f"LIVE flash liq sent but unconfirmed: {confirm.get('error')} "
+            f"bid={bid[:12]} obl={(plan.get('obligation') or '')[:6]}"
+        )
+    # If bundle not confirmed, try direct tx confirmation as backup
+    if not confirm.get("landed") and rec.get("stage") == "sent":
+        try:
+            raw_first = plan.get("_raw_tx_0")
+            if raw_first and len(raw_first) >= 64:
+                tx_sig_b58 = base64.b64encode(bytes(raw_first[:64])).decode("ascii")
+                direct = _confirm_sol_tx(tx_sig_b58, max_wait_sec=5.0)
+                if direct.get("confirmed"):
+                    rec["stage"] = "confirmed"
+                    rec["bundle_confirmed"] = True
+                    rec["bundle_slot"] = direct.get("slot")
+        except Exception:
+            pass
     plan["jito_bundle"] = True
     plan["mode"] = "live"
     plan["flash"] = True
@@ -6006,6 +6305,7 @@ def _live_send_liq(plan: dict, funds: dict | None, rec: dict) -> dict:
     else:
         tip_raw = _build_tip_tx(bot_kp, tip_acct, jito_lam, bh)
         tip_payer = "bot"
+    plan["_raw_tx_0"] = raw_refresh
     bid, err = _jito_send_bundle([raw_refresh, raw_liq, tip_raw])
     rec["jito_tip_lamports"] = jito_lam
     rec["tip_payer"] = tip_payer
@@ -6023,9 +6323,472 @@ def _live_send_liq(plan: dict, funds: dict | None, rec: dict) -> dict:
         f"LIVE liq Jito bundle {bid[:12]}… obl={(plan.get('obligation') or '')[:6]} "
         f"tip={jito_lam}lam payer={tip_payer}"
     )
+    # Confirm bundle landed
+    confirm = _jito_confirm_bundle(bid, max_wait_sec=10.0)
+    rec["bundle_confirmed"] = confirm.get("landed", False)
+    rec["bundle_slot"] = confirm.get("slot")
+    if confirm.get("landed"):
+        rec["stage"] = "confirmed"
+        rec["detail"] = (
+            f"LIVE liq CONFIRMED slot={confirm.get('slot')} "
+            f"obl={(plan.get('obligation') or '')[:6]} tip={jito_lam}lam"
+        )
+        log.info("Live liq bundle CONFIRMED: slot=%s", confirm.get("slot"))
+    elif confirm.get("error"):
+        rec["detail"] = (
+            f"LIVE liq sent but unconfirmed: {confirm.get('error')} "
+            f"bid={bid[:12]} obl={(plan.get('obligation') or '')[:6]}"
+        )
+    # If bundle not confirmed, try direct tx confirmation as backup
+    if not confirm.get("landed") and rec.get("stage") == "sent":
+        try:
+            raw_first = plan.get("_raw_tx_0")
+            if raw_first and len(raw_first) >= 64:
+                tx_sig_b58 = base64.b64encode(bytes(raw_first[:64])).decode("ascii")
+                direct = _confirm_sol_tx(tx_sig_b58, max_wait_sec=5.0)
+                if direct.get("confirmed"):
+                    rec["stage"] = "confirmed"
+                    rec["bundle_confirmed"] = True
+                    rec["bundle_slot"] = direct.get("slot")
+        except Exception:
+            pass
     plan["jito_bundle"] = True
     plan["mode"] = "live"
     rec["plan"] = plan
+    return rec
+
+
+_KAMINO_RESERVES_CACHE: dict[str, Any] = {"ts": 0, "rows": {}}
+
+
+def _kamino_ix(tag: int, data: bytes, accounts: list[tuple[str, bool, bool]]):
+    from solders.instruction import AccountMeta, Instruction
+    metas = [AccountMeta(_pk(pk), sig, w) for pk, sig, w in accounts]
+    return Instruction(_pk(KAMINO_PROGRAM), bytes([tag]) + data, metas)
+
+
+def _kamino_market_authority(market: str) -> str:
+    from solders.pubkey import Pubkey
+    pk, _bump = Pubkey.find_program_address(
+        [bytes(_pk(market))], _pk(KAMINO_PROGRAM))
+    return str(pk)
+
+
+def _kamino_reserves() -> dict[str, dict]:
+    """Decode Kamino main-market reserves on-chain (Solend layout — fork).
+
+    Cached ~5 min. Returns {reserve_pk: row}; empty when unknown — callers
+    block honestly, never invent accounts.
+    """
+    now = time.time()
+    with _KAMINO_CACHE_LOCK:
+        if (_KAMINO_RESERVES_CACHE["rows"]
+                and now - _KAMINO_RESERVES_CACHE["ts"] < 300):
+            return _KAMINO_RESERVES_CACHE["rows"]
+    rows: dict[str, dict] = {}
+    try:
+        accs = sol_gpa(KAMINO_PROGRAM,
+                       filters=[{"dataSize": KAMINO_RESERVE_SIZE}],
+                       encoding="base64", timeout=20.0)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Kamino reserve GPA failed: %s", e)
+        return {}
+    for acc in accs or []:
+        pk = acc.get("pubkey") or ""
+        val = acc.get("account") or {}
+        if (val.get("owner") or "") != KAMINO_PROGRAM:
+            continue
+        raw = _acc_bytes(val)
+        if len(raw) < _RES_FEE_RECV + 32 or raw[0] == 0:
+            continue
+        try:
+            from solders.pubkey import Pubkey
+            market = str(Pubkey.from_bytes(raw[_RES_MARKET:_RES_MARKET + 32]))
+            mint = str(Pubkey.from_bytes(raw[_RES_MINT:_RES_MINT + 32]))
+            supply = str(Pubkey.from_bytes(raw[_RES_SUPPLY:_RES_SUPPLY + 32]))
+            pyth = str(Pubkey.from_bytes(raw[_RES_PYTH:_RES_PYTH + 32]))
+            switchboard = str(Pubkey.from_bytes(
+                raw[_RES_SWITCHBOARD:_RES_SWITCHBOARD + 32]))
+            coll_mint = str(Pubkey.from_bytes(
+                raw[_RES_COLL_MINT:_RES_COLL_MINT + 32]))
+            coll_supply = str(Pubkey.from_bytes(
+                raw[_RES_COLL_SUPPLY:_RES_COLL_SUPPLY + 32]))
+            fee_recv = str(Pubkey.from_bytes(
+                raw[_RES_FEE_RECV:_RES_FEE_RECV + 32]))
+            avail = int.from_bytes(raw[_RES_AVAIL:_RES_AVAIL + 8], "little")
+            decimals = int(raw[_RES_DECIMALS])
+        except Exception:
+            continue
+        if not (_is_pubkey(market) and _is_pubkey(mint) and _is_pubkey(supply)):
+            continue
+        if market != KAMINO_MAIN_MARKET:
+            continue
+        rows[pk] = {
+            "address": pk, "mint": mint, "decimals": decimals,
+            "lending_market": market, "liquidity_supply": supply,
+            "pyth": pyth, "switchboard": switchboard,
+            "available_amount": avail, "collateral_mint": coll_mint,
+            "collateral_supply": coll_supply, "fee_receiver": fee_recv,
+        }
+    with _KAMINO_CACHE_LOCK:
+        _KAMINO_RESERVES_CACHE["ts"] = now
+        _KAMINO_RESERVES_CACHE["rows"] = rows
+    log.info("Kamino reserves decoded: %d", len(rows))
+    return rows
+
+
+def _kamino_obl_positions(obl_raw: bytes,
+                          reserves: dict[str, dict]) -> list[dict]:
+    """Find obligation positions by scanning for reserve pubkeys.
+
+    Solend position layout: [mint(32), reserve(32), debt u128 WAD,
+    collateral u128 WAD, last_update(16)]. Validated: the 32 bytes before
+    each reserve hit must be that reserve's own mint, else it is not a
+    position (layout mismatch) and is skipped.
+    """
+    out: list[dict] = []
+    for pk, row in reserves.items():
+        try:
+            import base58  # type: ignore
+            needle = base58.b58decode(pk)
+        except Exception:
+            continue
+        start = 0
+        while True:
+            i = obl_raw.find(needle, start)
+            if i < 0:
+                break
+            start = i + 1
+            if i < 32 or i + 64 > len(obl_raw):
+                continue
+            if _b58encode(obl_raw[i - 32:i]) != row.get("mint"):
+                continue
+            debt = int.from_bytes(obl_raw[i + 32:i + 48], "little")
+            coll = int.from_bytes(obl_raw[i + 48:i + 64], "little")
+            if debt >= 10**30 or coll >= 10**30:
+                continue
+            out.append({
+                "reserve": pk, "mint": row["mint"],
+                "debt": debt, "coll": coll, "offset": i,
+            })
+    return out
+
+
+def _live_send_kamino(plan: dict, funds: dict | None, rec: dict) -> dict:
+    """Kamino liquidate via Solend-style ixs (fork layout) + Jito bundle.
+
+    Best-effort: reserves + obligation positions are decoded on-chain, the
+    tx is simulated, and it is only sent when sim passes. Every unknown is
+    blocked with an honest reason — no invented accounts.
+    """
+    obl = (plan.get("obligation") or "").strip()
+    if not _is_pubkey(obl):
+        rec["stage"] = "blocked"
+        rec["detail"] = "kamino missing obligation in plan"
+        rec["reasons"] = ["missing_obligation"]
+        return rec
+
+    obl_acc = _account_info(obl)
+    if not obl_acc or (obl_acc.get("owner") or "") != KAMINO_PROGRAM:
+        rec["stage"] = "blocked"
+        rec["detail"] = f"kamino obligation {obl[:8]}… not found / wrong owner"
+        rec["reasons"] = ["obligation_not_kamino"]
+        return rec
+    obl_raw = _acc_bytes(obl_acc)
+    if len(obl_raw) != KAMINO_OBLIGATION_SIZE:
+        rec["stage"] = "blocked"
+        rec["detail"] = (f"kamino obligation size {len(obl_raw)} != "
+                         f"{KAMINO_OBLIGATION_SIZE} (not main-market)")
+        rec["reasons"] = ["obligation_size"]
+        return rec
+    obl_market = _b58encode(obl_raw[32:64])
+
+    reserves = _kamino_reserves()
+    if not reserves:
+        rec["stage"] = "blocked"
+        rec["detail"] = "kamino reserves unknown (GPA empty/failed)"
+        rec["reasons"] = ["reserves_unknown"]
+        return rec
+
+    positions = _kamino_obl_positions(obl_raw, reserves)
+    debt_pos = max((p for p in positions if p["debt"] > 0),
+                   key=lambda p: p["debt"], default=None)
+    coll_pos = max((p for p in positions if p["coll"] > 0),
+                   key=lambda p: p["coll"], default=None)
+    if not debt_pos or not coll_pos:
+        rec["stage"] = "blocked"
+        rec["detail"] = (f"kamino positions not decoded "
+                         f"(found {len(positions)}/{len(reserves)} reserves)")
+        rec["reasons"] = ["positions_not_decoded"]
+        rec["leftover"] = [
+            "obligation position layout may differ from Solend fork",
+            f"obligation={obl}",
+        ]
+        return rec
+    # Plan may pin reserves (future plan builder) — honor when known.
+    plan_debt = (plan.get("debt_reserve") or "").strip()
+    plan_coll = (plan.get("coll_reserve") or "").strip()
+    if plan_debt in reserves:
+        debt_pos = next(p for p in positions if p["reserve"] == plan_debt)
+    if plan_coll in reserves:
+        coll_pos = next(p for p in positions if p["reserve"] == plan_coll)
+
+    repay_r = debt_pos["reserve"]
+    withdraw_r = coll_pos["reserve"]
+    rcfg = reserves[repay_r]
+    wcfg = reserves[withdraw_r]
+    repay_mint = debt_pos["mint"]
+    coll_mint = wcfg.get("mint") or ""
+    ctoken = wcfg.get("collateral_mint") or ""
+    if not (_is_pubkey(coll_mint) and _is_pubkey(ctoken)
+            and _is_pubkey(rcfg.get("liquidity_supply") or "")
+            and _is_pubkey(wcfg.get("liquidity_supply") or "")
+            and _is_pubkey(wcfg.get("collateral_supply") or "")
+            and _is_pubkey(wcfg.get("fee_receiver") or "")):
+        rec["stage"] = "blocked"
+        rec["detail"] = "kamino reserve layout mismatch — supply/ctoken/fee unknown"
+        rec["reasons"] = ["reserve_layout"]
+        return rec
+
+    close = float(plan.get("close_factor") or KAMINO_CLOSE_FACTOR)
+    repay_amt = max(int(debt_pos["debt"] * close), 1)
+    avail = int(rcfg.get("available_amount") or 0)
+    if avail > 0:
+        repay_amt = min(repay_amt, avail)
+    if repay_amt <= 0:
+        rec["stage"] = "skip"
+        rec["detail"] = "kamino skip — debt reserve available liquidity is 0"
+        rec["reasons"] = ["liquidity"]
+        return rec
+
+    path = _bot_keypair_path()
+    if not path:
+        rec["stage"] = "blocked"
+        rec["detail"] = "bot keypair missing"
+        rec["reasons"] = ["keypair"]
+        return rec
+    bot_kp = _load_solders_keypair(path)
+    bot_pk = str(bot_kp.pubkey())
+    sp_path = _sponsor_keypair_path()
+    sp_kp = _load_solders_keypair(sp_path) if sp_path else None
+
+    tok_repay = _mint_token_program(repay_mint)
+    tok_coll = _mint_token_program(coll_mint) if coll_mint else TOKEN_PROGRAM
+    src_ata = _ata_addr(bot_pk, repay_mint, tok_repay)
+    dest_c = _ata_addr(bot_pk, ctoken, TOKEN_PROGRAM)
+    dest_liq = _ata_addr(bot_pk, coll_mint, tok_coll)
+
+    # Funding check — never send a liq we cannot repay.
+    if repay_mint == MINT_SOL:
+        bot_lam = int(((funds or {}).get("bot") or {}).get("lamports") or 0)
+        if bot_lam <= repay_amt + 3_000_000:
+            rec["stage"] = "blocked"
+            rec["detail"] = "kamino blocked — bot SOL below repay amount"
+            rec["reasons"] = ["funding"]
+            return rec
+    else:
+        have = _spl_amount(src_ata)
+        if have < repay_amt:
+            rec["stage"] = "blocked"
+            rec["detail"] = (f"kamino blocked — bot holds {have} < "
+                             f"repay {repay_amt} ({repay_mint[:8]}…)")
+            rec["reasons"] = ["funding"]
+            return rec
+
+    market = obl_market if _is_pubkey(obl_market) else KAMINO_MAIN_MARKET
+    auth = _kamino_market_authority(market)
+
+    def _refresh_ix(reserve: str, cfg: dict):
+        accs = [(reserve, False, True)]
+        for okey in ("pyth", "switchboard"):
+            opk = (cfg.get(okey) or "").strip()
+            if _is_pubkey(opk):
+                accs.append((opk, False, False))
+        return _kamino_ix(KAMINO_IX_REFRESH_RESERVE, b"", accs)
+
+    ixs_refresh = [
+        _refresh_ix(repay_r, rcfg),
+        _refresh_ix(withdraw_r, wcfg),
+        _kamino_ix(
+            KAMINO_IX_REFRESH_OBLIGATION, b"",
+            [(obl, False, True), (repay_r, False, True),
+             (withdraw_r, False, True)],
+        ),
+    ]
+    ixs_liq: list = []
+    if not _account_info(dest_c):
+        ixs_liq.append(_create_ata_ix(
+            bot_pk, bot_pk, ctoken, TOKEN_PROGRAM, dest_c))
+    if not _account_info(dest_liq):
+        ixs_liq.append(_create_ata_ix(
+            bot_pk, bot_pk, coll_mint, tok_coll, dest_liq))
+    liq_accounts = [
+        (src_ata, False, True),
+        (dest_c, False, True),
+        (dest_liq, False, True),
+        (repay_r, False, True),
+        (rcfg["liquidity_supply"], False, True),
+        (withdraw_r, False, True),
+        (wcfg["collateral_mint"], False, True),
+        (wcfg["collateral_supply"], False, True),
+        (wcfg["liquidity_supply"], False, True),
+        (wcfg["fee_receiver"], False, True),
+        (obl, False, True),
+        (market, False, False),
+        (auth, False, False),
+        (bot_pk, True, False),
+        (TOKEN_PROGRAM, False, False),
+    ]
+    ixs_liq.append(_kamino_ix(
+        KAMINO_IX_LIQUIDATE_AND_REDEEM,
+        int(repay_amt).to_bytes(8, "little"),
+        liq_accounts,
+    ))
+    bh = (latest_blockhash().get("blockhash") or "")
+    if not bh:
+        rec["stage"] = "blocked"
+        rec["detail"] = "no recent blockhash"
+        rec["reasons"] = ["blockhash"]
+        return rec
+    try:
+        from solders.compute_budget import (
+            set_compute_unit_limit, set_compute_unit_price)
+        prio_ixs = [
+            set_compute_unit_limit(int(plan.get("compute_units") or 400_000)),
+            set_compute_unit_price(int(plan.get("priority_fee_ul") or 1_000)),
+        ]
+    except Exception:
+        prio_ixs = []
+    try:
+        raw_refresh = _compile_v0(bot_kp, ixs_refresh, bh)
+        raw_liq = _compile_v0(bot_kp, prio_ixs + ixs_liq, bh)
+    except Exception as e:  # noqa: BLE001
+        rec["stage"] = "blocked"
+        rec["detail"] = f"kamino tx compile failed: {type(e).__name__}: {e}"
+        rec["reasons"] = [str(e)]
+        return rec
+    sim_err = _sim_tx_err(raw_liq)
+    if sim_err:
+        log.warning("Kamino liq sim fail: %s", sim_err)
+        rec["stage"] = "blocked"
+        rec["detail"] = f"kamino simulate failed: {sim_err}"
+        rec["reasons"] = [sim_err]
+        rec["leftover"] = [
+            "fork layout may differ (oracles/whitelist/stale refresh)",
+            f"obligation={obl} debt_reserve={repay_r[:8]}… "
+            f"coll_reserve={withdraw_r[:8]}…",
+        ]
+        return rec
+    log.info("Kamino liq sim pass: repay=%d obl=%s", repay_amt, obl[:8])
+
+    sol_px = float(plan.get("sol_px") or fetch_sol_price() or 0)
+    pre = float(plan.get("expected_profit_usd") or 0)
+    jito_lam = int(plan.get("jito_tip_lamports") or 0)
+    if jito_lam <= 0:
+        jito_lam = _dynamic_jito_lamports(pre, sol_px, None, min_sol_liq_usd())
+    tip_usd = (jito_lam / 1e9) * max(sol_px, 0.0)
+    if pre - tip_usd <= 0 and pre > 0:
+        rec["stage"] = "skip"
+        rec["detail"] = "kamino skip — tip would make net <= 0"
+        rec["reasons"] = ["net<=0 after tip"]
+        return rec
+    tip_acct = plan.get("jito_tip_account") or _jito_tip_account(bot_pk)
+    sp_sol = float(((funds or {}).get("sponsor") or {}).get("sol") or 0)
+    if sp_kp is not None and sp_sol >= 0.01:
+        tip_raw = _build_tip_tx(sp_kp, tip_acct, jito_lam, bh)
+        tip_payer = "sponsor"
+    else:
+        tip_raw = _build_tip_tx(bot_kp, tip_acct, jito_lam, bh)
+        tip_payer = "bot"
+    plan["_raw_tx_0"] = raw_refresh
+    bid, err = _jito_send_bundle([raw_refresh, raw_liq, tip_raw])
+    rec["jito_tip_lamports"] = jito_lam
+    rec["tip_payer"] = tip_payer
+    rec["execute"] = "kamino-jito"
+    rec["protocol_id"] = "kamino"
+    if not bid:
+        rec["stage"] = "blocked"
+        rec["detail"] = f"Jito sendBundle failed: {err}"
+        rec["reasons"] = [str(err)]
+        return rec
+    rec["stage"] = "sent"
+    rec["bundle_id"] = bid
+    rec["sig"] = bid
+    log.info("Kamino liq bundle sent: %s", bid)
+    rec["detail"] = (
+        f"LIVE kamino liq Jito bundle {bid[:12]}… obl={obl[:6]} "
+        f"repay={repay_amt} tip={jito_lam}lam payer={tip_payer}"
+    )
+    # Confirm bundle landed
+    confirm = _jito_confirm_bundle(bid, max_wait_sec=10.0)
+    rec["bundle_confirmed"] = confirm.get("landed", False)
+    rec["bundle_slot"] = confirm.get("slot")
+    if confirm.get("landed"):
+        rec["stage"] = "confirmed"
+        rec["detail"] = (
+            f"LIVE kamino liq CONFIRMED slot={confirm.get('slot')} "
+            f"obl={obl[:6]} tip={jito_lam}lam"
+        )
+        log.info("Kamino liq bundle CONFIRMED: slot=%s", confirm.get("slot"))
+    elif confirm.get("error"):
+        rec["detail"] = (
+            f"LIVE kamino liq sent but unconfirmed: {confirm.get('error')} "
+            f"bid={bid[:12]} obl={obl[:6]}"
+        )
+    # Backup: direct tx confirmation if bundle status unavailable
+    if not confirm.get("landed") and rec.get("stage") == "sent":
+        try:
+            raw_first = plan.get("_raw_tx_0")
+            if raw_first and len(raw_first) >= 64:
+                tx_sig_b58 = base64.b64encode(
+                    bytes(raw_first[:64])).decode("ascii")
+                direct = _confirm_sol_tx(tx_sig_b58, max_wait_sec=5.0)
+                if direct.get("confirmed"):
+                    rec["stage"] = "confirmed"
+                    rec["bundle_confirmed"] = True
+                    rec["bundle_slot"] = direct.get("slot")
+        except Exception:
+            pass
+    plan["jito_bundle"] = True
+    plan["mode"] = "live"
+    rec["plan"] = plan
+    return rec
+
+
+def _live_send_alt_protocol(plan: dict, funds: dict | None, rec: dict,
+                              protocol_id: str) -> dict:
+    """Route non-Solend live liquidations.
+
+    Kamino is a Solend fork — same ix account metas, own program + tags:
+    build Solend-style ixs, simulate, send only when sim passes.
+    MarginFi has a different architecture (vaults/positions) and stays
+    blocked until it gets its own encoder.
+    """
+    if protocol_id == "kamino":
+        return _live_send_kamino(plan, funds, rec)
+
+    if protocol_id == "marginfi":
+        pid = "MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA"
+        rec["stage"] = "blocked"
+        rec["detail"] = (
+            f"marginfi live exec: program {pid[:8]}... "
+            f"obl={(plan.get('obligation') or '')[:12]}... "
+            f"hf={plan.get('hf')}. Different architecture — needs its own "
+            f"instruction encoder. Opportunity logged."
+        )
+        rec["reasons"] = ["marginfi_ix_encoder_needed"]
+        rec["protocol_id"] = "marginfi"
+        rec["leftover"] = [
+            "marginfi: Anchor liquidate instruction encoding not yet "
+            "implemented",
+            f"Program: {pid}",
+            f"Obligation: {plan.get('obligation') or ''}",
+        ]
+        return rec
+
+    rec["stage"] = "blocked"
+    rec["detail"] = f"{protocol_id} live exec not implemented"
+    rec["reasons"] = [f"{protocol_id}_not_wired"]
     return rec
 
 
@@ -6074,6 +6837,11 @@ def submit_sol_plan(plan: dict, *, sim_only: bool, armed: bool,
         rec["detail"] = "refusing stub program id — would no-op burn CU"
         rec["reasons"] = ["stub program"]
         return rec
+
+    # Route non-Solend protocols to their own handler
+    protocol_id = (plan or {}).get("protocol_id") or "solend"
+    if protocol_id in ("kamino", "marginfi"):
+        return _live_send_alt_protocol(plan, funds, rec, protocol_id)
 
     reasons = list(live_submit_blockers("liq"))
     funded, fund_rs = wallets_funded_enough(funds)

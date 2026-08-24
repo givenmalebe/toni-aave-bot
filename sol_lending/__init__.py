@@ -140,3 +140,30 @@ def scan_all_competitors(*, limit: int = 24, sol_px: float = 0.0) -> dict:
 
     all_events.sort(key=lambda r: r.get("slot") or 0, reverse=True)
     return {"events": all_events, "errors": errors[:12]}
+
+
+def hydrate_pubkeys(pubkeys: list[str], *, max_accounts: int = 40) -> dict:
+    """Event-driven hydrate: getMultipleAccounts across Kamino (and no GPA)."""
+    keys = [p for p in (pubkeys or []) if p][:max_accounts]
+    if not keys:
+        return {"opportunities": [], "watch": [], "probed": 0, "hydrated": 0,
+                "errors": [], "adapters": [], "pills": list(PILLS),
+                "method": "gma"}
+    k = kamino.hydrate_pubkeys(keys, max_accounts=max_accounts)
+    return {
+        "opportunities": k.get("opportunities") or [],
+        "watch": k.get("watch") or [],
+        "probed": k.get("probed") or 0,
+        "hydrated": k.get("hydrated") or 0,
+        "errors": k.get("errors") or [],
+        "adapters": [{
+            "id": "kamino",
+            "enabled": True,
+            "probed": k.get("probed") or 0,
+            "hydrated": k.get("hydrated") or 0,
+            "opps": len(k.get("opportunities") or []),
+            "errors": (k.get("errors") or [])[:2],
+        }],
+        "pills": list(PILLS),
+        "method": "gma",
+    }

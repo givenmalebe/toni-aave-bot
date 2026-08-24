@@ -727,6 +727,7 @@ class Dashboard:
         self._last_prices = {}
         self._sol_hot_kick = None
         self._sol_kick_pubkeys = set()
+        self._sol_discovered = set()
         self.sol_tip_floor = (solfee.TipFloor() if solfee else None)
         self.sol_breaker = (solfee.LossBreaker() if solfee else None)
         self.state = {
@@ -3509,17 +3510,45 @@ class Dashboard:
                 if not data:
                     data = {"ok": False, "watchlist": [], "opportunities": [],
                             "error": "watchlist timeout", "reserves_n": 0}
-                # Obligation GPA + hydrate — slow/may fail on public RPC; cap wait
-                probe = await self._run(
-                    sols.probe_solend_obligations, 55, data.get("market"), 40)
+                feed_mode = ((self.sol_feed.stats() if self.sol_feed else {})
+                             .get("mode") or "off")
+                disc = list(getattr(self, "_sol_discovered", set()) or [])
+                sol_now = self.state.get("sol") or {}
+                for row in (sol_now.get("watchlist") or []) + (
+                        sol_now.get("opportunities") or []):
+                    pk = row.get("obligation") or row.get("user")
+                    if pk:
+                        disc.append(pk)
+                seen, keys = set(), []
+                for pk in disc:
+                    if pk and pk not in seen:
+                        seen.add(pk)
+                        keys.append(pk)
+                use_feed = feed_mode in ("live", "degraded") and bool(keys)
+                if use_feed:
+                    hyd = await self._run(sols._hydrate_from_rpc, 40, keys, "feed")
+                    probe = {
+                        "ok": True,
+                        "opportunities": [o for o in (hyd or [])
+                                          if (o.get("hf") or 99) < 1.0],
+                        "watch": hyd or [],
+                        "probed": len(keys),
+                        "hydrated": len(hyd or []),
+                        "method": "feed-gma",
+                        "note": f"event hydrate n={len(keys)} mode={feed_mode}",
+                    }
+                    multi = await self._run(
+                        slend.hydrate_pubkeys, 40, keys, max_accounts=40)
+                else:
+                    probe = await self._run(
+                        sols.probe_solend_obligations, 55, data.get("market"), 40)
+                    multi = await self._run(
+                        slend.scan_all_obligations, 60, max_accounts=40)
                 if not probe:
                     probe = {
                         "ok": False, "opportunities": [], "probed": 0,
                         "hydrated": 0, "note": "obligation probe timeout",
                     }
-                # Multi-protocol probe (Kamino, MarginFi, Drift)
-                multi = await self._run(slend.scan_all_obligations, 60,
-                                        max_accounts=40)
                 if not multi:
                     multi = {"opportunities": [], "watch": [], "probed": 0,
                              "hydrated": 0, "errors": [], "adapters": []}
@@ -3541,7 +3570,8 @@ class Dashboard:
                     "pressure")
                 px = sol.get("sol_price_usd")
                 for o in gpa_opps:
-                    o["source"] = o.get("source") or "gpa"
+                    o["source"] = o.get("source") or (
+                        "feed" if use_feed else "gpa")
                     o["kind"] = "liq"
                     pid = o.get("protocol_id") or "solend"
                     if pid == "solend":
@@ -3549,16 +3579,15 @@ class Dashboard:
                             o, sol_px=px, priority_median=prio, pressure=pressure)
                         o.update(scored)
                         o["plan"] = sols.build_liq_plan(o, prio, pressure)
+                    elif pid == "kamino":
+                        scored = slend.kamino.score_profit(
+                            o, sol_px=px or 0.0, pressure=pressure)
+                        o.update(scored)
+                        o["plan"] = sols.build_kamino_liq_plan(o, prio, pressure)
                     else:
                         o.setdefault("actionable", o.get("hf") is not None and o["hf"] < 1.0)
                         o.setdefault("profit_usd", None)
                         o.setdefault("net_usd", None)
-                        if (pid == "kamino" and o.get("hf") is not None
-                                and o["hf"] < 1.0):
-                            # Rough edge: 20% close factor x ~5% liq bonus on debt
-                            debt_usd = float(o.get("debt_usd") or 0)
-                            o["profit_usd"] = round(debt_usd * 0.20 * 0.05, 2)
-                            o["net_usd"] = o["profit_usd"]
                         o["plan"] = {"kind": "liq", "execute": f"{pid}-jito",
                                      "protocol_id": pid, "ready": False,
                                      "obligation": o.get("obligation"),
@@ -4030,9 +4059,18 @@ class Dashboard:
                                               "sol_events": 0})
         sh["sol_events"] += 1
         if pubkey:
-            self._sol_kick_pubkeys.add(str(pubkey))
-        if self._sol_hot_kick:
-            self._sol_hot_kick.set()
+            pk = str(pubkey)
+            self._sol_kick_pubkeys.add(pk)
+            disc = getattr(self, "_sol_discovered", None)
+            if disc is None:
+                self._sol_discovered = set()
+                disc = self._sol_discovered
+            disc.add(pk)
+            if len(disc) > 400:
+                self._sol_discovered = set(list(disc)[-200:])
+        ev = self._sol_hot_kick or getattr(self, "_sol_hot_kick", None)
+        if ev:
+            ev.set()
 
     def _feeds_status(self):
         return {
@@ -4083,13 +4121,12 @@ class Dashboard:
     def _hot_plan_for(self, opp: dict) -> dict | None:
         plan = opp.get("plan") or {}
         pid = opp.get("protocol_id") or plan.get("protocol_id") or "solend"
-        if not plan or (pid == "kamino" and not plan.get("ready", True)):
-            # Minimal real Kamino plan — sender decodes the rest on-chain.
+        if pid == "kamino" and (not plan or not plan.get("ready", True)):
             obl = str(opp.get("obligation") or "")
-            if pid == "kamino" and obl:
-                return {"kind": "liq", "protocol_id": "kamino",
-                        "obligation": obl, "execute": "kamino-jito",
-                        "ready": True}
+            if not obl:
+                return None
+            return sols.build_kamino_liq_plan(opp)
+        if not plan:
             return None
         return plan
 
@@ -4176,10 +4213,14 @@ class Dashboard:
                 "SOL_FEED_ENABLED", "1") == "1":
             raw = os.environ.get("SOL_FEED_WS_URLS", "")
             surls = [u.strip() for u in raw.split(",") if u.strip()]
-            if surls:
-                self.sol_feed = SolEventFeed(surls, self._get_hot_sol_pubkeys,
-                                             self._on_sol_account_change,
-                                             lambda n: None)
+            if not surls:
+                surls = [
+                    "wss://api.mainnet-beta.solana.com",
+                    "wss://solana-rpc.publicnode.com",
+                ]
+            self.sol_feed = SolEventFeed(surls, self._get_hot_sol_pubkeys,
+                                         self._on_sol_account_change,
+                                         lambda n: None)
         # Initialize hybrid execution engine
         gas_bidder = GasBiddingEngine(
             aggressive_factor=1.15,
