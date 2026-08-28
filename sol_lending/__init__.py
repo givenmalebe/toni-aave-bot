@@ -142,28 +142,35 @@ def scan_all_competitors(*, limit: int = 24, sol_px: float = 0.0) -> dict:
     return {"events": all_events, "errors": errors[:12]}
 
 
-def hydrate_pubkeys(pubkeys: list[str], *, max_accounts: int = 40) -> dict:
-    """Event-driven hydrate: getMultipleAccounts across Kamino (and no GPA)."""
+def hydrate_pubkeys(pubkeys: list[str], *, max_accounts: int = 40,
+                    sol_px: float = 0.0) -> dict:
+    """Event-driven hydrate: GMA across Kamino + MarginFi (no GPA)."""
     keys = [p for p in (pubkeys or []) if p][:max_accounts]
     if not keys:
         return {"opportunities": [], "watch": [], "probed": 0, "hydrated": 0,
                 "errors": [], "adapters": [], "pills": list(PILLS),
                 "method": "gma"}
     k = kamino.hydrate_pubkeys(keys, max_accounts=max_accounts)
+    m = marginfi.hydrate_pubkeys(keys, max_accounts=max_accounts, sol_px=sol_px)
+    opps = (k.get("opportunities") or []) + (m.get("opportunities") or [])
+    watch = (k.get("watch") or []) + (m.get("watch") or [])
+    errors = (k.get("errors") or []) + (m.get("errors") or [])
     return {
-        "opportunities": k.get("opportunities") or [],
-        "watch": k.get("watch") or [],
-        "probed": k.get("probed") or 0,
-        "hydrated": k.get("hydrated") or 0,
-        "errors": k.get("errors") or [],
-        "adapters": [{
-            "id": "kamino",
-            "enabled": True,
-            "probed": k.get("probed") or 0,
-            "hydrated": k.get("hydrated") or 0,
-            "opps": len(k.get("opportunities") or []),
-            "errors": (k.get("errors") or [])[:2],
-        }],
+        "opportunities": opps,
+        "watch": watch,
+        "probed": max(k.get("probed") or 0, m.get("probed") or 0),
+        "hydrated": (k.get("hydrated") or 0) + (m.get("hydrated") or 0),
+        "errors": errors[:12],
+        "adapters": [
+            {"id": "kamino", "enabled": True, "probed": k.get("probed") or 0,
+             "hydrated": k.get("hydrated") or 0,
+             "opps": len(k.get("opportunities") or []),
+             "errors": (k.get("errors") or [])[:2]},
+            {"id": "marginfi", "enabled": True, "probed": m.get("probed") or 0,
+             "hydrated": m.get("hydrated") or 0,
+             "opps": len(m.get("opportunities") or []),
+             "errors": (m.get("errors") or [])[:2]},
+        ],
         "pills": list(PILLS),
         "method": "gma",
     }

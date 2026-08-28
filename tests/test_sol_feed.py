@@ -84,4 +84,5 @@ def test_subscribes_solend_and_kamino_programs(monkeypatch):
     import asyncio
     asyncio.run(f._consume_one("ws://fake", shard_idx=0, total=1,
                                single_pass=True))
-    assert set(progs) == {sf.SOLEND_PROGRAM, sf.KAMINO_PROGRAM}
+    assert set(progs) == {sf.SOLEND_PROGRAM, sf.KAMINO_PROGRAM,
+                          sf.MARGINFI_PROGRAM}

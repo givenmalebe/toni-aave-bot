@@ -8,10 +8,11 @@ from feeds.common import ProviderHealth, shard
 
 log = logging.getLogger("sol_feed")
 
-# Keep in lockstep with sol_scanner / sol_lending.kamino
+# Keep in lockstep with sol_lending adapters
 SOLEND_PROGRAM = "So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo"
 KAMINO_PROGRAM = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
-DISCOVERY_PROGRAMS = (SOLEND_PROGRAM, KAMINO_PROGRAM)
+MARGINFI_PROGRAM = "MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA"
+DISCOVERY_PROGRAMS = (SOLEND_PROGRAM, KAMINO_PROGRAM, MARGINFI_PROGRAM)
 
 
 class SolEventFeed:

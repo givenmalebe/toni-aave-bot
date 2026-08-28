@@ -5,7 +5,7 @@ import json
 import logging
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 log = logging.getLogger("precompute_sol")
 
@@ -31,6 +31,7 @@ _cache: dict[str, dict] = {}
 _last_slot: int = 0
 _cache_hits: int = 0
 _cache_misses: int = 0
+_builder: Callable | None = None
 
 
 def stop():
@@ -54,7 +55,11 @@ def get(obligation: str) -> Optional[dict]:
         return None
     with _lock:
         _cache_hits += 1
-    return entry.get("data")
+    data = entry.get("data") or {}
+    plan = data.get("plan")
+    if plan:
+        return plan
+    return data
 
 
 def cache_stats() -> dict:
@@ -86,6 +91,7 @@ def build_entry(
     account_metas: list,
     jupiter_route: dict | None,
     estimated_profit_usd: float,
+    plan: dict | None = None,
 ) -> dict:
     """Build a cache entry for a single SOL obligation."""
     return {
@@ -105,6 +111,7 @@ def build_entry(
         "jupiter_route": jupiter_route,
         "estimated_profit_usd": estimated_profit_usd,
         "updated_slot": _last_slot,
+        "plan": plan,
     }
 
 
@@ -121,7 +128,8 @@ def evict_stale(max_slots_old: int = 30) -> int:
         return evicted
 
 
-async def refresh(hot_obligations: list[dict], rpc_url: str) -> None:
+async def refresh(hot_obligations: list[dict], rpc_url: str,
+                  builder: Callable | None = None) -> None:
     """Refresh cache for all hot obligations. Called on each new slot."""
     global _last_slot
 
@@ -137,12 +145,24 @@ async def refresh(hot_obligations: list[dict], rpc_url: str) -> None:
         log.warning("Failed to get slot: %s", e)
         return
 
+    build_fn = builder or _builder
+    if build_fn:
+        try:
+            built = build_fn(hot_obligations)
+        except Exception as e:
+            log.warning("SOL precompute builder failed: %s", e)
+            built = []
+    else:
+        built = []
+
     new_cache: dict[str, dict] = {}
-    for obl in hot_obligations:
+    rows = built if built else hot_obligations
+    for obl in rows:
         addr = obl.get("obligation", "")
         if not addr:
             continue
         try:
+            plan = obl.get("plan")
             entry = build_entry(
                 obligation=addr,
                 kind=obl.get("kind", "liq"),
@@ -159,6 +179,7 @@ async def refresh(hot_obligations: list[dict], rpc_url: str) -> None:
                 account_metas=obl.get("account_metas", []),
                 jupiter_route=obl.get("jupiter_route"),
                 estimated_profit_usd=_num(obl.get("expected_profit_usd"), 0),
+                plan=plan,
             )
             new_cache[addr] = {"ts": time.time(), "data": entry}
         except Exception as e:
@@ -175,7 +196,8 @@ async def refresh(hot_obligations: list[dict], rpc_url: str) -> None:
 _listener_task: Optional[asyncio.Task] = None
 
 
-async def _slot_loop(rpc_url: str, get_hot_obligations) -> None:
+async def _slot_loop(rpc_url: str, get_hot_obligations,
+                     builder: Callable | None = None) -> None:
     """Background loop that listens for slot updates and refreshes cache."""
     global _listener_task
     import websockets
@@ -194,7 +216,7 @@ async def _slot_loop(rpc_url: str, get_hot_obligations) -> None:
                         data = json.loads(msg)
                         if "params" in data:
                             hot = get_hot_obligations()
-                            await refresh(hot, rpc_url)
+                            await refresh(hot, rpc_url, builder=builder)
                     except Exception as e:
                         log.warning("Slot listener error: %s", e)
         except Exception as e:
@@ -202,10 +224,13 @@ async def _slot_loop(rpc_url: str, get_hot_obligations) -> None:
             await asyncio.sleep(5)
 
 
-def start_slot_listener(rpc_url: str, get_hot_obligations) -> asyncio.Task:
+def start_slot_listener(rpc_url: str, get_hot_obligations,
+                        builder: Callable | None = None) -> asyncio.Task:
     """Start the background slot listener."""
-    global _listener_task
+    global _listener_task, _builder
+    _builder = builder
     if _listener_task and not _listener_task.done():
         return _listener_task
-    _listener_task = asyncio.ensure_future(_slot_loop(rpc_url, get_hot_obligations))
+    _listener_task = asyncio.ensure_future(
+        _slot_loop(rpc_url, get_hot_obligations, builder=builder))
     return _listener_task

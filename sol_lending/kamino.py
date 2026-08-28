@@ -162,27 +162,76 @@ def parse_obligation(pk: str, raw: bytes) -> dict | None:
 
 def score_profit(opp: dict, *, sol_px: float = 0.0,
                  priority_median: int | None = None,
-                 pressure: str | None = None) -> dict:
-    """20% close factor, ~5% liq bonus — Kamino kLend defaults."""
+                 pressure: str | None = None,
+                 reserves: dict | None = None) -> dict:
+    """Score with real reserve config when available (bonus, close factor, liquidity)."""
     hf = opp.get("hf")
     debt = float(opp.get("debt_usd") or opp.get("borrowed_usd") or 0)
+    borrows = [r for r in (opp.get("borrow_reserves") or []) if r]
+    deposits = [r for r in (opp.get("deposit_reserves") or []) if r]
+    debt_r = str(opp.get("debt_reserve") or (borrows[0] if borrows else ""))
+    coll_r = str(opp.get("coll_reserve") or (deposits[0] if deposits else ""))
+    rcfg = (reserves or {}).get(debt_r) or {}
+    wcfg = (reserves or {}).get(coll_r) or {}
     close = 0.20
-    bonus = 0.05
+    bonus_raw = rcfg.get("liq_bonus")
+    if bonus_raw is not None:
+        try:
+            bonus = float(bonus_raw) / 100.0 if float(bonus_raw) > 1 else float(bonus_raw)
+        except (TypeError, ValueError):
+            bonus = 0.05
+    else:
+        bonus = 0.05
     repay = debt * close if debt > 0 else 0.0
+    avail = int(rcfg.get("available_amount") or 0)
+    if avail > 0 and debt_r:
+        dec = int(rcfg.get("decimals") or 6)
+        avail_usd = avail / (10 ** dec) if dec else 0
+        if avail_usd > 0:
+            repay = min(repay, avail_usd * close, debt)
     seized = repay * (1.0 + bonus)
     gross = seized - repay
-    cu_usd = 0.03 if (sol_px or 0) <= 0 else max(0.01, 250_000 * 50e-6 * (sol_px / 150.0))
+    px = float(sol_px or 0.0)
+    cu = 400_000
+    cu_usd = 0.03 if px <= 0 else max(0.01, cu * 50e-6 * (px / 150.0))
     if str(pressure or "") in ("hot", "elevated"):
         cu_usd *= 1.4
-    net = gross - cu_usd
+    slip_usd = seized * 0.003 if coll_r and debt_r and coll_r != debt_r else 0.0
+    flash_bps = int(rcfg.get("flash_loan_fee_bps") or 30)
+    flash_usd = repay * (flash_bps / 10_000.0) if repay else 0.0
+    pre_tip = gross - cu_usd - slip_usd - flash_usd
+    try:
+        import sol_scanner as sols
+        jito_lam = sols._dynamic_jito_lamports(
+            pre_tip, px, pressure, sols.min_sol_liq_usd())
+        jito_usd = (jito_lam / 1e9) * px
+    except Exception:
+        jito_usd = 0.03
+    net = pre_tip - jito_usd
+    floor = 3.0
+    try:
+        import sol_scanner as sols
+        floor = sols.min_sol_liq_usd()
+    except Exception:
+        pass
     out = dict(opp)
+    out["debt_reserve"] = debt_r or out.get("debt_reserve")
+    out["coll_reserve"] = coll_r or out.get("coll_reserve")
     out["close_factor"] = close
     out["liq_bonus_pct"] = bonus * 100.0
     out["repay_usd"] = round(repay, 4)
     out["seized_usd"] = round(seized, 4)
+    out["gross_usd"] = round(gross, 4)
+    out["slip_usd"] = round(slip_usd, 6)
+    out["flash_fee_bps"] = flash_bps
     out["profit_usd"] = round(net, 4)
     out["net_usd"] = round(net, 4)
-    out["actionable"] = bool(hf is not None and hf < 1.0 and net > 0.5)
+    out["actionable"] = bool(hf is not None and hf < 1.0 and net > floor)
+    out["edge"] = bool(
+        (hf is not None and hf < 1.0)
+        or str(out.get("collateral_sym") or "").upper() in (
+            "BONK", "WIF", "MSOL", "PYTH", "RAY"))
+    out["compute_units"] = cu
     return out
 
 

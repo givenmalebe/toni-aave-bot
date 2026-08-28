@@ -1009,8 +1009,25 @@ _COMP_HISTORY_N = 0
 _COMP_HISTORY_CAP = 400
 _COMP_SEEN_CAP = 2500
 # Real obligation pubkeys + last Solend-API hydrates (no fake HF).
-_OBLIGATION_KEYS: deque[str] = deque(maxlen=120)
+_OBLIGATION_KEYS: deque[str] = deque(maxlen=500)
 _HYDRATE_CACHE: dict[str, dict] = {}
+_HYDRATE_CACHE_MAX = 500
+_PERMANENT_WATCH: set[str] = set()
+_PERMANENT_WATCH_LOCK = threading.Lock()
+_COMPETITOR_OBL: dict[str, int] = {}
+_COMPETITOR_OBL_LOCK = threading.Lock()
+_COMPETITOR_SLOT_WINDOW = int(os.environ.get("SOL_CONTESTED_SLOTS", "50") or 50)
+_FEED_EVENT_TS: dict[str, float] = {}
+_EXEC_METRICS: dict[str, Any] = {
+    "bundles_sent": 0, "bundles_landed": 0, "sim_failed": 0,
+    "skipped_contested": 0, "skipped_tip": 0, "missed_competitor": 0,
+    "latency_ms_sum": 0, "latency_ms_n": 0, "by_protocol": {},
+}
+_EXEC_METRICS_LOCK = threading.Lock()
+_JUP_PREWARM_PAIRS = (
+    (MINT_SOL, MINT_USDC),
+    ("mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So", MINT_SOL),
+)
 
 # Thread-safety locks for shared mutable state.
 _RESERVE_INDEX_LOCK = threading.Lock()
@@ -1018,6 +1035,7 @@ _COMP_LOCK = threading.Lock()
 _SEEN_SIGS_LOCK = threading.Lock()
 _OBLIGATION_KEYS_LOCK = threading.Lock()
 _HYDRATE_CACHE_LOCK = threading.Lock()
+_FEED_EVENT_TS_LOCK = threading.Lock()
 _RPC_LOCK = threading.Lock()
 _KAMINO_CACHE_LOCK = threading.Lock()
 
@@ -1089,6 +1107,121 @@ def _is_pubkey(pk: str | None) -> bool:
     return len(s) >= 32 and "…" not in s and "..." not in s
 
 
+def register_obligation(pk: str, source: str = "") -> None:
+    """Permanent watch registry — every obligation we have ever seen."""
+    if not _is_pubkey(pk):
+        return
+    with _PERMANENT_WATCH_LOCK:
+        _PERMANENT_WATCH.add(pk)
+    remember_obligation_keys([pk])
+    with _HYDRATE_CACHE_LOCK:
+        row = _HYDRATE_CACHE.get(pk)
+        if row is not None and source:
+            row["source"] = source
+
+
+def obligation_pubkeys_for_feed(max_n: int = 400) -> list[str]:
+    """All known obligation pubkeys for WS accountSubscribe (not just top-50 HF)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    with _PERMANENT_WATCH_LOCK:
+        keys = list(_PERMANENT_WATCH)
+    with _OBLIGATION_KEYS_LOCK:
+        keys.extend(list(_OBLIGATION_KEYS))
+    with _HYDRATE_CACHE_LOCK:
+        keys.extend(list(_HYDRATE_CACHE))
+    for pk in keys:
+        if not _is_pubkey(pk) or pk in seen:
+            continue
+        seen.add(pk)
+        out.append(pk)
+        if len(out) >= max(1, int(max_n)):
+            break
+    return out
+
+
+def hot_obligations_for_precompute(hf_threshold: float = 1.05) -> list[dict]:
+    """Rows from hydrate cache with HF below threshold (slot precompute input)."""
+    rows: list[dict] = []
+    with _HYDRATE_CACHE_LOCK:
+        for o in _HYDRATE_CACHE.values():
+            if o.get("proxy") or o.get("hf") is None:
+                continue
+            try:
+                if float(o["hf"]) >= hf_threshold:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            rows.append(dict(o))
+    rows.sort(key=lambda o: (o.get("hf") or 99, -(float(o.get("debt_usd") or 0))))
+    return rows[:80]
+
+
+def record_feed_event(pubkey: str) -> None:
+    if not _is_pubkey(pubkey):
+        return
+    with _FEED_EVENT_TS_LOCK:
+        _FEED_EVENT_TS[pubkey] = time.monotonic()
+    register_obligation(pubkey, "feed")
+
+
+def feed_latency_ms(pubkey: str) -> float | None:
+    with _FEED_EVENT_TS_LOCK:
+        t0 = _FEED_EVENT_TS.get(pubkey)
+    if t0 is None:
+        return None
+    return max(0.0, (time.monotonic() - t0) * 1000.0)
+
+
+def record_competitor_liq(obligation: str, slot: int | None = None) -> None:
+    if not _is_pubkey(obligation):
+        return
+    register_obligation(obligation, "competitor")
+    try:
+        s = int(slot or 0)
+    except (TypeError, ValueError):
+        s = 0
+    if s <= 0:
+        return
+    with _COMPETITOR_OBL_LOCK:
+        _COMPETITOR_OBL[obligation] = max(_COMPETITOR_OBL.get(obligation, 0), s)
+
+
+def is_contested_obligation(obligation: str, *, current_slot: int | None = None,
+                            window: int | None = None) -> bool:
+    if not _is_pubkey(obligation):
+        return False
+    win = int(window or _COMPETITOR_SLOT_WINDOW)
+    with _COMPETITOR_OBL_LOCK:
+        comp_slot = _COMPETITOR_OBL.get(obligation)
+    if comp_slot is None:
+        return False
+    if current_slot is None:
+        return True
+    return (int(current_slot) - int(comp_slot)) <= win
+
+
+def exec_metrics() -> dict:
+    with _EXEC_METRICS_LOCK:
+        m = dict(_EXEC_METRICS)
+        m["by_protocol"] = dict(m.get("by_protocol") or {})
+    n = m.get("latency_ms_n") or 0
+    m["latency_ms_avg"] = (
+        round(m["latency_ms_sum"] / n, 1) if n else None)
+    sent = m.get("bundles_sent") or 0
+    m["land_rate"] = round((m.get("bundles_landed") or 0) / sent, 3) if sent else 0
+    return m
+
+
+def _exec_metric_inc(key: str, proto: str = "", n: int = 1) -> None:
+    with _EXEC_METRICS_LOCK:
+        _EXEC_METRICS[key] = int(_EXEC_METRICS.get(key) or 0) + n
+        if proto:
+            bp = _EXEC_METRICS.setdefault("by_protocol", {})
+            row = bp.setdefault(proto, {})
+            row[key] = int(row.get(key) or 0) + n
+
+
 def remember_obligation_keys(keys) -> None:
     with _OBLIGATION_KEYS_LOCK:
         for k in keys or []:
@@ -1099,6 +1232,25 @@ def remember_obligation_keys(keys) -> None:
                 continue
             if pk not in _OBLIGATION_KEYS:
                 _OBLIGATION_KEYS.append(pk)
+            with _PERMANENT_WATCH_LOCK:
+                _PERMANENT_WATCH.add(pk)
+
+
+def _evict_hydrate_cache() -> None:
+    if len(_HYDRATE_CACHE) <= _HYDRATE_CACHE_MAX:
+        return
+    ranked = sorted(
+        _HYDRATE_CACHE.items(),
+        key=lambda kv: (
+            kv[1].get("hf") is None,
+            -(float(kv[1].get("hf") or 99)),
+            -(float(kv[1].get("debt_usd") or 0)),
+        ),
+        reverse=True,
+    )
+    drop = {k for k, _ in ranked[: len(_HYDRATE_CACHE) - _HYDRATE_CACHE_MAX]}
+    for k in drop:
+        _HYDRATE_CACHE.pop(k, None)
 
 
 def remember_hydrates(rows: list[dict] | None) -> None:
@@ -1115,12 +1267,188 @@ def remember_hydrates(rows: list[dict] | None) -> None:
                 row["user"] = pk
                 row["obligation"] = pk
                 _HYDRATE_CACHE[pk] = row
-        if len(_HYDRATE_CACHE) > 80:
-            keep = closest_to_stress(50)
-            keys = {r.get("obligation") or r.get("user") for r in keep}
-            for k in list(_HYDRATE_CACHE):
-                if k not in keys:
-                    _HYDRATE_CACHE.pop(k, None)
+                with _PERMANENT_WATCH_LOCK:
+                    _PERMANENT_WATCH.add(pk)
+        _evict_hydrate_cache()
+
+
+def get_kamino_reserves_cached() -> dict[str, dict]:
+    """Public wrapper — reserve layouts for scoring + precompute (no per-fire GPA)."""
+    return _kamino_reserves()
+
+
+def _prewarm_jupiter_routes() -> dict[str, dict]:
+    """Cache Jupiter quotes for common coll→debt pairs."""
+    warmed: dict[str, dict] = {}
+    for coll, debt in _JUP_PREWARM_PAIRS:
+        key = f"{coll[:8]}→{debt[:8]}"
+        q = _jup_quote(coll, debt, 1_000_000_000, slippage_bps=50)
+        if q:
+            warmed[key] = q
+    return warmed
+
+
+def build_precompute_entries(
+    hot_rows: list[dict],
+    *,
+    sol_px: float = 0.0,
+    priority_median: int | None = None,
+    pressure: str | None = None,
+) -> list[dict]:
+    """Build real Solend/Kamino/MarginFi plans for slot precompute (sign-and-send hot path)."""
+    if not hot_rows:
+        return []
+    try:
+        import sol_fees as _sf
+    except ImportError:
+        _sf = None
+    kamino_res = _kamino_reserves()
+    jup_warm = _prewarm_jupiter_routes()
+    px = float(sol_px or fetch_sol_price() or 0.0)
+    prio = priority_median
+    if _sf and prio is None:
+        prio = _sf.PRIO_FEE_FLOOR
+    out: list[dict] = []
+    for row in hot_rows:
+        pk = row.get("obligation") or row.get("user") or ""
+        if not _is_pubkey(pk):
+            continue
+        pid = row.get("protocol_id") or "solend"
+        try:
+            hf = float(row.get("hf") or 99)
+        except (TypeError, ValueError):
+            continue
+        if hf >= 1.05:
+            continue
+        opp = dict(row)
+        if pid == "kamino":
+            from sol_lending import kamino as _kamino
+            opp = _kamino.score_profit(
+                opp, sol_px=px, priority_median=prio, pressure=pressure,
+                reserves=kamino_res)
+            plan = build_kamino_liq_plan(opp, prio, pressure)
+            plan["kamino_reserves"] = bool(kamino_res)
+        elif pid == "marginfi":
+            from sol_lending import marginfi as _mfi
+            mfi_banks = _mfi.fetch_banks()
+            opp = _mfi.score_profit(
+                opp, sol_px=px, priority_median=prio, pressure=pressure,
+                banks=mfi_banks)
+            plan = build_marginfi_liq_plan(opp, prio, pressure)
+            plan["_marginfi_banks"] = mfi_banks
+        else:
+            opp = score_liq_profit(
+                opp, sol_px=px, priority_median=prio, pressure=pressure)
+            plan = build_liq_plan(opp, prio, pressure)
+        if _sf:
+            pre = float(opp.get("net_usd") or opp.get("profit_usd") or 0)
+            cu = int(plan.get("compute_units") or 900_000)
+            plan["priority_fee_ul"] = _sf.priority_fee_lamports(
+                [prio or 0], pre, px)
+            plan["compute_units"] = cu
+        coll_m = plan.get("withdraw_mint") or opp.get("coll_mint") or ""
+        debt_m = plan.get("repay_mint") or opp.get("debt_mint") or ""
+        jup_key = f"{coll_m[:8]}→{debt_m[:8]}" if coll_m and debt_m else ""
+        entry = {
+            "obligation": pk,
+            "kind": "liq",
+            "protocol_id": pid,
+            "debt_reserve": plan.get("debt_reserve") or opp.get("debt_reserve") or "",
+            "coll_reserve": plan.get("coll_reserve") or opp.get("coll_reserve") or "",
+            "repay_mint": debt_m,
+            "withdraw_mint": coll_m,
+            "debt_amount": int(plan.get("debt_amount") or opp.get("debt_amount") or 0),
+            "hf": hf,
+            "compute_units": int(plan.get("compute_units") or 900_000),
+            "priority_fee_ul": int(plan.get("priority_fee_ul") or 50_000),
+            "jito_tip_lamports": int(plan.get("jito_tip_lamports") or 0),
+            "instruction_sequence": [],
+            "account_metas": [],
+            "jupiter_route": jup_warm.get(jup_key),
+            "expected_profit_usd": float(
+                opp.get("profit_usd") or opp.get("net_usd") or 0),
+            "plan": plan,
+            "ready": bool(plan.get("ready", True)),
+        }
+        out.append(entry)
+    return out
+
+
+def hydrate_kick_obligation(
+    pubkey: str,
+    *,
+    sol_px: float = 0.0,
+    priority_median: int | None = None,
+    pressure: str | None = None,
+) -> dict | None:
+    """Fast GMA hydrate for feed kick when opp not yet in sweep cache."""
+    if not _is_pubkey(pubkey):
+        return None
+    px = float(sol_px or fetch_sol_price() or 0.0)
+    try:
+        res, _ = sol_rpc(
+            "getMultipleAccounts",
+            [[pubkey], {"encoding": "base64", "commitment": "processed"}],
+            timeout=8.0,
+        )
+        vals = (res or {}).get("value") if isinstance(res, dict) else (res or [])
+        acc = (vals or [None])[0]
+        if not isinstance(acc, dict):
+            return None
+        owner = acc.get("owner") or ""
+        data = acc.get("data")
+        raw = b""
+        if isinstance(data, list) and data:
+            import base64 as _b64
+            try:
+                raw = _b64.b64decode(data[0])
+            except Exception:
+                return None
+        parsed = None
+        pid = "solend"
+        if owner == SOLEND_PROGRAM:
+            parsed = parse_solend_obligation_bytes(pubkey, raw)
+        elif owner == KAMINO_PROGRAM:
+            from sol_lending import kamino as _kamino
+            parsed = _kamino.parse_obligation(pubkey, raw)
+            pid = "kamino"
+        elif owner == "MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA":
+            from sol_lending import marginfi as _mfi
+            parsed = _mfi.parse_account(pubkey, raw, sol_px=px)
+            pid = "marginfi"
+        if not parsed:
+            return None
+        parsed["source"] = "feed-kick"
+        parsed["kind"] = "liq"
+        parsed["protocol_id"] = pid
+        remember_hydrates([parsed])
+        if pid == "kamino":
+            from sol_lending import kamino as _kamino
+            reserves = _kamino_reserves()
+            scored = _kamino.score_profit(
+                parsed, sol_px=px, priority_median=priority_median,
+                pressure=pressure, reserves=reserves)
+            parsed.update(scored)
+            parsed["plan"] = build_kamino_liq_plan(
+                parsed, priority_median, pressure)
+        elif pid == "marginfi":
+            from sol_lending import marginfi as _mfi
+            scored = _mfi.score_profit(
+                parsed, sol_px=px, priority_median=priority_median,
+                pressure=pressure)
+            parsed.update(scored)
+            parsed["plan"] = build_marginfi_liq_plan(
+                parsed, priority_median, pressure)
+        else:
+            scored = score_liq_profit(
+                parsed, sol_px=px, priority_median=priority_median,
+                pressure=pressure)
+            parsed.update(scored)
+            parsed["plan"] = build_liq_plan(parsed, priority_median, pressure)
+        return parsed
+    except Exception as e:
+        log.warning("kick hydrate %s failed: %s", pubkey[:8], e)
+        return None
 
 
 def closest_to_stress(n: int = 10) -> list[dict]:
@@ -1701,6 +2029,31 @@ def build_kamino_liq_plan(opp: dict, priority_median: int | None = None,
     plan["execute"] = "kamino-jito"
     plan["program"] = KAMINO_PROGRAM
     plan["kind"] = "liq"
+    reserves = _kamino_reserves()
+    if reserves:
+        plan["_kamino_reserves_rows"] = reserves
+    tip_lam = int(opp.get("jito_tip_lamports") or 0)
+    if tip_lam <= 0:
+        px = float(opp.get("sol_px") or 0.0)
+        pre = float(plan.get("net_usd") or plan.get("profit_usd") or 0)
+        tip_lam = _dynamic_jito_lamports(pre, px, pressure, min_sol_liq_usd())
+    plan["jito_tip_lamports"] = tip_lam
+    plan["priority_median"] = priority_median
+    plan["pressure"] = pressure
+    return plan
+
+
+def build_marginfi_liq_plan(opp: dict, priority_median: int | None = None,
+                            pressure: str | None = None) -> dict:
+    """Ready MarginFi plan for sweep + hot executor."""
+    from sol_lending import marginfi as _mfi
+    plan = _mfi.build_plan(opp, priority_median=priority_median, pressure=pressure)
+    plan["execute"] = "marginfi-jito"
+    plan["program"] = _mfi.MARGINFI_PROGRAM
+    plan["kind"] = "liq"
+    banks = _mfi.fetch_banks()
+    if banks:
+        plan["_marginfi_banks"] = banks
     tip_lam = int(opp.get("jito_tip_lamports") or 0)
     if tip_lam <= 0:
         px = float(opp.get("sol_px") or 0.0)
@@ -4584,6 +4937,7 @@ def watch_solend_landing(
                     liq_n += 1
                     for k in row.get("obligation_keys") or []:
                         contested.add(k)
+                        record_competitor_liq(k, row.get("slot"))
                 elif kind == "refresh":
                     refresh_n += 1
                 # Any Solend tx can seed obligation hydrates (GPA is often blocked)
@@ -5134,13 +5488,17 @@ def _build_tip_tx(payer_kp, tip_account: str, lamports: int,
 
 
 def _jito_send_bundle(raw_txs: list[bytes]) -> tuple[str | None, str | None]:
-    """Return (bundle_id, error)."""
+    """Return (bundle_id, error). Parallel send — first ack wins."""
     if not raw_txs:
         return None, "empty bundle"
     encoded = [_b58encode(t) for t in raw_txs]
     uuid = (os.environ.get("JITO_UUID") or os.environ.get("JITO_AUTH") or "").strip()
     last_err = "no jito endpoint"
-    for url in JITO_BUNDLE_URLS:
+    urls = list(JITO_BUNDLE_URLS or [])
+    if not urls:
+        return None, last_err
+
+    def _try(url: str) -> tuple[str | None, str | None]:
         dest = url if "?" in url or not uuid else f"{url}?uuid={uuid}"
         try:
             r = _HTTP.post(
@@ -5154,10 +5512,23 @@ def _jito_send_bundle(raw_txs: list[bytes]) -> tuple[str | None, str | None]:
             if out.get("result"):
                 return str(out["result"]), None
             err = out.get("error")
-            last_err = str(err.get("message") if isinstance(err, dict) else err)
+            return None, str(err.get("message") if isinstance(err, dict) else err)
         except Exception as e:  # noqa: BLE001
-            last_err = f"{type(e).__name__}: {e}"
-            continue
+            return None, f"{type(e).__name__}: {e}"
+
+    workers = min(len(urls), 4)
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(_try, url) for url in urls]
+        for fut in as_completed(futs):
+            try:
+                bid, err = fut.result()
+            except Exception as e:  # noqa: BLE001
+                last_err = str(e)
+                continue
+            if bid:
+                return bid, None
+            if err:
+                last_err = err
     return None, last_err
 
 
@@ -5824,6 +6195,60 @@ def _flash_repay_ix(amount: int, borrow_index: int, src_ata: str, dest_liq: str,
     ])
 
 
+def _kamino_flash_borrow_ix(amount: int, source_liq: str, dest_ata: str,
+                            reserve: str, market: str, auth: str, tok: str):
+    return _kamino_ix(SOLEND_IX_FLASH_BORROW, int(amount).to_bytes(8, "little"), [
+        (source_liq, False, True),
+        (dest_ata, False, True),
+        (reserve, False, True),
+        (market, False, False),
+        (auth, False, False),
+        (SYSVAR_INSTRUCTIONS, False, False),
+        (tok, False, False),
+    ])
+
+
+def _kamino_flash_repay_ix(amount: int, borrow_index: int, src_ata: str,
+                           dest_liq: str, fee_recv: str, host_recv: str,
+                           reserve: str, market: str, user: str, tok: str):
+    data = int(amount).to_bytes(8, "little") + bytes([int(borrow_index) & 0xFF])
+    return _kamino_ix(SOLEND_IX_FLASH_REPAY, data, [
+        (src_ata, False, True),
+        (dest_liq, False, True),
+        (fee_recv, False, True),
+        (host_recv, False, True),
+        (reserve, False, False),
+        (market, False, False),
+        (user, True, False),
+        (SYSVAR_INSTRUCTIONS, False, False),
+        (tok, False, False),
+    ])
+
+
+def _ix_flash_borrow_index_generic(ixs, program: str) -> int | None:
+    tag = bytes([SOLEND_IX_FLASH_BORROW])
+    for i, ix in enumerate(ixs or []):
+        prog = getattr(ix, "program_id", None)
+        if prog is not None and str(prog) != program:
+            continue
+        data = bytes(getattr(ix, "data", b"") or b"")
+        if data[:1] == tag:
+            return i
+    return None
+
+
+def _finalize_bundle_metrics(rec: dict, proto: str = "solend") -> dict:
+    stage = str(rec.get("stage") or "")
+    detail = str(rec.get("detail") or "").lower()
+    if stage in ("sent", "confirmed"):
+        _exec_metric_inc("bundles_sent", proto)
+        if rec.get("bundle_confirmed") or stage == "confirmed":
+            _exec_metric_inc("bundles_landed", proto)
+    elif stage == "blocked" and "simulate" in detail:
+        _exec_metric_inc("sim_failed", proto)
+    return rec
+
+
 def _live_send_liq_flash(
         plan, funds, rec, bot_kp, sp_kp, rcfg, wcfg,
         repay_r, withdraw_r, repay_mint, coll_mint, ctoken,
@@ -6429,6 +6854,11 @@ def _kamino_reserves() -> dict[str, dict]:
             "pyth": pyth, "switchboard": switchboard,
             "available_amount": avail, "collateral_mint": coll_mint,
             "collateral_supply": coll_supply, "fee_receiver": fee_recv,
+            "liq_bonus": (
+                raw[225] if len(raw) > 225 and 1 <= raw[225] <= 25 else None),
+            "flash_loan_fee_bps": (
+                int.from_bytes(raw[_RES_FLASH_WAD:_RES_FLASH_WAD + 8], "little")
+                // 10**14 if len(raw) > _RES_FLASH_WAD + 8 else None),
         }
     with _KAMINO_CACHE_LOCK:
         _KAMINO_RESERVES_CACHE["ts"] = now
@@ -6474,6 +6904,135 @@ def _kamino_obl_positions(obl_raw: bytes,
     return out
 
 
+def _live_send_kamino_flash(
+        plan, funds, rec, bot_kp, sp_kp, rcfg, wcfg,
+        repay_r, withdraw_r, repay_mint, coll_mint, ctoken,
+        tok_repay, tok_coll, src_ata, dest_c, dest_liq, repay_amt,
+        obl, market, auth) -> dict:
+    """Kamino flash-borrow debt → liquidate → Jupiter coll→debt → flash-repay."""
+    bot_pk = str(bot_kp.pubkey())
+    supply = rcfg.get("liquidity_supply") or ""
+    fee_recv = rcfg.get("fee_receiver") or ""
+    if not supply or not fee_recv:
+        rec["stage"] = "blocked"
+        rec["detail"] = "kamino flash — repay reserve supply/fee unknown"
+        rec["reasons"] = ["flash remaining"]
+        return rec
+    flash_bps = int(rcfg.get("flash_loan_fee_bps") or 30)
+    fee_native = (int(repay_amt) * flash_bps + 9_999) // 10_000
+    need_back = int(repay_amt) + fee_native
+    bonus = float(plan.get("liq_bonus_pct") or 5) / 100.0
+    seize = max(int(repay_amt * (1.0 + bonus)), repay_amt + 1)
+    jup_ixs, alt_pks = [], []
+    if repay_mint != coll_mint:
+        q = _jup_quote(coll_mint, repay_mint, seize, slippage_bps=50)
+        if not q:
+            rec["stage"] = "skip"
+            rec["detail"] = "kamino flash skip — no Jupiter coll→debt route"
+            rec["reasons"] = ["no jup"]
+            return rec
+        if int(q.get("outAmount") or 0) < need_back:
+            rec["stage"] = "skip"
+            rec["detail"] = "kamino flash skip — swap output < repay+fee"
+            rec["reasons"] = ["swap<flash+fee"]
+            return rec
+        jup_ixs, alt_pks, jerr = _jup_swap_ixs(q, bot_pk, wrap=False, cleanup=False)
+        if jerr or not jup_ixs:
+            rec["stage"] = "blocked"
+            rec["detail"] = "kamino flash — " + (jerr or "jupiter ixs")
+            rec["reasons"] = [jerr or "jupiter ixs"]
+            return rec
+    from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
+    cu_limit = int(plan.get("compute_units") or 1_000_000)
+    ixs = [
+        set_compute_unit_limit(cu_limit),
+        set_compute_unit_price(int(plan.get("priority_fee_ul") or 1_000)),
+    ]
+    if not _account_info(src_ata):
+        ixs.append(_create_ata_ix(bot_pk, bot_pk, repay_mint, tok_repay, src_ata))
+    if not _account_info(dest_c):
+        ixs.append(_create_ata_ix(bot_pk, bot_pk, ctoken, TOKEN_PROGRAM, dest_c))
+    if coll_mint and not _account_info(dest_liq):
+        ixs.append(_create_ata_ix(bot_pk, bot_pk, coll_mint, tok_coll, dest_liq))
+    def _refresh_ix(reserve: str, cfg: dict):
+        accs = [(reserve, False, True)]
+        for okey in ("pyth", "switchboard"):
+            opk = (cfg.get(okey) or "").strip()
+            if _is_pubkey(opk):
+                accs.append((opk, False, False))
+        return _kamino_ix(KAMINO_IX_REFRESH_RESERVE, b"", accs)
+    ixs.extend([
+        _refresh_ix(repay_r, rcfg),
+        _refresh_ix(withdraw_r, wcfg),
+        _kamino_ix(KAMINO_IX_REFRESH_OBLIGATION, b"",
+                   [(obl, False, True), (repay_r, False, True),
+                    (withdraw_r, False, True)]),
+    ])
+    ixs.append(_kamino_flash_borrow_ix(
+        repay_amt, supply, src_ata, repay_r, market, auth, TOKEN_PROGRAM))
+    ixs.append(_kamino_ix(
+        KAMINO_IX_LIQUIDATE_AND_REDEEM, int(repay_amt).to_bytes(8, "little"), [
+            (src_ata, False, True), (dest_c, False, True), (dest_liq, False, True),
+            (repay_r, False, True), (rcfg["liquidity_supply"], False, True),
+            (withdraw_r, False, True), (wcfg["collateral_mint"], False, True),
+            (wcfg["collateral_supply"], False, True), (wcfg["liquidity_supply"], False, True),
+            (wcfg["fee_receiver"], False, True), (obl, False, True),
+            (market, False, False), (auth, False, False), (bot_pk, True, False),
+            (TOKEN_PROGRAM, False, False),
+        ]))
+    ixs.extend(jup_ixs)
+    host = bot_pk
+    ixs.append(_kamino_flash_repay_ix(
+        need_back, _ix_flash_borrow_index_generic(ixs, KAMINO_PROGRAM) or 0,
+        src_ata, supply, fee_recv, host, repay_r, market, bot_pk, TOKEN_PROGRAM))
+    bh = (latest_blockhash().get("blockhash") or "")
+    if not bh:
+        rec["stage"] = "blocked"
+        rec["detail"] = "no recent blockhash"
+        return rec
+    try:
+        raw = _compile_v0(bot_kp, ixs, bh, alt_pks or None)
+    except Exception as e:  # noqa: BLE001
+        rec["stage"] = "blocked"
+        rec["detail"] = f"kamino flash compile: {type(e).__name__}: {e}"
+        return rec
+    sim_err = _sim_tx_err(raw)
+    if sim_err:
+        rec["stage"] = "blocked"
+        rec["detail"] = f"kamino flash simulate failed: {sim_err}"
+        rec["reasons"] = [sim_err]
+        return rec
+    sol_px = float(plan.get("sol_px") or fetch_sol_price() or 0)
+    pre = float(plan.get("expected_profit_usd") or 0)
+    jito_lam = int(plan.get("jito_tip_lamports") or 0)
+    if jito_lam <= 0:
+        jito_lam = _dynamic_jito_lamports(pre, sol_px, None, min_sol_liq_usd())
+    tip_acct = plan.get("jito_tip_account") or _jito_tip_account(bot_pk)
+    sp_sol = float(((funds or {}).get("sponsor") or {}).get("sol") or 0)
+    if sp_kp is not None and sp_sol >= 0.01:
+        tip_raw = _build_tip_tx(sp_kp, tip_acct, jito_lam, bh)
+    else:
+        tip_raw = _build_tip_tx(bot_kp, tip_acct, jito_lam, bh)
+    bid, err = _jito_send_bundle([raw, tip_raw])
+    rec["execute"] = "kamino-flash-jito"
+    rec["flash"] = True
+    rec["jito_tip_lamports"] = jito_lam
+    if not bid:
+        rec["stage"] = "blocked"
+        rec["detail"] = f"Jito sendBundle failed: {err}"
+        return rec
+    rec["stage"] = "sent"
+    rec["bundle_id"] = bid
+    rec["sig"] = bid
+    confirm = _jito_confirm_bundle(bid, max_wait_sec=10.0)
+    rec["bundle_confirmed"] = confirm.get("landed", False)
+    if confirm.get("landed"):
+        rec["stage"] = "confirmed"
+    rec["detail"] = f"LIVE kamino flash Jito {bid[:12]}… obl={obl[:6]}"
+    rec["plan"] = plan
+    return rec
+
+
 def _live_send_kamino(plan: dict, funds: dict | None, rec: dict) -> dict:
     """Kamino liquidate via Solend-style ixs (fork layout) + Jito bundle.
 
@@ -6503,7 +7062,9 @@ def _live_send_kamino(plan: dict, funds: dict | None, rec: dict) -> dict:
         return rec
     obl_market = _b58encode(obl_raw[32:64])
 
-    reserves = _kamino_reserves()
+    reserves = plan.get("_kamino_reserves_rows")
+    if not isinstance(reserves, dict) or not reserves:
+        reserves = _kamino_reserves()
     if not reserves:
         rec["stage"] = "blocked"
         rec["detail"] = "kamino reserves unknown (GPA empty/failed)"
@@ -6578,7 +7139,26 @@ def _live_send_kamino(plan: dict, funds: dict | None, rec: dict) -> dict:
     dest_c = _ata_addr(bot_pk, ctoken, TOKEN_PROGRAM)
     dest_liq = _ata_addr(bot_pk, coll_mint, tok_coll)
 
-    # Funding check — never send a liq we cannot repay.
+    use_flash = bool(repay_mint and coll_mint and repay_mint != coll_mint)
+    if not use_flash:
+        if repay_mint == MINT_SOL:
+            bot_lam = int(((funds or {}).get("bot") or {}).get("lamports") or 0)
+            if bot_lam <= repay_amt + 3_000_000:
+                use_flash = True
+        else:
+            have = _spl_amount(src_ata)
+            if have < repay_amt:
+                use_flash = True
+    if use_flash:
+        market = obl_market if _is_pubkey(obl_market) else KAMINO_MAIN_MARKET
+        auth = _kamino_market_authority(market)
+        return _finalize_bundle_metrics(_live_send_kamino_flash(
+            plan, funds, rec, bot_kp, sp_kp, rcfg, wcfg,
+            repay_r, withdraw_r, repay_mint, coll_mint, ctoken,
+            tok_repay, tok_coll, src_ata, dest_c, dest_liq, repay_amt,
+            obl, market, auth), "kamino")
+
+    # Funding check — same-mint path requires inventory.
     if repay_mint == MINT_SOL:
         bot_lam = int(((funds or {}).get("bot") or {}).get("lamports") or 0)
         if bot_lam <= repay_amt + 3_000_000:
@@ -6752,7 +7332,203 @@ def _live_send_kamino(plan: dict, funds: dict | None, rec: dict) -> dict:
     plan["jito_bundle"] = True
     plan["mode"] = "live"
     rec["plan"] = plan
-    return rec
+    return _finalize_bundle_metrics(rec, "kamino")
+
+
+def _marginfi_ix(data: bytes, accounts: list[tuple[str, bool, bool]]):
+    from sol_lending import marginfi as _mfi
+    from solders.instruction import AccountMeta, Instruction
+    metas = [AccountMeta(_pk(pk), sig, w) for pk, sig, w in accounts]
+    return Instruction(_pk(_mfi.MARGINFI_PROGRAM), data, metas)
+
+
+def _marginfi_pda(seed_prefix: bytes, bank: str) -> str:
+    from solders.pubkey import Pubkey
+    from sol_lending import marginfi as _mfi
+    pk, _b = Pubkey.find_program_address(
+        [seed_prefix, bytes(_pk(bank))], _pk(_mfi.MARGINFI_PROGRAM))
+    return str(pk)
+
+
+def _live_send_marginfi(plan: dict, funds: dict | None, rec: dict) -> dict:
+    """MarginFi lending_account_liquidate + Jito. Sim-gated; needs liquidator mfi account."""
+    from sol_lending import marginfi as _mfi
+
+    obl = (plan.get("obligation") or "").strip()
+    asset_b = (plan.get("asset_bank") or plan.get("coll_reserve") or "").strip()
+    liab_b = (plan.get("liab_bank") or plan.get("debt_reserve") or "").strip()
+    if not all(_is_pubkey(x) for x in (obl, asset_b, liab_b)):
+        rec["stage"] = "blocked"
+        rec["detail"] = "marginfi missing obligation/asset/liab bank"
+        rec["reasons"] = ["missing_accounts"]
+        return rec
+
+    path = _bot_keypair_path()
+    if not path:
+        rec["stage"] = "blocked"
+        rec["detail"] = "bot keypair missing"
+        rec["reasons"] = ["keypair"]
+        return rec
+    bot_kp = _load_solders_keypair(path)
+    bot_pk = str(bot_kp.pubkey())
+    sp_path = _sponsor_keypair_path()
+    sp_kp = _load_solders_keypair(sp_path) if sp_path else None
+
+    liq_acc = _mfi.find_liquidator_account(bot_pk)
+    if not liq_acc:
+        rec["stage"] = "blocked"
+        rec["detail"] = (
+            "marginfi liquidator account missing — create one for bot wallet "
+            "or set MARGINFI_LIQUIDATOR_ACCOUNT")
+        rec["reasons"] = ["liquidator_account"]
+        rec["leftover"] = ["Initialize marginfi account for bot authority"]
+        return rec
+
+    banks = plan.get("_marginfi_banks") if isinstance(plan.get("_marginfi_banks"), dict) else {}
+    if not banks:
+        banks = _mfi.fetch_banks()
+    if asset_b not in banks or liab_b not in banks:
+        rec["stage"] = "blocked"
+        rec["detail"] = "marginfi banks unknown (cache/GPA empty)"
+        rec["reasons"] = ["banks_unknown"]
+        return rec
+
+    obl_acc = _account_info(obl)
+    if not obl_acc:
+        rec["stage"] = "blocked"
+        rec["detail"] = f"marginfi liquidatee {obl[:8]}… not found"
+        return rec
+    obl_raw = _acc_bytes(obl_acc)
+    liq_acc_info = _account_info(liq_acc)
+    if not liq_acc_info:
+        rec["stage"] = "blocked"
+        rec["detail"] = "marginfi liquidator account not found on-chain"
+        return rec
+    liq_raw = _acc_bytes(liq_acc_info)
+
+    liq_balances = _mfi._parse_balances(liq_raw)
+    ee_balances = _mfi._parse_balances(obl_raw)
+    if not ee_balances:
+        rec["stage"] = "blocked"
+        rec["detail"] = "marginfi liquidatee has no parseable balances"
+        return rec
+
+    asset_bank = banks[asset_b]
+    liab_bank = banks[liab_b]
+    dec = int(asset_bank.get("decimals") or 9)
+    ee_asset = next((b for b in ee_balances if b["bank"] == asset_b), None)
+    asset_sh = float((ee_asset or {}).get("asset_shares") or 0)
+    asset_amt = int(max(asset_sh * float(asset_bank.get("asset_share_value") or 0), 1))
+    if asset_amt <= 0:
+        rec["stage"] = "skip"
+        rec["detail"] = "marginfi skip — zero asset amount"
+        rec["reasons"] = ["zero_amount"]
+        return rec
+
+    liq_remaining = _mfi.remaining_accounts_for_balances(liq_balances, banks)
+    ee_remaining = _mfi.remaining_accounts_for_balances(ee_balances, banks)
+    liq_n = len(liq_remaining)
+    ee_n = len(ee_remaining)
+
+    # Optional asset/liab oracle prefixes when not fixed-price.
+    prefix: list[tuple[str, bool, bool]] = []
+    for bank_pk, is_asset in ((asset_b, True), (liab_b, False)):
+        row = banks.get(bank_pk) or {}
+        if int(row.get("oracle_setup") or 0) == _mfi._ORACLE_FIXED:
+            continue
+        keys = row.get("oracle_keys") or []
+        if keys:
+            prefix.append((keys[0], False, False))
+
+    remaining = prefix + liq_remaining + ee_remaining
+    vault_auth = _marginfi_pda(b"liquidity_vault_auth", liab_b)
+    liq_vault = _marginfi_pda(b"liquidity_vault", liab_b)
+    ins_vault = _marginfi_pda(b"insurance_vault", liab_b)
+
+    ix_data = _mfi.liquidate_ix_data(asset_amt, ee_n, liq_n)
+    accounts = [
+        (_mfi.MARGINFI_GROUP, False, False),
+        (asset_b, False, True),
+        (liab_b, False, True),
+        (liq_acc, False, True),
+        (bot_pk, True, False),
+        (obl, False, True),
+        (vault_auth, False, True),
+        (liq_vault, False, True),
+        (ins_vault, False, True),
+        (TOKEN_PROGRAM, False, False),
+    ] + remaining
+
+    try:
+        from solders.compute_budget import (
+            set_compute_unit_limit, set_compute_unit_price)
+        cu = int(plan.get("compute_units") or 700_000)
+        prio_ixs = [
+            set_compute_unit_limit(cu),
+            set_compute_unit_price(int(plan.get("priority_fee_ul") or 1_000)),
+        ]
+    except Exception:
+        prio_ixs = []
+
+    bh = (latest_blockhash().get("blockhash") or "")
+    if not bh:
+        rec["stage"] = "blocked"
+        rec["detail"] = "no recent blockhash"
+        return rec
+    try:
+        raw = _compile_v0(bot_kp, prio_ixs + [_marginfi_ix(ix_data, accounts)], bh)
+    except Exception as e:  # noqa: BLE001
+        rec["stage"] = "blocked"
+        rec["detail"] = f"marginfi compile: {type(e).__name__}: {e}"
+        return rec
+
+    sim_err = _sim_tx_err(raw)
+    if sim_err:
+        rec["stage"] = "blocked"
+        rec["detail"] = f"marginfi simulate failed: {sim_err}"
+        rec["reasons"] = [sim_err]
+        _exec_metric_inc("sim_failed", "marginfi")
+        rec["leftover"] = [
+            "remaining accounts / liquidator account / oracle layout",
+            f"liquidator={liq_acc[:8]}… ee={obl[:8]}…",
+        ]
+        return rec
+
+    sol_px = float(plan.get("sol_px") or fetch_sol_price() or 0)
+    pre = float(plan.get("expected_profit_usd") or plan.get("net_usd") or 0)
+    jito_lam = int(plan.get("jito_tip_lamports") or 0)
+    if jito_lam <= 0:
+        jito_lam = _dynamic_jito_lamports(pre, sol_px, None, min_sol_liq_usd())
+    tip_acct = plan.get("jito_tip_account") or _jito_tip_account(bot_pk)
+    sp_sol = float(((funds or {}).get("sponsor") or {}).get("sol") or 0)
+    if sp_kp is not None and sp_sol >= 0.01:
+        tip_raw = _build_tip_tx(sp_kp, tip_acct, jito_lam, bh)
+    else:
+        tip_raw = _build_tip_tx(bot_kp, tip_acct, jito_lam, bh)
+
+    bid, err = _jito_send_bundle([raw, tip_raw])
+    rec["jito_tip_lamports"] = jito_lam
+    rec["execute"] = "marginfi-jito"
+    rec["protocol_id"] = "marginfi"
+    if not bid:
+        rec["stage"] = "blocked"
+        rec["detail"] = f"Jito sendBundle failed: {err}"
+        rec["reasons"] = [str(err)]
+        return rec
+    rec["stage"] = "sent"
+    rec["bundle_id"] = bid
+    rec["sig"] = bid
+    rec["detail"] = (
+        f"LIVE marginfi liq Jito {bid[:12]}… obl={obl[:6]} "
+        f"asset={asset_amt} tip={jito_lam}lam")
+    confirm = _jito_confirm_bundle(bid, max_wait_sec=10.0)
+    rec["bundle_confirmed"] = confirm.get("landed", False)
+    if confirm.get("landed"):
+        rec["stage"] = "confirmed"
+    plan["jito_bundle"] = True
+    plan["mode"] = "live"
+    rec["plan"] = plan
+    return _finalize_bundle_metrics(rec, "marginfi")
 
 
 def _live_send_alt_protocol(plan: dict, funds: dict | None, rec: dict,
@@ -6768,23 +7544,7 @@ def _live_send_alt_protocol(plan: dict, funds: dict | None, rec: dict,
         return _live_send_kamino(plan, funds, rec)
 
     if protocol_id == "marginfi":
-        pid = "MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA"
-        rec["stage"] = "blocked"
-        rec["detail"] = (
-            f"marginfi live exec: program {pid[:8]}... "
-            f"obl={(plan.get('obligation') or '')[:12]}... "
-            f"hf={plan.get('hf')}. Different architecture — needs its own "
-            f"instruction encoder. Opportunity logged."
-        )
-        rec["reasons"] = ["marginfi_ix_encoder_needed"]
-        rec["protocol_id"] = "marginfi"
-        rec["leftover"] = [
-            "marginfi: Anchor liquidate instruction encoding not yet "
-            "implemented",
-            f"Program: {pid}",
-            f"Obligation: {plan.get('obligation') or ''}",
-        ]
-        return rec
+        return _live_send_marginfi(plan, funds, rec)
 
     rec["stage"] = "blocked"
     rec["detail"] = f"{protocol_id} live exec not implemented"
@@ -6826,6 +7586,14 @@ def submit_sol_plan(plan: dict, *, sim_only: bool, armed: bool,
             f"jito_tip={plan.get('jito_tip_lamports', 0)}lam (sim; "
             f"solend+jito when armed)"
         )
+        return rec
+
+    obl_key = (plan or {}).get("obligation") or ""
+    if kind == "liq" and is_contested_obligation(obl_key):
+        rec["stage"] = "skip"
+        rec["detail"] = "skip — competitor liquidated this obligation recently"
+        rec["reasons"] = ["contested"]
+        _exec_metric_inc("skipped_contested", (plan or {}).get("protocol_id") or "solend")
         return rec
 
     pid = (plan or {}).get("program") or ""

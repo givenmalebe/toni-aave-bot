@@ -1395,6 +1395,26 @@ class Dashboard:
                 }
                 self._sol_record(rec, skip=True)
                 return rec
+        obl = plan.get("obligation") or key
+        if kind == "liq" and sols.is_contested_obligation(obl):
+            rec = {
+                "ts": int(time.time()), "kind": "liq", "stage": "skip",
+                "why": "competitor liq on obligation in recent slots — skip tip war",
+                "plan": plan,
+            }
+            self._sol_record(rec, skip=True)
+            return rec
+        tip_lam = int(plan.get("jito_tip_lamports") or 0)
+        px = float((self.state.get("sol") or {}).get("sol_price_usd") or 0)
+        tip_usd = (tip_lam / 1e9) * max(px, 0.0)
+        if kind == "liq" and profit > 0 and tip_usd >= profit * 0.95:
+            rec = {
+                "ts": int(time.time()), "kind": "liq", "stage": "skip",
+                "why": f"tip ${tip_usd:.4f} would erase net ${profit:.4f}",
+                "plan": plan,
+            }
+            self._sol_record(rec, skip=True)
+            return rec
         rec = sols.submit_sol_plan(
             plan, sim_only=self.sol_sim_only, armed=self.sol_armed,
             funds=(self.state.get("sol") or {}).get("funds"),
@@ -1439,7 +1459,10 @@ class Dashboard:
             "broadcast": s["broadcast"],
             "feeds": self._feeds_status(),
             "sol_fees": self._sol_fees_status(),
-            "shadow": s.get("shadow", {}),
+            "shadow": {
+                **(s.get("shadow") or {}),
+                "sol_exec": sols.exec_metrics(),
+            },
             "log": s["log"],
             "log_meta": self._log_meta_snapshot(),
             "sol": {
@@ -3386,6 +3409,10 @@ class Dashboard:
                 if land_watch:
                     sols.remember_hydrates(land_watch)
                     sol["watchlist"] = sols.closest_to_stress(50)
+                for h in liq_hits:
+                    for pk in (h.get("obligation_keys") or []):
+                        sols.register_obligation(pk, "landing")
+                        sols.record_competitor_liq(pk, h.get("slot"))
                 if landing.get("liq_n") or landing.get("opportunities"):
                     meta["pressure"] = "hot"
                 elif landing.get("refresh_n"):
@@ -3525,6 +3552,7 @@ class Dashboard:
                         seen.add(pk)
                         keys.append(pk)
                 use_feed = feed_mode in ("live", "degraded") and bool(keys)
+                px = (self.state.get("sol") or {}).get("sol_price_usd")
                 if use_feed:
                     hyd = await self._run(sols._hydrate_from_rpc, 40, keys, "feed")
                     probe = {
@@ -3538,7 +3566,8 @@ class Dashboard:
                         "note": f"event hydrate n={len(keys)} mode={feed_mode}",
                     }
                     multi = await self._run(
-                        slend.hydrate_pubkeys, 40, keys, max_accounts=40)
+                        slend.hydrate_pubkeys, 40, keys, max_accounts=40,
+                        sol_px=px or 0.0)
                 else:
                     probe = await self._run(
                         sols.probe_solend_obligations, 55, data.get("market"), 40)
@@ -3568,12 +3597,21 @@ class Dashboard:
                 prio = sol.get("priority_fee")
                 pressure = ((sol.get("mempool") or {}).get("meta") or {}).get(
                     "pressure")
-                px = sol.get("sol_price_usd")
+                if px is None:
+                    px = sol.get("sol_price_usd")
+                kamino_res = await self._run(sols.get_kamino_reserves_cached, 35)
+                if not kamino_res:
+                    kamino_res = {}
+                mfi_banks = await self._run(slend.marginfi.fetch_banks, 40)
+                if not mfi_banks:
+                    mfi_banks = {}
                 for o in gpa_opps:
                     o["source"] = o.get("source") or (
                         "feed" if use_feed else "gpa")
                     o["kind"] = "liq"
                     pid = o.get("protocol_id") or "solend"
+                    if pid == "drift":
+                        continue
                     if pid == "solend":
                         scored = sols.score_liq_profit(
                             o, sol_px=px, priority_median=prio, pressure=pressure)
@@ -3581,17 +3619,24 @@ class Dashboard:
                         o["plan"] = sols.build_liq_plan(o, prio, pressure)
                     elif pid == "kamino":
                         scored = slend.kamino.score_profit(
-                            o, sol_px=px or 0.0, pressure=pressure)
+                            o, sol_px=px or 0.0, pressure=pressure,
+                            reserves=kamino_res)
                         o.update(scored)
                         o["plan"] = sols.build_kamino_liq_plan(o, prio, pressure)
+                    elif pid == "marginfi":
+                        if o.get("hf_method") != "bank_oracle_weights":
+                            continue
+                        scored = slend.marginfi.score_profit(
+                            o, sol_px=px or 0.0, pressure=pressure,
+                            banks=mfi_banks)
+                        o.update(scored)
+                        o["plan"] = sols.build_marginfi_liq_plan(o, prio, pressure)
                     else:
-                        o.setdefault("actionable", o.get("hf") is not None and o["hf"] < 1.0)
-                        o.setdefault("profit_usd", None)
-                        o.setdefault("net_usd", None)
-                        o["plan"] = {"kind": "liq", "execute": f"{pid}-jito",
-                                     "protocol_id": pid, "ready": False,
-                                     "obligation": o.get("obligation"),
-                                     "note": f"{pid} plan builder not yet wired"}
+                        continue
+                gpa_opps = [o for o in gpa_opps
+                            if (o.get("protocol_id") or "solend") != "drift"
+                            and (o.get("protocol_id") != "marginfi"
+                                 or o.get("hf_method") == "bank_oracle_weights")]
                 existing = [o for o in (sol.get("opportunities") or [])
                             if o.get("kind") == "liq" or o.get("hf") is not None]
                 opps = [self._sol_decorate_liq(o) for o in
@@ -3599,6 +3644,7 @@ class Dashboard:
                         if o.get("hf") is not None and o["hf"] < 1.0
                         and not sols._dust_obligation(o)]
                 sols.remember_hydrates(probe.get("watch") or gpa_opps)
+                sols.remember_hydrates(multi.get("watch") or [])
                 wl = probe.get("watch") or sols.closest_to_stress(50)
                 if not wl:
                     wl = sols.closest_to_stress(50)
@@ -3824,6 +3870,11 @@ class Dashboard:
                         "protocol_id": "solend",
                         "ix": r.get("ix"),
                     }
+                    if user:
+                        sols.register_obligation(user, "competitor")
+                        sols.record_competitor_liq(user, r.get("slot"))
+                    if missed:
+                        sols._exec_metric_inc("missed_competitor", "solend")
                 # Multi-protocol competitor scan (Kamino, MarginFi, Drift)
                 try:
                     multi_comp = await self._run(
@@ -3832,6 +3883,10 @@ class Dashboard:
                     for ev in (multi_comp or {}).get("events") or []:
                         sig = ev.get("sig") or ""
                         if sig and sig not in by_sig:
+                            obl = ev.get("obligation") or ev.get("user") or ""
+                            if obl:
+                                sols.register_obligation(obl, "competitor")
+                                sols.record_competitor_liq(obl, ev.get("slot"))
                             by_sig[sig] = {
                                 "age": ev.get("slot"),
                                 "ts": ev.get("slot") or now,
@@ -4008,12 +4063,20 @@ class Dashboard:
         return [w for w in watchlist if coerce_hf(w.get("hf")) < 1.05]
 
     def _get_hot_sol_obligations(self):
-        sol = self.state.get("sol", {})
-        return sol.get("watchlist", [])
+        return sols.hot_obligations_for_precompute(1.05)
 
     def _get_hot_sol_pubkeys(self):
-        return [w.get("obligation") for w in (self.state.get("sol", {})
-                .get("watchlist") or []) if w.get("obligation")]
+        return sols.obligation_pubkeys_for_feed(400)
+
+    def _sol_precompute_builder(self, hot_rows):
+        sol = self.state.get("sol") or {}
+        mp = (sol.get("mempool") or {}).get("meta") or {}
+        return sols.build_precompute_entries(
+            hot_rows,
+            sol_px=float(sol.get("sol_price_usd") or 0),
+            priority_median=sol.get("priority_fee"),
+            pressure=mp.get("pressure"),
+        )
 
     def _rebuild_registries(self):
         wl = self.state.get("watchlist", [])
@@ -4061,13 +4124,12 @@ class Dashboard:
         if pubkey:
             pk = str(pubkey)
             self._sol_kick_pubkeys.add(pk)
+            sols.record_feed_event(pk)
             disc = getattr(self, "_sol_discovered", None)
             if disc is None:
                 self._sol_discovered = set()
                 disc = self._sol_discovered
             disc.add(pk)
-            if len(disc) > 400:
-                self._sol_discovered = set(list(disc)[-200:])
         ev = self._sol_hot_kick or getattr(self, "_sol_hot_kick", None)
         if ev:
             ev.set()
@@ -4126,6 +4188,11 @@ class Dashboard:
             if not obl:
                 return None
             return sols.build_kamino_liq_plan(opp)
+        if pid == "marginfi" and (not plan or not plan.get("ready", True)):
+            obl = str(opp.get("obligation") or "")
+            if not obl:
+                return None
+            return sols.build_marginfi_liq_plan(opp)
         if not plan:
             return None
         return plan
@@ -4175,6 +4242,35 @@ class Dashboard:
                 for pk in list(kicked)[:16]:
                     opp = self._find_sol_opp(pk)
                     if not opp:
+                        try:
+                            import precompute_sol as _psol
+                            cached = _psol.get(pk)
+                            if cached:
+                                opp = {
+                                    "obligation": pk,
+                                    "plan": cached,
+                                    "protocol_id": cached.get("protocol_id") or "solend",
+                                    "profit_usd": cached.get("expected_profit_usd"),
+                                    "net_usd": cached.get("expected_profit_usd"),
+                                }
+                        except Exception:
+                            pass
+                    if not opp:
+                        sol = self.state.get("sol") or {}
+                        mp = (sol.get("mempool") or {}).get("meta") or {}
+                        hyd = await self._run(
+                            sols.hydrate_kick_obligation, 12, pk,
+                            sol_px=float(sol.get("sol_price_usd") or 0),
+                            priority_median=sol.get("priority_fee"),
+                            pressure=mp.get("pressure"))
+                        if hyd:
+                            opp = hyd
+                            merged = sols.merge_liq_opportunities(
+                                (sol.get("opportunities") or []), [hyd])
+                            sol["opportunities"] = [
+                                o for o in merged
+                                if o.get("hf") is not None and o["hf"] < 1.0]
+                    if not opp:
                         sh["sol_kick_no_opp"] = sh.get("sol_kick_no_opp", 0) + 1
                         continue
                     plan = self._hot_plan_for(opp)
@@ -4182,6 +4278,13 @@ class Dashboard:
                         sh["sol_kick_no_plan"] = sh.get("sol_kick_no_plan",
                                                         0) + 1
                         continue
+                    try:
+                        import precompute_sol as _psol
+                        cached_plan = _psol.get(pk)
+                        if cached_plan and cached_plan.get("ready", True):
+                            plan = {**plan, **cached_plan}
+                    except Exception:
+                        pass
                     self._apply_calibrated_fees(plan, opp)
                     funds = (self.state.get("sol") or {}).get("funds") or {}
                     bot = float(((funds.get("bot") or {})).get("sol") or 0)
@@ -4192,6 +4295,16 @@ class Dashboard:
                     rec = self._sol_maybe_submit("liq", dict(opp), plan)
                     self._record_live_outcome(rec, plan)
                     sh["sol_kick_submits"] = sh.get("sol_kick_submits", 0) + 1
+                    lat = sols.feed_latency_ms(pk)
+                    if lat is not None:
+                        sh["sol_kick_latency_ms"] = round(lat, 1)
+                        with sols._EXEC_METRICS_LOCK:
+                            sols._EXEC_METRICS["latency_ms_sum"] = (
+                                float(sols._EXEC_METRICS.get("latency_ms_sum") or 0)
+                                + lat)
+                            sols._EXEC_METRICS["latency_ms_n"] = (
+                                int(sols._EXEC_METRICS.get("latency_ms_n") or 0) + 1)
+                    sh["sol_exec"] = sols.exec_metrics()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -4254,9 +4367,14 @@ class Dashboard:
         self.refresh_broadcast_ready()
         self.refresh_sol_broadcast_ready()
         _pre_eth.start_block_listener(_RPC_POOL, self._get_hot_eth_positions)
+        sol_rpc = os.environ.get("SOLANA_RPC", "").strip()
+        if not sol_rpc:
+            rpcs = sols._sol_rpcs()
+            sol_rpc = rpcs[0] if rpcs else "https://api.mainnet-beta.solana.com"
         _pre_sol.start_slot_listener(
-            "https://api.mainnet-beta.solana.com",
-            self._get_hot_sol_obligations)
+            sol_rpc,
+            self._get_hot_sol_obligations,
+            builder=self._sol_precompute_builder)
         # Graceful shutdown handler
         def _handle_shutdown(sig):
             self.log("shutdown", "warn", f"Received {sig.name}, shutting down...")
