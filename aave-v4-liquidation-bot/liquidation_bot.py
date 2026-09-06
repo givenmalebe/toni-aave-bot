@@ -27,6 +27,16 @@ HUB = "0xCca852Bc40e560adC3b1Cc58CA5b55638ce826c9"
 V3_POOL = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
 # AaveOracle (USD, 8 decimals)
 V3_ORACLE = "0x54586bE62E3c3580375aE3723C145253060Ca68C"
+CL_LATEST_ANSWER = "0x50d25bcd"  # Chainlink aggregator latestAnswer()
+# Chainlink ETH mainnet aggregators — validated live 2026-08.
+CHAINLINK_BY_SYM = {
+    "WETH": "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419",
+    "WBTC": "0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c",
+    "USDC": "0x8fFfFfd4AFB6115b954Bd326cbe7B4BA576818f6",
+    "USDT": "0x3E7d1eAB13ad0104d2750B8863b489D65364e32D",
+    "DAI": "0xAed0c38402a5d19df6E4c03F4E2DceD6e29C1ee9",
+    "LINK": "0x2c1d072e956AFFC0D435CB7AC38EF18d24d9127c",
+}
 
 HEALTH_THRESHOLD = 10**18
 DUST_USD = 25.0
@@ -35,6 +45,18 @@ GAS_UNITS_FLASH = 550_000
 DEFAULT_BONUS = 0.05
 PROTOCOL_FEE = 0.10
 CLOSE_FACTOR_HF = 0.95  # 100% close if HF below this
+
+# Fallback addr resolution when a competitor log decodes symbols but not
+# token addresses (Morpho mesh / v4-spoke reserve events).
+ADDR_BY_SYM = {
+    "USDC": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "USDT": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+    "DAI": "0x6b175474e89094c44da98b954eedeac495271d0f",
+    "WETH": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+    "WBTC": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+    "LINK": "0x514910771af9ca656af840dff83e8264ecf986ca",
+    "FRAX": "0x853d955acef822db058eb8505911ed77f175b99e",
+}
 
 KEYSTORE_PATH = os.environ.get("KEYSTORE_PATH", "")
 KEYSTORE_PW = os.environ.get("KEYSTORE_PW", "")
@@ -253,7 +275,11 @@ def token_decimals(addr: str) -> int:
 
 
 def asset_price_usd(addr: str) -> float:
-    """Aave oracle USD, 8 decimals. Stables fall back to 1.0."""
+    """USD price via Aave V3 oracle, falling back to Chainlink for majors.
+
+    Aave V3 ETH oracle now reverts (pools sunset) → Chainlink keeps flagships
+    (WETH/WBTC/USDC/USDT/DAI/LINK) priced; stables fall back to 1.0.
+    """
     a = (addr or "").lower()
     now = time.time()
     hit = _price_cache.get(a)
@@ -268,6 +294,16 @@ def asset_price_usd(addr: str) -> float:
             px = n / 1e8
     except (requests.RequestException, KeyError, ValueError):
         px = 0.0
+    if px <= 0:
+        feed = CHAINLINK_BY_SYM.get(token_sym(a))
+        if feed:
+            try:
+                raw = call(RPC_CALL, feed, CL_LATEST_ANSWER)
+                n = int(raw, 16)
+                if 0 < n < 10**15:
+                    px = n / 1e8
+            except (requests.RequestException, KeyError, ValueError):
+                px = 0.0
     if px <= 0 and token_sym(a) in STABLES:
         px = 1.0
     _price_cache[a] = (now, px)
@@ -786,16 +822,36 @@ def scan_liquidation_logs(from_block: int, to_block: int,
 def liq_event_profit(ev: dict) -> tuple[float | None, float | None]:
     """Gross bonus USD from seized coll vs covered debt (oracle).
 
-    Only when BOTH sides price. A one-sided or negative spread is a
-    decode miss — not competitor PnL (they already got paid on-chain).
+    Tier 1: both sides priced → exact bonus = coll − debt (positive only).
+    Tier 2: debt priced but collateral unpricable (Morpho cTokens /
+           unknown reserves) → OUR bonus estimate at the Aave close margin
+           (debt × DEFAULT_BONUS). Honest estimate, never fake profit.
+    Tier 3: nothing priceable → (None, None) decode miss.
     """
-    if ev.get("protocol") == "v3" or ev.get("coll_addr"):
-        coll_usd = amount_usd(ev.get("coll_addr"), ev.get("coll_seized") or 0)
-        debt_usd = amount_usd(ev.get("debt_addr"), ev.get("debt_to_cover") or 0)
-        if coll_usd > 0 and debt_usd > 0:
-            bonus = coll_usd - debt_usd
-            if bonus > 0:
-                return round(bonus, 2), round(coll_usd, 2)
+    debt_amt = ev.get("debt_to_cover") or ev.get("debt_restored") or 0
+    coll_amt = ev.get("coll_seized") or ev.get("coll_to_liq") or 0
+    coll_addr = ev.get("coll_addr")
+    debt_addr = ev.get("debt_addr")
+    if not (coll_addr and debt_addr):
+        coll_addr = ADDR_BY_SYM.get(str(ev.get("coll_sym") or "").upper())
+        debt_addr = ADDR_BY_SYM.get(str(ev.get("debt_sym") or "").upper())
+    coll_usd = amount_usd(coll_addr, coll_amt) if coll_addr else 0.0
+    debt_usd = amount_usd(debt_addr, debt_amt) if debt_addr else 0.0
+    if coll_usd > 0 and debt_usd > 0:
+        bonus = coll_usd - debt_usd
+        if bonus > 0:
+            return round(bonus, 2), round(coll_usd, 2)
+        return None, None  # both priced but negative spread → decode miss
+    if coll_usd <= 0 and debt_usd > 0:
+        # collateral unpriced — value our take at the Aave close margin
+        est = round(debt_usd * DEFAULT_BONUS, 2)
+        if est > 0:
+            return est, round(debt_usd * (1.0 + DEFAULT_BONUS), 2)
+    if coll_usd > 0 and debt_usd <= 0:
+        # debt token unpriced — recover our bonus from the seized collateral
+        est = round(coll_usd * (1.0 - 1.0 / (1.0 + DEFAULT_BONUS)), 2)
+        if est > 0:
+            return est, round(coll_usd, 2)
     return None, None
 
 
