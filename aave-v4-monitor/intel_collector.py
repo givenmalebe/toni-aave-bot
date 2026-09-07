@@ -186,6 +186,25 @@ def append(rec):
         f.write(json.dumps(rec) + "\n")
 
 
+def _bucket_hf(hf):
+    """Normalize HF to liquidation intel bucket key."""
+    if hf is None:
+        return None
+    try:
+        hf_f = float(hf)
+    except (TypeError, ValueError):
+        return None
+    if hf_f > 1e9:
+        hf_f /= 1e18
+    if hf_f < 1.0:
+        return "<1.0"
+    if hf_f < 1.05:
+        return "1.0-1.05"
+    if hf_f < 1.1:
+        return "1.05-1.1"
+    return ">1.1"
+
+
 def aggregate_liq_intel(spoke_rows, eth_price=3500.0,
                         competitors=None, watchlist=None,
                         opportunities=None, competitors_meta=None):
@@ -206,6 +225,10 @@ def aggregate_liq_intel(spoke_rows, eth_price=3500.0,
         "Compound cUSDTv3": "compound_v3",
         "Morpho Blue": "morpho",
         "Spark Lend": "spark",
+        "Solend": "solend",
+        "Kamino": "kamino",
+        "MarginFi": "marginfi",
+        "Drift": "drift",
     }
 
     result = {
@@ -218,6 +241,10 @@ def aggregate_liq_intel(spoke_rows, eth_price=3500.0,
             "compound_v3": {"count": 0, "volume": 0.0},
             "morpho": {"count": 0, "volume": 0.0},
             "spark": {"count": 0, "volume": 0.0},
+            "solend": {"count": 0, "volume": 0.0},
+            "kamino": {"count": 0, "volume": 0.0},
+            "marginfi": {"count": 0, "volume": 0.0},
+            "drift": {"count": 0, "volume": 0.0},
         },
         "health_dist": {"<1.0": 0, "1.0-1.05": 0, "1.05-1.1": 0, ">1.1": 0},
         "competitors": {"searchers": 0, "success_rate": 0.0, "missed": 0},
@@ -247,42 +274,87 @@ def aggregate_liq_intel(spoke_rows, eth_price=3500.0,
     result["open_opps"] = sum(1 for p in profits if p > 0)
     result["best_opp_usd"] = max(profits or [0.0])
 
-    liq_rows = [r for r in spoke_rows if r.get("sel") in LIQ_SEL_PREFIXES or r.get("name", "").startswith("liquidat")]
-    if not liq_rows:
-        return result
+    for row in list(watchlist or []) + list(opportunities or []):
+        bucket = _bucket_hf(row.get("health_factor", row.get("hf")))
+        if bucket:
+            result["health_dist"][bucket] += 1
 
-    result["count_24h"] = len(liq_rows)
-
-    for row in liq_rows:
-        proto_label = row.get("proto_label", "")
-        proto_key = PROTO_MAP.get(proto_label, None)
+    gas_vals = []
+    comp_vols = []
+    for c in (competitors or []):
         try:
-            amount = float(row.get("amount", 0) or 0)
-        except (ValueError, TypeError):
-            amount = 0.0
-
-        if proto_key and proto_key in result["protocols"]:
+            g = float(c.get("gas_cost_usd") or c.get("gas_usd") or 0)
+        except (TypeError, ValueError):
+            g = 0.0
+        if g > 0:
+            gas_vals.append(g)
+        try:
+            v = float(c.get("coll_usd") or c.get("est_profit_usd") or c.get("est") or 0)
+        except (TypeError, ValueError):
+            v = 0.0
+        if v > 0:
+            comp_vols.append(v)
+        pk = str(c.get("protocol_id") or c.get("protocol") or c.get("proto_label") or "").lower()
+        proto_key = None
+        if "compound" in pk:
+            proto_key = "compound_v3"
+        elif "morpho" in pk:
+            proto_key = "morpho"
+        elif "spark" in pk:
+            proto_key = "spark"
+        elif "solend" in pk:
+            proto_key = "solend"
+        elif "kamino" in pk:
+            proto_key = "kamino"
+        elif "marginfi" in pk or "margin fi" in pk:
+            proto_key = "marginfi"
+        elif "drift" in pk:
+            proto_key = "drift"
+        elif "aave" in pk:
+            proto_key = "aave_v3"
+        if proto_key and proto_key in result["protocols"] and v > 0:
             result["protocols"][proto_key]["count"] += 1
-            result["protocols"][proto_key]["volume"] += amount
+            result["protocols"][proto_key]["volume"] += v
 
-        result["volume_24h"] += amount
+    if gas_vals:
+        result["gas_per_liq"] = round(sum(gas_vals) / len(gas_vals), 4)
 
-        hf = row.get("health_factor")
-        if hf is not None:
+    liq_rows = [r for r in spoke_rows if r.get("sel") in LIQ_SEL_PREFIXES or r.get("name", "").startswith("liquidat")]
+
+    if liq_rows:
+        result["count_24h"] = len(liq_rows)
+        for row in liq_rows:
+            proto_label = row.get("proto_label", "")
+            proto_key = PROTO_MAP.get(proto_label, None)
             try:
-                hf_f = float(hf)
-                if hf_f < 1.0:
-                    result["health_dist"]["<1.0"] += 1
-                elif hf_f < 1.05:
-                    result["health_dist"]["1.0-1.05"] += 1
-                elif hf_f < 1.1:
-                    result["health_dist"]["1.05-1.1"] += 1
-                else:
-                    result["health_dist"][">1.1"] += 1
+                amount = float(row.get("amount", 0) or 0)
             except (ValueError, TypeError):
-                pass
+                amount = 0.0
+
+            if proto_key and proto_key in result["protocols"]:
+                result["protocols"][proto_key]["count"] += 1
+                result["protocols"][proto_key]["volume"] += amount
+
+            result["volume_24h"] += amount
+
+            bucket = _bucket_hf(row.get("health_factor"))
+            if bucket:
+                result["health_dist"][bucket] += 1
+    elif comp_vols:
+        result["count_24h"] = len(comp_vols)
+        result["volume_24h"] = sum(comp_vols)
 
     if result["count_24h"] > 0:
         result["avg_size"] = result["volume_24h"] / result["count_24h"]
+
+    pressure = str(cm.get("pressure") or "idle")
+    n1h = int(total_1h or 0)
+    if n1h >= 12:
+        pressure = "hot"
+    elif n1h >= 5:
+        pressure = "busy"
+    elif n1h >= 1:
+        pressure = "quiet"
+    result["pressure"] = pressure
 
     return result

@@ -6,6 +6,7 @@ experience replay. Head-0 = P(should act / beat competitors), head-1 =
 expected net USD (scaled). Trains continuously from competitor misses,
 near-miss arb gaps, and our broadcast outcomes — then emits policy knobs
 that tighten floors / cadence so we hunt where searchers are weak.
+SOL twin uses 24-dim features (16 macro + 8 per-position incl. race context).
 """
 from __future__ import annotations
 
@@ -20,13 +21,15 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATE_PATH = os.path.join(HERE, "profit_brain_state.json")
-FEAT_DIM = 20
+FEAT_DIM = 28
+FEAT_VERSION = 1
 HIDDEN = (64, 64, 32)
 LR = 1e-3
 REPLAY = 512
 BATCH = 32
 PROFIT_SCALE = 100.0  # USD → network target
-MODEL_NAME = "TONI-DeepProfit-v1 (residual MLP + Adam + replay)"
+MODEL_NAME = "TONI-DeepProfit-v2 (residual MLP + Adam + replay)"
+ETH_RACE_OUTCOME_PATH = os.path.join(HERE, "data", "eth_race_outcomes.jsonl")
 
 
 def _sigmoid(x: np.ndarray) -> np.ndarray:
@@ -235,25 +238,41 @@ def get_brain() -> OnlineDeepMLP:
 
 def load() -> OnlineDeepMLP:
     if not os.path.exists(STATE_PATH):
-        return OnlineDeepMLP()
+        return OnlineDeepMLP(in_dim=FEAT_DIM)
     try:
         with open(STATE_PATH) as f:
-            return OnlineDeepMLP.from_dict(json.load(f))
+            d = json.load(f)
+        w = d.get("W") or []
+        if not w or len(w[0]) != FEAT_DIM \
+                or int(d.get("feat_version") or 0) != FEAT_VERSION:
+            return OnlineDeepMLP(in_dim=FEAT_DIM)
+        m = OnlineDeepMLP.from_dict(d)
+        m.in_dim = FEAT_DIM
+        return m
     except Exception:
-        return OnlineDeepMLP()
+        return OnlineDeepMLP(in_dim=FEAT_DIM)
 
 
 def save(brain: Optional[OnlineDeepMLP] = None) -> None:
     b = brain or get_brain()
     try:
         with open(STATE_PATH, "w") as f:
-            json.dump(b.to_dict(), f)
+            d = b.to_dict()
+            d["feat_version"] = FEAT_VERSION
+            json.dump(d, f)
     except OSError:
         pass
 
 
-def features_from_state(state: Dict[str, Any]) -> np.ndarray:
-    """Build FEAT_DIM vector from live dashboard state."""
+def features_from_state(state: Dict[str, Any],
+                        rec: Optional[Dict[str, Any]] = None) -> np.ndarray:
+    """Build FEAT_DIM vector from live dashboard state.
+
+    Indices 0..19 are macro/global conditions. When a broadcast/competitor/race
+    record is provided, indices 20..27 are filled from the position itself (size,
+    profit, gas-relative-to-state, edge/long-tail, protocol, contest, bid, and
+    involvement) so the model distinguishes micro/edge names from crowded races.
+    """
     intel = state.get("intel") or {}
     mem = state.get("mempool") or {}
     mev = mem.get("mev") or intel.get("mev") or {}
@@ -281,6 +300,29 @@ def features_from_state(state: Dict[str, Any]) -> np.ndarray:
     opps = state.get("opportunities") or []
     best_opp = max([float(o.get("profit_usd") or 0) for o in opps] or [0.0])
 
+    rec = rec or {}
+    plan = rec.get("plan") or {}
+    debt = float(rec.get("debt_usd") or rec.get("debt_to_cover")
+                 or plan.get("debt_usd") or 0)
+    net = float(rec.get("net_est_usd") or rec.get("net_usd")
+                or rec.get("profit_usd") or plan.get("net_usd") or 0)
+    rec_gas = float(rec.get("gas_gwei") or rec.get("gas_price_gwei") or 0)
+    gas_share = min(rec_gas / (gas * 2.0 + 1.0), 2.0) if rec_gas > 0 else 1.0
+    proto = str(rec.get("protocol_id") or plan.get("protocol_id") or "").lower()
+    if proto in ("spark", "compound"):
+        proto_code = 0.5
+    elif proto == "morpho":
+        proto_code = 0.75
+    elif proto in ("aave", "aave-v3", "aave-v4"):
+        proto_code = 0.0
+    else:
+        proto_code = 1.0
+    edge = bool(rec.get("edge")) or str(rec.get("edge") or "") == "long-tail"
+    why = str(rec.get("race") or plan.get("race") or "")
+    contested = bool(rec.get("contested") or rec.get("race_contested")
+                     or "contest" in why.lower())
+    bid = float(rec.get("prio_mult") or plan.get("prio_mult") or 1.0)
+
     x = np.array([
         math.log1p(gas) / 10.0,
         eth / 5000.0,
@@ -302,6 +344,14 @@ def features_from_state(state: Dict[str, Any]) -> np.ndarray:
         min(float(bot.get("eth") or 0) / 0.5, 2.0),
         min(float(cm.get("unique_searchers") or 0) / 10.0, 1.5),
         hour_act / max(max_h, 1.0),
+        min(math.log1p(max(debt, 0.0)) / 10.0, 2.0),
+        min(max(net, 0.0) / 50.0, 2.0),
+        gas_share,
+        1.0 if edge else 0.0,
+        proto_code,
+        1.0 if contested else 0.0,
+        min(max(bid, 0.0) / 3.0, 1.0),
+        1.0 if (rec.get("missed_by_us") or rec.get("involved")) else 0.0,
     ], dtype=np.float64)
     assert x.shape == (FEAT_DIM,)
     return x
@@ -314,7 +364,7 @@ def learn_competitor(state: Dict[str, Any], rec: Dict[str, Any]) -> Dict[str, An
     Contested crowded long-tail miss → still learn expected net.
     """
     brain = get_brain()
-    x = features_from_state(state)
+    x = features_from_state(state, rec)
     net = float(rec.get("net_est_usd") or rec.get("est_profit_usd") or 0)
     missed = bool(rec.get("missed_by_us"))
     edge = bool(rec.get("edge") or (rec.get("status") == "long-tail"))
@@ -339,7 +389,7 @@ def learn_arb_near(state: Dict[str, Any], row: Dict[str, Any]) -> None:
 
 def learn_broadcast(state: Dict[str, Any], kind: str, rec: Dict[str, Any]) -> None:
     brain = get_brain()
-    x = features_from_state(state)
+    x = features_from_state(state, rec)
     stage = (rec.get("stage") or rec.get("status") or "").lower()
     ok = stage in ("sent", "ok", "simulated", "dry-run", "cast-ok")
     profit = float(rec.get("profit_usd") or rec.get("net_usd") or 0)
@@ -350,6 +400,56 @@ def learn_broadcast(state: Dict[str, Any], kind: str, rec: Dict[str, Any]) -> No
     else:
         act = 0.0
         profit = min(profit, 0.0)
+    brain.observe(x, act, profit)
+    save(brain)
+
+
+def _append_eth_race_outcome(rec: Dict[str, Any], outcome: str,
+                             profit: float) -> None:
+    """Append a real ETH race outcome to the jsonl ledger (training set)."""
+    try:
+        os.makedirs(os.path.dirname(ETH_RACE_OUTCOME_PATH), exist_ok=True)
+        with open(ETH_RACE_OUTCOME_PATH, "a") as f:
+            f.write(json.dumps({
+                "ts": int(time.time()),
+                "outcome": outcome,
+                "profit": round(float(profit or 0), 4),
+                "proto": rec.get("protocol_id") or rec.get("protocol") or "",
+                "user": rec.get("user") or "",
+                "debt_usd": rec.get("debt_usd") or rec.get("debt_to_cover"),
+                "net_usd": rec.get("net_usd") or rec.get("profit_usd")
+                           or rec.get("net_est_usd"),
+                "prio_mult": rec.get("prio_mult"),
+                "gas_gwei": rec.get("gas_gwei") or rec.get("gas_price_gwei"),
+                "contested": rec.get("contested"),
+            }) + "\n")
+    except Exception:
+        pass
+
+
+def learn_eth_race(state: Dict[str, Any], rec: Dict[str, Any],
+                   outcome: str, profit: float = 0.0) -> None:
+    """Train the ETH brain on a real won/lost liquidation race.
+
+    Outcomes come from the inflight ledger adjudication: won (our bundle landed
+    on the target block), lost (a competitor landed the same position first),
+    no-contest (expired without a confirmed landing). Only real, funded fires
+    produce won/lost labels so the model learns genuine contest dynamics.
+    """
+    if outcome in ("won", "lost"):
+        _append_eth_race_outcome(rec, outcome, profit)
+    o = (outcome or "").lower()
+    if o == "won":
+        act = 1.0
+    elif o == "lost":
+        act = 0.0
+    elif o == "no-contest":
+        act = 0.5
+        profit = 0.0
+    else:
+        return
+    brain = get_brain()
+    x = features_from_state(state, rec)
     brain.observe(x, act, profit)
     save(brain)
 
@@ -427,9 +527,18 @@ def policy(state: Dict[str, Any]) -> Dict[str, Any]:
 # quiet-market small obligations) differ enough to warrant its own model.
 
 SOL_STATE_PATH = os.path.join(HERE, "profit_brain_state_sol.json")
-SOL_FEAT_DIM = 16
-SOL_MODEL_NAME = "TONI-SOL-DeepProfit-v1 (residual MLP + Adam + replay)"
+SOL_FEAT_DIM = 24
+SOL_FEAT_VERSION = 2
+SOL_MODEL_NAME = "TONI-SOL-DeepProfit-v2 (residual MLP + Adam + replay)"
 _sol_brain: Optional[OnlineDeepMLP] = None
+
+_SOL_LONG_TAIL = frozenset({
+    "BONK", "WIF", "PYTH", "RAY", "MSOL", "JITOSOL", "CBBTC", "WSTETH", "STSOL",
+})
+
+
+def _sol_long_tail_syms() -> frozenset:
+    return _SOL_LONG_TAIL
 
 
 def get_sol_brain() -> OnlineDeepMLP:
@@ -444,7 +553,14 @@ def load_sol() -> OnlineDeepMLP:
         return OnlineDeepMLP(in_dim=SOL_FEAT_DIM)
     try:
         with open(SOL_STATE_PATH) as f:
-            return OnlineDeepMLP.from_dict(json.load(f))
+            d = json.load(f)
+        w = d.get("W") or []
+        if not w or len(w[0]) != SOL_FEAT_DIM \
+                or int(d.get("feat_version") or 0) != SOL_FEAT_VERSION:
+            return OnlineDeepMLP(in_dim=SOL_FEAT_DIM)
+        m = OnlineDeepMLP.from_dict(d)
+        m.in_dim = SOL_FEAT_DIM
+        return m
     except Exception:
         return OnlineDeepMLP(in_dim=SOL_FEAT_DIM)
 
@@ -453,13 +569,22 @@ def save_sol(brain: Optional[OnlineDeepMLP] = None) -> None:
     b = brain or get_sol_brain()
     try:
         with open(SOL_STATE_PATH, "w") as f:
-            json.dump(b.to_dict(), f)
+            d = b.to_dict()
+            d["feat_version"] = SOL_FEAT_VERSION
+            json.dump(d, f)
     except OSError:
         pass
 
 
-def features_from_sol_state(state: Dict[str, Any]) -> np.ndarray:
-    """Build SOL_FEAT_DIM vector from live dashboard state (SOL side)."""
+def features_from_sol_state(state: Dict[str, Any],
+                            rec: Optional[Dict[str, Any]] = None) -> np.ndarray:
+    """Build SOL_FEAT_DIM vector from live dashboard state (SOL side).
+
+    When a broadcast/race record is provided, indices 16..23 are filled from the
+    position itself (HF, debt$, collateral, protocol, contest, tip) instead of
+    macro defaults so the model can tell micro/edge positions from contested
+    pro races.
+    """
     sol = state.get("sol") or {}
     fees = state.get("sol_fees") or {}
     tf = fees.get("tip_floor") or {}
@@ -479,6 +604,18 @@ def features_from_sol_state(state: Dict[str, Any]) -> np.ndarray:
     wl = sol.get("watchlist") or []
     best_hf = min([float(w.get("hf") or 99) for w in wl] or [99.0])
 
+    rec = rec or {}
+    plan = rec.get("plan") or {}
+    pos_hf = float(rec.get("hf") or plan.get("hf") or best_hf)
+    debt = float(rec.get("debt_usd") or plan.get("debt_usd") or 0)
+    coll_sym = str(rec.get("coll_sym") or plan.get("coll_sym")
+                   or rec.get("collateral_sym") or "")
+    proto = str(plan.get("protocol_id") or rec.get("protocol_id") or "solend")
+    contested = bool(rec.get("contested") or rec.get("race_contested"))
+    edge_p = bool(rec.get("edge"))
+    tip_lam = float(rec.get("tip_lamports") or plan.get("jito_tip_lamports") or 0)
+    long_tail = coll_sym.upper() in _sol_long_tail_syms()
+
     x = np.array([
         px / 200.0,
         math.sin(2 * math.pi * hour / 24),
@@ -496,6 +633,15 @@ def features_from_sol_state(state: Dict[str, Any]) -> np.ndarray:
         min(float(mem.get("count") or 0) / 150.0, 1.5),
         1.0 if bc.get("edge_bias") else 0.0,
         min(float(bot.get("sol") or 0) / 0.25, 2.0),
+        min(max(pos_hf, 0.0) / 1.1, 1.0) if pos_hf < 99 else
+        min(max(best_hf, 0.0) / 1.1, 1.0),
+        min(math.log1p(max(debt, 0.0)) / 10.0, 2.0),
+        1.0 if long_tail else 0.0,
+        0.0 if proto == "solend" else (0.5 if proto == "kamino" else 1.0),
+        min(float(rec.get("comp_n", 0)) / 8.0, 1.5),
+        1.0 if edge_p else 0.0,
+        1.0 if (contested or int(rec.get("tip_war") or 0)) else 0.0,
+        min(tip_lam / 1_000_000.0, 2.0),
     ], dtype=np.float64)
     assert x.shape == (SOL_FEAT_DIM,)
     return x
@@ -504,13 +650,17 @@ def features_from_sol_state(state: Dict[str, Any]) -> np.ndarray:
 def learn_sol_broadcast(state: Dict[str, Any], rec: Dict[str, Any]) -> None:
     """Train the SOL twin on hot-executor / broadcast outcomes."""
     brain = get_sol_brain()
-    x = features_from_sol_state(state)
+    x = features_from_sol_state(state, rec)
     stage = str(rec.get("stage") or rec.get("status") or "").lower()
     ok = stage in ("sent", "ok", "simulated", "dry-run", "cast-ok")
     profit = float(rec.get("profit_usd") or rec.get("net_usd")
                    or rec.get("expected_profit_usd") or 0)
     if stage.startswith("skip") or stage == "blocked":
         act, profit = 0.0, min(profit, 0.0)
+    elif stage in ("simulated", "dry-run") and rec.get("contested"):
+        # simulated races aren't real outcomes — stay neutral so the model
+        # doesn't learn false confidence about contested races pre-funding
+        act, profit = 0.5, 0.0
     elif ok:
         act = 1.0
     else:
@@ -518,6 +668,50 @@ def learn_sol_broadcast(state: Dict[str, Any], rec: Dict[str, Any]) -> None:
         profit = min(profit, 0.0)
     brain.observe(x, act, profit)
     save_sol(brain)
+
+
+RACE_OUTCOME_PATH = os.path.join(HERE, "data", "sol_race_outcomes.jsonl")
+
+
+def learn_sol_race(state: Dict[str, Any], rec: Dict[str, Any], outcome: str,
+                   profit: float = 0.0) -> None:
+    """Train the SOL twin on real race outcomes (won / lost / no-contest)."""
+    brain = get_sol_brain()
+    x = features_from_sol_state(state, rec)
+    if outcome == "won":
+        act = 1.0
+    elif outcome == "lost":
+        act = 0.0
+        profit = min(profit, 0.0)
+    else:
+        act = 0.5
+        profit = 0.0
+    brain.observe(x, act, profit)
+    save_sol(brain)
+    _append_race_outcome(rec, outcome, profit)
+
+
+def _append_race_outcome(rec: Dict[str, Any], outcome: str,
+                         profit: float) -> None:
+    try:
+        os.makedirs(os.path.dirname(RACE_OUTCOME_PATH), exist_ok=True)
+        row = {
+            "ts": int(time.time()),
+            "outcome": outcome,
+            "profit": profit,
+            "stage": rec.get("stage"),
+            "hf": rec.get("hf"),
+            "debt_usd": rec.get("debt_usd"),
+            "protocol": rec.get("protocol_id"),
+            "tip_lamports": rec.get("tip_lamports"),
+            "contested": rec.get("contested"),
+            "edge": rec.get("edge"),
+            "obl": (rec.get("plan") or {}).get("obligation"),
+        }
+        with open(RACE_OUTCOME_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(row) + "\n")
+    except Exception:
+        pass
 
 
 def sol_policy(state: Dict[str, Any]) -> Dict[str, Any]:

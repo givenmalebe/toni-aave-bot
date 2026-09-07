@@ -9,7 +9,6 @@
 <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@solana/web3.js@1.95.8/lib/index.iife.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <link rel="stylesheet" href="/static/style.css?v=mc2">
 </head>
 <body>
@@ -26,9 +25,11 @@
     <span class="pill"><span id="p-block-lbl">block</span> <b id="p-block">--</b></span>
     <span class="pill"><span id="p-gas-lbl">gas</span> <b id="p-gas">--</b></span>
     <span class="pill"><span id="p-eth-lbl">ETH</span> <b id="p-eth">--</b></span>
+    <span class="pill" id="p-eth-bid-pill">bid <b id="p-eth-bid-v">--</b></span>
     <span class="pill">SAST <b id="p-sast">--</b></span>
     <span class="pill">ready <b id="p-ready">--</b></span>
     <span class="pill" id="p-bcast-pill">bcast <b id="p-bcast">--</b></span>
+    <span class="pill" id="p-race-pill">race <b id="p-race">--</b></span>
     <span class="pill" id="p-feed-eth" title="ETH event feed">ETH FEED <b id="p-feed-eth-v">--</b></span>
     <span class="pill" id="p-feed-sol" title="SOL event feed">SOL FEED <b id="p-feed-sol-v">--</b></span>
   </div>
@@ -37,6 +38,7 @@
 <nav id="chain-tabs" class="chain-tabs" role="tablist" aria-label="Chain workspace">
   <button type="button" class="chain-tab on" role="tab" data-tab="eth" id="tab-btn-eth" aria-selected="true" aria-controls="tab-eth">ETH</button>
   <button type="button" class="chain-tab sol" role="tab" data-tab="sol" id="tab-btn-sol" aria-selected="false" aria-controls="tab-sol">SOL</button>
+  <button type="button" class="chain-tab mgr" role="tab" data-tab="manager" id="tab-btn-manager" aria-selected="false" aria-controls="tab-manager">AI Manager</button>
   <span class="chain-tabs-hint dim" id="chain-tabs-hint">Ethereum workspace · multi-protocol lending + Aave flash</span>
 </nav>
 
@@ -549,193 +551,6 @@
           <div class="liq-chart-wrap"><canvas id="liq-volume-chart"></canvas></div>
         </div>
       </div>
-    </div>
-
-    <!-- Trading Intel -->
-    <div class="card span-6" id="card-intel">
-      <h2>Trading Intel <span class="tag">policy · activity · paper</span></h2>
-
-      <div class="intel-hero">
-        <div class="intel-hero-left">
-          <div id="in-advice" class="intel-advice">warming up</div>
-          <div class="intel-hero-stats">
-            <div class="intel-stat">
-              <div class="intel-stat-label">act P</div>
-              <div class="big" id="intel-act">--</div>
-            </div>
-            <div class="intel-stat">
-              <div class="intel-stat-label">exp net</div>
-              <div class="big amber" id="intel-exp">--</div>
-            </div>
-            <div class="intel-stat">
-              <div class="intel-stat-label">steps</div>
-              <div class="big dim" id="intel-steps">--</div>
-            </div>
-            <div class="intel-stat">
-              <div class="intel-stat-label">records</div>
-              <div class="big dim" id="intel-records">--</div>
-            </div>
-          </div>
-          <div id="in-meta" class="kv intel-meta"></div>
-        </div>
-        <div class="intel-hero-right">
-          <div class="intel-gauge-wrap">
-            <canvas id="gauge"></canvas>
-            <span class="intel-ready-pct"><b id="in-ready-pct">0</b>% ready</span>
-          </div>
-          <div class="intel-brain-panel" id="intel-brain"></div>
-        </div>
-      </div>
-
-      <div class="intel-mix">
-        <div class="intel-mix-label">MEV class mix</div>
-        <div class="intel-mix-track" id="in-mix-track"></div>
-        <div id="intel-mev" class="kv intel-mev"></div>
-      </div>
-
-      <div class="intel-paper" id="eth-intel-paper">
-        <div class="intel-paper-label">paper bot</div>
-        <div class="intel-paper-stats">
-          <span>bal <b id="eth-intel-paper-bal">--</b></span>
-          <span>PnL <b id="eth-intel-paper-pnl">--</b></span>
-          <span>W/L <b id="eth-intel-paper-wl">--</b></span>
-          <span>win% <b id="eth-intel-paper-wr">--</b></span>
-          <span>n <b id="eth-intel-paper-count">--</b></span>
-        </div>
-      </div>
-
-      <div class="intel-grid">
-        <div class="intel-col">
-          <div class="intel-section-head">
-            <h3 class="watch">Hours <span class="tag" id="in-hours-note">24h</span></h3>
-          </div>
-          <div class="intel-chart-wrap"><canvas id="chart-hours"></canvas></div>
-        </div>
-        <div class="intel-col">
-          <div class="intel-section-head">
-            <h3 class="watch">Weekday</h3>
-          </div>
-          <div class="intel-chart-wrap"><canvas id="chart-dows"></canvas></div>
-        </div>
-      </div>
-      <div class="intel-section-head">
-        <h3 class="watch">Act P trend</h3>
-      </div>
-      <div class="intel-chart-wrap intel-chart-wide"><canvas id="chart-intel-trend"></canvas></div>
-      <span id="intel-moves" hidden></span>
-      <span id="intel-block" hidden></span>
-      <span id="in-brain-note" class="tag" hidden>policy</span>
-    </div>
-
-    <!-- Prices / Market Context -->
-    <div class="card span-6" id="card-prices">
-      <h2>Market Context <span class="tag" id="mc-tag">ETH/USD · Binance</span></h2>
-
-      <div class="mc-hero">
-        <div class="mc-hero-left">
-          <div class="mc-hero-badges">
-            <div class="mc-pair-badge" id="mc-pair">ETH / USD</div>
-            <span class="mc-src-chip">Binance ETHUSDT</span>
-          </div>
-          <div class="mc-hero-stats">
-            <div class="mc-stat">
-              <div class="mc-stat-label">price</div>
-              <div class="big" id="mc-eth-price">--</div>
-            </div>
-            <div class="mc-stat">
-              <div class="mc-stat-label">24h</div>
-              <div class="big dim" id="mc-eth-chg">--</div>
-            </div>
-            <div class="mc-stat">
-              <div class="mc-stat-label">gas</div>
-              <div class="big amber" id="mc-gas">--</div>
-            </div>
-            <div class="mc-stat">
-              <div class="mc-stat-label">updated</div>
-              <div class="big dim" id="mc-updated">--</div>
-            </div>
-          </div>
-          <div class="mc-window-hint">Live candles drive the price. Range high/low overlay when the paper bot range is ready. Aave oracle fills reserves below.</div>
-          <div id="mc-meta" class="kv mc-meta"></div>
-        </div>
-        <div class="mc-hero-right">
-          <div class="mc-controls-panel">
-            <div class="mc-controls-label">timeframe — reload candles</div>
-            <div class="mc-tf" id="mc-tf" role="group" aria-label="ETH candle timeframe">
-              <button type="button" data-tf="1m" class="mc-f">1m</button>
-              <button type="button" data-tf="5m" class="mc-f">5m</button>
-              <button type="button" data-tf="15m" class="mc-f">15m</button>
-              <button type="button" data-tf="1h" class="mc-f on">1h</button>
-              <button type="button" data-tf="4h" class="mc-f">4h</button>
-              <button type="button" data-tf="1d" class="mc-f">1D</button>
-            </div>
-            <div class="mc-hint dim">1m–1D · last close is the live price</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="mc-chart-wrap">
-        <div class="mc-chart-head">
-          <h3 class="watch">ETHUSDT <span class="tag" id="mc-chart-note">1h</span></h3>
-          <div class="mc-legend">
-            <span><i class="up"></i>up</span>
-            <span><i class="dn"></i>down</span>
-            <span><i class="long"></i>long</span>
-            <span><i class="short"></i>short</span>
-            <span><i class="tp"></i>TP1</span>
-            <span><i class="trail"></i>trail</span>
-            <span><i class="sl"></i>SL</span>
-            <span><i class="hi"></i>range</span>
-          </div>
-        </div>
-        <div class="mc-chart-body">
-          <div id="eth-candles" class="candles mc-candles"><span class="lwc-msg">loading&hellip;</span></div>
-          <div class="mc-tape" id="eth-mc-tape"><span class="mc-tape-empty">no paper fills yet</span></div>
-        </div>
-      </div>
-
-      <div class="mc-grid">
-        <div class="mc-col">
-          <div class="mc-section-head">
-            <h3 class="watch">Aave reserves <span class="tag" id="res-delta">oracle</span></h3>
-          </div>
-          <div id="reserves-list" class="mc-res-grid"></div>
-        </div>
-        <div class="mc-col">
-          <div class="paper-panel" id="eth-paper-panel">
-            <div class="paper-head">
-              <h3 class="watch">Paper Bot <span class="tag" id="eth-paper-status">loading</span></h3>
-              <div class="paper-toggles">
-                <button type="button" class="paper-toggle" id="eth-range-mode" data-mode="orb">ORB (2h)</button>
-                <button type="button" class="paper-toggle" id="eth-range-mode-pd" data-mode="prev_day">Prev Day</button>
-                <button type="button" class="paper-toggle on" id="eth-paper-on">Paper ON</button>
-              </div>
-            </div>
-            <div class="paper-stats" id="eth-paper-stats">
-              <div class="paper-stat"><span class="paper-stat-label">balance</span><span class="paper-stat-val" id="eth-paper-bal">$100.00</span></div>
-              <div class="paper-stat"><span class="paper-stat-label">PnL</span><span class="paper-stat-val" id="eth-paper-pnl">$0.00</span></div>
-              <div class="paper-stat"><span class="paper-stat-label">W/L</span><span class="paper-stat-val" id="eth-paper-wl">0 / 0</span></div>
-              <div class="paper-stat"><span class="paper-stat-label">win%</span><span class="paper-stat-val" id="eth-paper-wr">--</span></div>
-              <div class="paper-stat"><span class="paper-stat-label">trades</span><span class="paper-stat-val" id="eth-paper-count">0</span></div>
-            </div>
-            <div class="paper-open" id="eth-paper-open" style="display:none">
-              <div class="paper-open-head">
-                <span class="paper-dir-badge long" id="eth-paper-dir">LONG</span>
-                <span id="eth-paper-pos" class="paper-pos-main">--</span>
-              </div>
-              <div class="paper-levels">
-                <div class="paper-lvl tp"><span>TP1</span><b id="eth-paper-tp">--</b></div>
-                <div class="paper-lvl trail"><span>TRAIL</span><b id="eth-paper-trail">--</b></div>
-                <div class="paper-lvl sl"><span>SL</span><b id="eth-paper-sl">--</b></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- legacy ids kept for any residual refs -->
-      <span id="eth-last" hidden></span>
-      <span id="sol-last" hidden></span>
     </div>
   </section>
 
@@ -1294,197 +1109,6 @@
         </div>
       </div>
     </div>
-
-    <!-- Trading Intel (SOL) -->
-    <div class="card span-6" id="sol-card-intel">
-      <h2>Trading Intel <span class="tag sol-tag">policy · activity · paper</span></h2>
-
-      <div class="intel-hero">
-        <div class="intel-hero-left">
-          <div id="sol-in-advice" class="intel-advice">warming up</div>
-          <div class="intel-hero-stats">
-            <div class="intel-stat">
-              <div class="intel-stat-label">act P</div>
-              <div class="big" id="sol-intel-act">--</div>
-            </div>
-            <div class="intel-stat">
-              <div class="intel-stat-label">exp net</div>
-              <div class="big amber" id="sol-intel-exp">--</div>
-            </div>
-            <div class="intel-stat">
-              <div class="intel-stat-label">steps</div>
-              <div class="big dim" id="sol-intel-steps">--</div>
-            </div>
-            <div class="intel-stat">
-              <div class="intel-stat-label">records</div>
-              <div class="big dim" id="sol-intel-records">--</div>
-            </div>
-          </div>
-          <div id="sol-in-meta" class="kv intel-meta"></div>
-        </div>
-        <div class="intel-hero-right">
-          <div class="intel-gauge-wrap">
-            <canvas id="sol-gauge"></canvas>
-            <span class="intel-ready-pct"><b id="sol-in-ready-pct">0</b>% ready</span>
-          </div>
-          <div class="intel-brain-panel" id="sol-intel-brain"></div>
-        </div>
-      </div>
-
-      <div class="intel-mix">
-        <div class="intel-mix-label">fee / MEV mix</div>
-        <div class="intel-mix-track" id="sol-in-mix-track"></div>
-        <div id="sol-intel-mev" class="kv intel-mev"></div>
-      </div>
-
-      <div class="intel-paper" id="sol-intel-paper">
-        <div class="intel-paper-label">paper bot</div>
-        <div class="intel-paper-stats">
-          <span>bal <b id="sol-intel-paper-bal">--</b></span>
-          <span>PnL <b id="sol-intel-paper-pnl">--</b></span>
-          <span>W/L <b id="sol-intel-paper-wl">--</b></span>
-          <span>win% <b id="sol-intel-paper-wr">--</b></span>
-          <span>n <b id="sol-intel-paper-count">--</b></span>
-        </div>
-      </div>
-
-      <div class="intel-grid">
-        <div class="intel-col">
-          <div class="intel-section-head">
-            <h3 class="watch">Hours <span class="tag" id="sol-in-hours-note">24h</span></h3>
-          </div>
-          <div class="intel-chart-wrap"><canvas id="sol-chart-hours"></canvas></div>
-        </div>
-        <div class="intel-col">
-          <div class="intel-section-head">
-            <h3 class="watch">Weekday</h3>
-          </div>
-          <div class="intel-chart-wrap"><canvas id="sol-chart-dows"></canvas></div>
-        </div>
-      </div>
-      <div class="intel-section-head">
-        <h3 class="watch">Act P trend</h3>
-      </div>
-      <div class="intel-chart-wrap intel-chart-wide"><canvas id="sol-chart-intel-trend"></canvas></div>
-      <span id="sol-intel-moves" hidden></span>
-      <span id="sol-intel-block" hidden></span>
-      <span id="sol-in-brain-note" class="tag" hidden>policy</span>
-    </div>
-
-    <!-- Prices / Market Context -->
-    <div class="card span-6" id="sol-card-prices">
-      <h2>Market Context <span class="tag sol-tag" id="sol-mc-tag">SOL/USD · Binance</span></h2>
-
-      <div class="mc-hero sol-mc">
-        <div class="mc-hero-left">
-          <div class="mc-hero-badges">
-            <div class="mc-pair-badge sol-pair" id="sol-mc-pair">SOL / USD</div>
-            <span class="mc-src-chip">Binance SOLUSDT</span>
-          </div>
-          <div class="mc-hero-stats">
-            <div class="mc-stat">
-              <div class="mc-stat-label">price</div>
-              <div class="big" id="sol-mc-price">--</div>
-            </div>
-            <div class="mc-stat">
-              <div class="mc-stat-label">24h</div>
-              <div class="big dim" id="sol-mc-chg">--</div>
-            </div>
-            <div class="mc-stat">
-              <div class="mc-stat-label">prio µl</div>
-              <div class="big amber" id="sol-mc-gas">--</div>
-            </div>
-            <div class="mc-stat" hidden>
-              <div class="mc-stat-label">tf</div>
-              <div class="big amber" id="sol-mc-tf">1H</div>
-            </div>
-            <div class="mc-stat">
-              <div class="mc-stat-label">updated</div>
-              <div class="big dim" id="sol-mc-updated">--</div>
-            </div>
-          </div>
-          <div class="mc-window-hint">Live SOL candles. Priority fee is cluster µl/CU. Solend util sits beside the paper bot.</div>
-          <div id="sol-mc-meta" class="kv mc-meta"></div>
-        </div>
-        <div class="mc-hero-right">
-          <div class="mc-controls-panel">
-            <div class="mc-controls-label">timeframe — reload candles</div>
-            <div class="mc-tf" id="sol-mc-tf-btns" role="group" aria-label="SOL candle timeframe">
-              <button type="button" data-tf="1m" class="mc-f sol-f">1m</button>
-              <button type="button" data-tf="5m" class="mc-f sol-f">5m</button>
-              <button type="button" data-tf="15m" class="mc-f sol-f">15m</button>
-              <button type="button" data-tf="1h" class="mc-f sol-f on">1h</button>
-              <button type="button" data-tf="4h" class="mc-f sol-f">4h</button>
-              <button type="button" data-tf="1d" class="mc-f sol-f">1D</button>
-            </div>
-            <div class="mc-hint dim">1m–1D · last close is the live price</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="mc-chart-wrap">
-        <div class="mc-chart-head">
-          <h3 class="watch">SOLUSDT <span class="tag sol-tag" id="sol-mc-chart-note">1h</span></h3>
-          <div class="mc-legend">
-            <span><i class="up"></i>up</span>
-            <span><i class="dn"></i>down</span>
-            <span><i class="long"></i>long</span>
-            <span><i class="short"></i>short</span>
-            <span><i class="tp"></i>TP1</span>
-            <span><i class="trail"></i>trail</span>
-            <span><i class="sl"></i>SL</span>
-            <span><i class="hi"></i>range</span>
-          </div>
-        </div>
-        <div class="mc-chart-body">
-          <div id="sol-candles" class="candles mc-candles"><span class="lwc-msg">loading&hellip;</span></div>
-          <div class="mc-tape" id="sol-mc-tape"><span class="mc-tape-empty">no paper fills yet</span></div>
-        </div>
-      </div>
-
-      <div class="mc-grid">
-        <div class="mc-col">
-          <div class="mc-section-head">
-            <h3 class="watch">Solend util <span class="tag" id="sol-res-delta">reserves</span></h3>
-          </div>
-          <div id="sol-reserves-list" class="mc-res-grid"></div>
-        </div>
-        <div class="mc-col">
-          <div class="paper-panel" id="sol-paper-panel">
-            <div class="paper-head">
-              <h3 class="watch">Paper Bot <span class="tag" id="sol-paper-status">loading</span></h3>
-              <div class="paper-toggles">
-                <button type="button" class="paper-toggle" id="sol-range-mode" data-mode="orb">ORB (2h)</button>
-                <button type="button" class="paper-toggle" id="sol-range-mode-pd" data-mode="prev_day">Prev Day</button>
-                <button type="button" class="paper-toggle on" id="sol-paper-on">Paper ON</button>
-              </div>
-            </div>
-            <div class="paper-stats" id="sol-paper-stats">
-              <div class="paper-stat"><span class="paper-stat-label">balance</span><span class="paper-stat-val" id="sol-paper-bal">$100.00</span></div>
-              <div class="paper-stat"><span class="paper-stat-label">PnL</span><span class="paper-stat-val" id="sol-paper-pnl">$0.00</span></div>
-              <div class="paper-stat"><span class="paper-stat-label">W/L</span><span class="paper-stat-val" id="sol-paper-wl">0 / 0</span></div>
-              <div class="paper-stat"><span class="paper-stat-label">win%</span><span class="paper-stat-val" id="sol-paper-wr">--</span></div>
-              <div class="paper-stat"><span class="paper-stat-label">trades</span><span class="paper-stat-val" id="sol-paper-count">0</span></div>
-            </div>
-            <div class="paper-open" id="sol-paper-open" style="display:none">
-              <div class="paper-open-head">
-                <span class="paper-dir-badge long" id="sol-paper-dir">LONG</span>
-                <span id="sol-paper-pos" class="paper-pos-main">--</span>
-              </div>
-              <div class="paper-levels">
-                <div class="paper-lvl tp"><span>TP1</span><b id="sol-paper-tp">--</b></div>
-                <div class="paper-lvl trail"><span>TRAIL</span><b id="sol-paper-trail">--</b></div>
-                <div class="paper-lvl sl"><span>SL</span><b id="sol-paper-sl">--</b></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- legacy ids kept for any residual refs -->
-      <span id="sol-eth-last" hidden></span>
-      <span id="sol-last" hidden></span>
-    </div>
   </section>
 
   <section class="grid">
@@ -1553,12 +1177,86 @@
   
   </div><!-- /#tab-sol -->
 
+    <div id="tab-manager" class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-manager" hidden>
+  <section class="grid">
+
+    <!-- Power BI (top, first thing you see) -->
+    <div class="card span-6" id="card-mgr-bi">
+      <h2>Power BI <span class="tag">live performance & verdict</span></h2>
+      <div class="mgr-bi-metrics" id="mgr-bi-metrics"></div>
+      <div class="mgr-bi-charts">
+        <div class="mgr-bi-chart"><canvas id="mgr-chart-winrate"></canvas></div>
+        <div class="mgr-bi-chart"><canvas id="mgr-chart-profit"></canvas></div>
+        <div class="mgr-bi-chart"><canvas id="mgr-chart-equity"></canvas></div>
+      </div>
+      <div class="mgr-bi-changes-head">Recent changes <span class="tag" id="mgr-bi-changes-count">0</span></div>
+      <div id="mgr-bi-changes" class="mgr-bi-changes"></div>
+    </div>
+
+    <!-- TONI AI Manager (left) -->
+    <div class="card span-3" id="card-mgr-chat">
+      <div class="mgr-strip">
+        <div class="mgr-brand"><span class="mgr-badge">AI</span>
+          <div class="mgr-brand-txt"><div class="mgr-brand-name">TONI AI Manager</div>
+            <div class="mgr-brand-sub" id="mgr-status-tag">connecting…</div></div>
+        </div>
+        <div class="mgr-kpis">
+          <div class="mgr-kpi"><div class="mgr-kpi-v" id="mgr-model">--</div><div class="mgr-kpi-l">model</div></div>
+          <div class="mgr-kpi"><div class="mgr-kpi-v" id="mgr-tools">--</div><div class="mgr-kpi-l">tools</div></div>
+          <div class="mgr-kpi"><div class="mgr-kpi-v" id="mgr-skills">--</div><div class="mgr-kpi-l">skills</div></div>
+          <div class="mgr-kpi"><div class="mgr-kpi-v" id="mgr-memory">--</div><div class="mgr-kpi-l">memory facts</div></div>
+          <div class="mgr-kpi"><div class="mgr-kpi-v" id="mgr-agents-q">--</div><div class="mgr-kpi-l">agents</div></div>
+          <div class="mgr-kpi"><div class="mgr-kpi-v" id="mgr-pending">0</div><div class="mgr-kpi-l">pending</div></div>
+        </div>
+      </div>
+      <h2>Chat</h2>
+      <div id="mgr-chat-feed" class="mgr-feed"></div>
+      <div class="mgr-chat-bar">
+        <input type="text" id="mgr-chat-input" placeholder="Ask the AI manager..." autocomplete="off">
+        <button id="mgr-chat-send" type="button">Send</button>
+      </div>
+      <div class="mgr-hint" id="mgr-srv-hint"></div>
+    </div>
+
+    <!-- Pending Approvals (right) -->
+    <div class="card span-3" id="card-mgr-approvals">
+      <h2>Pending Approvals <span class="tag">fund-knob changes need your OK</span></h2>
+      <div id="mgr-approvals-list" class="mgr-approvals"></div>
+    </div>
+
+  </section>
+  </div><!-- /#tab-manager -->
+
+  <!-- AI Manager popup briefing -->
+  <div class="mgr-pop-overlay" id="mgr-pop" hidden>
+    <div class="mgr-pop" role="dialog" aria-modal="true" aria-labelledby="mgr-pop-title">
+      <div class="mgr-pop-head">
+        <span class="mgr-badge">AI</span>
+        <div>
+          <div class="mgr-brand-name" id="mgr-pop-title">TONI AI Manager — live briefing</div>
+          <div class="mgr-brand-sub" id="mgr-pop-tag">updating from live state…</div>
+        </div>
+        <button class="mgr-pop-close" id="mgr-pop-close" type="button" aria-label="Close">✕</button>
+      </div>
+      <div class="mgr-pop-body" id="mgr-pop-body">
+        <div class="mgr-pop-loading" id="mgr-pop-loading">loading briefing…</div>
+      </div>
+      <div class="mgr-pop-chat">
+        <div class="mgr-feed" id="mgr-pop-feed"></div>
+        <div class="mgr-chat-bar">
+          <input type="text" id="mgr-pop-input" placeholder="Ask the manager a question…" autocomplete="off">
+          <button id="mgr-pop-send" type="button">Ask</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </main>
 
 <footer>
   <span>TONI dashboard &mdash; broadcast ON when LIQ/ARB contracts + keys ready. ETH: MetaMask EVM → sponsor · SOL: MetaMask Solana (Phantom fallback) → sponsor.</span>
   <span id="sys-info"></span>
 </footer>
-<script src="/static/app.js?v=mc2"></script>
+<script src="/static/app.js?v=mgr4"></script>
 </body>
 </html>

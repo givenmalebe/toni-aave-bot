@@ -500,6 +500,7 @@ def _gpa_helius_v2(program_id: str, url: str, filters: list | None,
     return all_accounts
 
 
+def latest_blockhash() -> dict[str, Any]:
     """Recent blockhash for user-initiated browser SOL transfers (not a send)."""
     res, url = sol_rpc("getLatestBlockhash", [{"commitment": "confirmed"}])
     val = (res or {}).get("value") if isinstance(res, dict) else {}
@@ -891,9 +892,12 @@ def _cu_fee_usd(median_ul: int | None, sol_px: float,
 def _dynamic_jito_lamports(pre_tip_usd: float, sol_px: float,
                            pressure: str | None = None,
                            floor_usd: float = 0.0) -> int:
-    """Tip = max(min_formula, competitor_p95 * 1.15), capped at net - floor.
+    """Tip = max(min_formula, competitor_p95 * 1.15 * learned_mult),
+    capped at net - floor.
 
-    Uses competition-aware bidding when competitor data is available.
+    Uses competition-aware bidding when competitor data is available and the
+    adaptive outbidding bandit to beat competitors (escalates on losses,
+    eases on wins, bounded by the profit cap below).
     """
     px = max(float(sol_px or 0.0), 1e-9)
     base_sol = _jito_tip_sol(pressure)
@@ -914,10 +918,12 @@ def _dynamic_jito_lamports(pre_tip_usd: float, sol_px: float,
         tip_usd = min_usd
     base_lam = int(tip_usd / px * 1e9)
 
-    # Competition boost: bid 15% above competitor p95
+    # Competition: bid above competitor p95, scaled by the learned bandit.
+    # Competitor tips present = we are in a bidding contest -> contested arm.
     cp95 = comp_tip_p95()
     if cp95 > 0:
-        comp_boost_lam = int(cp95 * 1.15)
+        mult = tip_mult("contested" if cp95 > 0 else "calm")
+        comp_boost_lam = int(cp95 * 1.15 * mult)
         base_lam = max(base_lam, comp_boost_lam)
 
     # Ensure we don't eat all profit
@@ -1043,6 +1049,87 @@ _KAMINO_CACHE_LOCK = threading.Lock()
 _COMP_TIP_WINDOW = []  # list of (timestamp, tip_lamports)
 _COMP_TIP_LOCK = threading.Lock()
 COMP_TIP_WINDOW_MAX = 50
+
+# --- Adaptive outbidding bandit ---
+# Learned per-segment multiples on the competitor bid:
+#   bid = min(max(min_formula, comp_p95 * 1.15 * mult), pre - floor).
+# Lost races nudge the multiplier up (we under-bid); wins nudge it down
+# (we over-bid). Persisted so learned pressure survives restarts.
+_TIP_BANDIT = {"calm": 1.0, "contested": 1.0}
+_TIP_BANDIT_LOCK = threading.Lock()
+_TIP_BANDIT_MIN = 0.7
+_TIP_BANDIT_MAX = 3.0
+_TIP_BANDIT_LOSS_STEP = 1.25
+_TIP_BANDIT_WIN_STEP = 0.9
+_DATA_DIR = os.path.join(_HERE, "data")
+_TIP_BANDIT_PATH = os.path.join(_DATA_DIR, "sol_tip_bandit.json")
+_TIP_BANDIT_LOADED = False
+
+
+def _tip_bandit_load():
+    global _TIP_BANDIT, _TIP_BANDIT_LOADED
+    if _TIP_BANDIT_LOADED:
+        return
+    _TIP_BANDIT_LOADED = True
+    try:
+        with open(_TIP_BANDIT_PATH, "r") as f:
+            data = json.load(f)
+        with _TIP_BANDIT_LOCK:
+            for k in ("calm", "contested"):
+                v = float(data.get(k, 1.0) or 1.0)
+                _TIP_BANDIT[k] = min(max(v, _TIP_BANDIT_MIN), _TIP_BANDIT_MAX)
+    except Exception as e:
+        log.debug("tip bandit load failed: %s", e)
+
+
+def _tip_bandit_save():
+    try:
+        with _TIP_BANDIT_LOCK:
+            snapshot = dict(_TIP_BANDIT)
+        with open(_TIP_BANDIT_PATH, "w") as f:
+            json.dump(snapshot, f)
+    except Exception as e:
+        log.debug("tip bandit save failed: %s", e)
+
+
+def _is_contested_pressure(pressure: str | None) -> bool:
+    p = (pressure or "").lower()
+    return "contest" in p or "war" in p
+
+
+def tip_mult(pressure: str | None = None) -> float:
+    """Learned bid multiplier for the given competition pressure."""
+    _tip_bandit_load()
+    key = "contested" if _is_contested_pressure(pressure) else "calm"
+    with _TIP_BANDIT_LOCK:
+        return _TIP_BANDIT[key]
+
+
+def update_tip_mult(contested: bool, won: bool, tip_lamports: int = 0) -> float:
+    """Train the bid multiplier from a race/fire outcome.
+
+    Lost fires nudge the multiplier up (we repeatedly under-bid competitors);
+    wins nudge it down so we stop over-bidding. Returns the new multiplier.
+    """
+    if tip_lamports <= 0:
+        return tip_mult("contested" if contested else "calm")
+    key = "contested" if contested else "calm"
+    _tip_bandit_load()
+    with _TIP_BANDIT_LOCK:
+        cur = _TIP_BANDIT[key]
+        if won:
+            nxt = max(cur * _TIP_BANDIT_WIN_STEP, _TIP_BANDIT_MIN)
+        else:
+            nxt = min(cur * _TIP_BANDIT_LOSS_STEP, _TIP_BANDIT_MAX)
+        _TIP_BANDIT[key] = round(nxt, 4)
+    _tip_bandit_save()
+    return nxt
+
+
+def tip_bandit_stats() -> dict:
+    _tip_bandit_load()
+    with _TIP_BANDIT_LOCK:
+        return {"calm": _TIP_BANDIT["calm"], "contested": _TIP_BANDIT["contested"]}
 
 
 def _extract_jito_tip(meta: dict) -> int:
@@ -1349,6 +1436,13 @@ def build_precompute_entries(
         coll_m = plan.get("withdraw_mint") or opp.get("coll_mint") or ""
         debt_m = plan.get("repay_mint") or opp.get("debt_mint") or ""
         jup_key = f"{coll_m[:8]}→{debt_m[:8]}" if coll_m and debt_m else ""
+        presigned: dict | None = None
+        if pid == "solend" and plan.get("ready", True) and hf < 1.0:
+            presigned = presign_solend_plan(plan) or None
+        elif pid == "kamino" and plan.get("ready", True) and hf < 1.0:
+            presigned = presign_kamino_plan(plan) or None
+        elif pid == "marginfi" and plan.get("ready", True) and hf < 1.0:
+            presigned = presign_marginfi_plan(plan) or None
         entry = {
             "obligation": pk,
             "kind": "liq",
@@ -1369,9 +1463,478 @@ def build_precompute_entries(
                 opp.get("profit_usd") or opp.get("net_usd") or 0),
             "plan": plan,
             "ready": bool(plan.get("ready", True)),
+            "presigned": presigned,
         }
         out.append(entry)
     return out
+
+
+_PRESIGN_MEMO: dict[str, float] = {}
+
+
+def presign_solend_plan(plan: dict) -> dict | None:
+    """Compile + sign the direct-hold Solend liq bundle ahead of the fire so
+    the hot path can skip recompile + resim (retain-and-send).
+
+    Returns dict with base64 raw refresh/liq txs, the blockhash they were
+    signed against, the slot, and repay_amt — or None on any hard stop.
+    Only covers the path where the bot holds the repay asset (no flash
+    borrow fallback). The Jito tip tx is rebuilt at fire time (it must pin
+    a live tip + may pay from sponsor).
+    """
+    if not plan or plan.get("kind") != "liq":
+        return None
+    if (plan.get("protocol_id") or "solend") != "solend":
+        return None
+    if bool(plan.get("_pre_signed")):
+        return None
+    obl = plan.get("obligation") or ""
+    now = time.time()
+    if obl and (now - _PRESIGN_MEMO.get(obl, 0)) < 5.0:
+        return None
+    path = _bot_keypair_path()
+    if not path:
+        return None
+    try:
+        bot_kp = _load_solders_keypair(path)
+    except Exception:
+        return None
+    bot_pk = str(bot_kp.pubkey())
+    repay_r = plan.get("debt_reserve")
+    withdraw_r = plan.get("coll_reserve")
+    rcfg = _RESERVE_INDEX.get(repay_r) or {}
+    wcfg = _RESERVE_INDEX.get(withdraw_r) or {}
+    repay_mint = plan.get("repay_mint") or rcfg.get("mint") or ""
+    coll_mint = plan.get("withdraw_mint") or wcfg.get("mint") or ""
+    ctoken = wcfg.get("collateral_mint") or ""
+    if not (repay_r and withdraw_r and repay_mint and coll_mint and ctoken):
+        return None
+    tok_repay = _mint_token_program(repay_mint)
+    tok_coll = _mint_token_program(coll_mint) or TOKEN_PROGRAM
+    src_ata = _ata_addr(bot_pk, repay_mint, tok_repay)
+    dest_c = _ata_addr(bot_pk, ctoken, TOKEN_PROGRAM)
+    dest_liq = _ata_addr(bot_pk, coll_mint, tok_coll)
+    debt_amt = int(plan.get("debt_amount") or 0)
+    close = float(plan.get("close_factor") or 1.0)
+    repay_amt = max(int(debt_amt * close), 1)
+    avail = int(rcfg.get("available_amount") or 0)
+    if avail > 0:
+        repay_amt = min(repay_amt, avail)
+    have = _spl_amount(src_ata)
+    if repay_mint == MINT_SOL:
+        have = max(have, int(((plan.get("funds") or {}).get("bot") or {})
+                             .get("lamports") or 0))
+    if have < repay_amt:
+        return None  # flash path — not covered by presign
+    market = plan.get("lending_market") or _LENDING_MARKET.get("address")
+    if not _is_pubkey(market):
+        return None
+    auth = _market_authority(market)
+    try:
+        extra_r = _drop_placeholder_pk(rcfg.get("extra_oracle") or "") or None
+        extra_w = _drop_placeholder_pk(wcfg.get("extra_oracle") or "") or None
+        refresh_accounts_r = [
+            (repay_r, False, True),
+            (rcfg["pyth"], False, False),
+            (rcfg["switchboard"], False, False),
+        ]
+        if extra_r:
+            refresh_accounts_r.append((extra_r, False, False))
+        refresh_accounts_w = [
+            (withdraw_r, False, True),
+            (wcfg["pyth"], False, False),
+            (wcfg["switchboard"], False, False),
+        ]
+        if extra_w:
+            refresh_accounts_w.append((extra_w, False, False))
+        dep = list(plan.get("deposit_reserves") or [withdraw_r])
+        bor = list(plan.get("borrow_reserves") or [repay_r])
+        obl_rest = [(pk2, False, True) for pk2 in dep + bor if _is_pubkey(pk2)]
+        ixs_refresh = [
+            _solend_ix(SOLEND_IX_REFRESH_RESERVE, b"", refresh_accounts_r),
+            _solend_ix(SOLEND_IX_REFRESH_RESERVE, b"", refresh_accounts_w),
+            _solend_ix(
+                SOLEND_IX_REFRESH_OBLIGATION, b"",
+                [(plan["obligation"], False, True), *obl_rest],
+            ),
+        ]
+        ixs_liq = []
+        if not _account_info(dest_c):
+            ixs_liq.append(_create_ata_ix(bot_pk, bot_pk, ctoken, TOKEN_PROGRAM, dest_c))
+        if not _account_info(dest_liq):
+            ixs_liq.append(_create_ata_ix(bot_pk, bot_pk, coll_mint, tok_coll, dest_liq))
+        liq_accounts = [
+            (src_ata, False, True),
+            (dest_c, False, True),
+            (dest_liq, False, True),
+            (repay_r, False, True),
+            (rcfg["liquidity_supply"], False, True),
+            (withdraw_r, False, True),
+            (wcfg["collateral_mint"], False, True),
+            (wcfg["collateral_supply"], False, True),
+            (wcfg["liquidity_supply"], False, True),
+            (wcfg["fee_receiver"], False, True),
+            (plan["obligation"], False, True),
+            (market, False, True),
+            (auth, False, False),
+            (bot_pk, True, False),
+            (TOKEN_PROGRAM, False, False),
+        ]
+        ixs_liq.append(_solend_ix(
+            SOLEND_IX_LIQUIDATE_AND_REDEEM,
+            int(repay_amt).to_bytes(8, "little"),
+            liq_accounts,
+        ))
+        bh = (latest_blockhash().get("blockhash") or "")
+        if not bh:
+            return None
+        from solders.compute_budget import (
+            set_compute_unit_limit, set_compute_unit_price)
+        prio_ixs = [
+            set_compute_unit_limit(int(plan.get("compute_units") or 400_000)),
+            set_compute_unit_price(int(plan.get("priority_fee_ul") or 1_000)),
+        ]
+        raw_refresh = _compile_v0(bot_kp, ixs_refresh, bh)
+        raw_liq = _compile_v0(bot_kp, prio_ixs + ixs_liq, bh)
+        sim_err = _sim_tx_err(raw_liq)
+        if sim_err:
+            return None
+        if obl:
+            _PRESIGN_MEMO[obl] = time.time()
+        try:
+            slot = int((fetch_epoch_and_slot() or {}).get("slot") or 0)
+        except Exception:
+            slot = 0
+        return {
+            "_raw_refresh_b64": base64.b64encode(bytes(raw_refresh)).decode(),
+            "_raw_liq_b64": base64.b64encode(bytes(raw_liq)).decode(),
+            "_bh": bh,
+            "_slot": slot,
+            "_repay_amt": repay_amt,
+            "_ts": time.time(),
+            "_payer": bot_pk,
+            "_repay_mint": repay_mint,
+            "repay_amt": repay_amt,
+        }
+    except Exception as e:  # noqa: BLE001
+        log.warning("presign_solend_plan failed: %s", e)
+        return None
+
+
+def presign_kamino_plan(plan: dict) -> dict | None:
+    """Compile + sign the direct-hold Kamino liq bundle ahead of the fire so
+    the hot path can skip on-chain decode + blockhash + recompile + resim.
+
+    Mirrors _live_send_kamino's direct path only (same-mint inventory or
+    native SOL). Flash borrow, missing inventory, or any hard stop -> None
+    (live path rebuilds). Throttled per obligation like the Solend presign.
+    """
+    if not plan or plan.get("kind") != "liq":
+        return None
+    if (plan.get("protocol_id") or "solend") != "kamino":
+        return None
+    if bool(plan.get("_pre_signed")):
+        return None
+    obl = (plan.get("obligation") or "").strip()
+    now = time.time()
+    obk = f"kamino:{obl}"
+    if obl and (now - _PRESIGN_MEMO.get(obk, 0)) < 5.0:
+        return None
+    if not _is_pubkey(obl):
+        return None
+    try:
+        obl_acc = _account_info(obl)
+        if not obl_acc or (obl_acc.get("owner") or "") != KAMINO_PROGRAM:
+            return None
+        obl_raw = _acc_bytes(obl_acc)
+        if len(obl_raw) != KAMINO_OBLIGATION_SIZE:
+            return None
+        obl_market = _b58encode(obl_raw[32:64])
+
+        reserves = plan.get("_kamino_reserves_rows")
+        if not isinstance(reserves, dict) or not reserves:
+            reserves = _kamino_reserves()
+        if not reserves:
+            return None
+
+        positions = _kamino_obl_positions(obl_raw, reserves)
+        debt_pos = max((p for p in positions if p["debt"] > 0),
+                       key=lambda p: p["debt"], default=None)
+        coll_pos = max((p for p in positions if p["coll"] > 0),
+                       key=lambda p: p["coll"], default=None)
+        if not debt_pos or not coll_pos:
+            return None
+        plan_debt = (plan.get("debt_reserve") or "").strip()
+        plan_coll = (plan.get("coll_reserve") or "").strip()
+        if plan_debt in reserves:
+            debt_pos = next(p for p in positions if p["reserve"] == plan_debt)
+        if plan_coll in reserves:
+            coll_pos = next(p for p in positions if p["reserve"] == plan_coll)
+
+        repay_r = debt_pos["reserve"]
+        withdraw_r = coll_pos["reserve"]
+        rcfg = reserves[repay_r]
+        wcfg = reserves[withdraw_r]
+        repay_mint = debt_pos["mint"]
+        coll_mint = wcfg.get("mint") or ""
+        ctoken = wcfg.get("collateral_mint") or ""
+        if not (_is_pubkey(coll_mint) and _is_pubkey(ctoken)
+                and _is_pubkey(rcfg.get("liquidity_supply") or "")
+                and _is_pubkey(wcfg.get("liquidity_supply") or "")
+                and _is_pubkey(wcfg.get("collateral_supply") or "")
+                and _is_pubkey(wcfg.get("fee_receiver") or "")):
+            return None
+
+        close = float(plan.get("close_factor") or KAMINO_CLOSE_FACTOR)
+        repay_amt = max(int(debt_pos["debt"] * close), 1)
+        avail = int(rcfg.get("available_amount") or 0)
+        if avail > 0:
+            repay_amt = min(repay_amt, avail)
+        if repay_amt <= 0:
+            return None
+
+        path = _bot_keypair_path()
+        if not path:
+            return None
+        bot_kp = _load_solders_keypair(path)
+        bot_pk = str(bot_kp.pubkey())
+
+        tok_repay = _mint_token_program(repay_mint)
+        tok_coll = _mint_token_program(coll_mint) if coll_mint else TOKEN_PROGRAM
+        src_ata = _ata_addr(bot_pk, repay_mint, tok_repay)
+        dest_c = _ata_addr(bot_pk, ctoken, TOKEN_PROGRAM)
+        dest_liq = _ata_addr(bot_pk, coll_mint, tok_coll)
+
+        # Direct path only: flash when mints differ or no inventory.
+        use_flash = bool(repay_mint and coll_mint and repay_mint != coll_mint)
+        if not use_flash:
+            if repay_mint == MINT_SOL:
+                bot_lam = int(((plan.get("funds") or {}).get("bot") or {})
+                              .get("lamports") or 0)
+                if bot_lam <= repay_amt + 3_000_000:
+                    use_flash = True
+            else:
+                have = _spl_amount(src_ata)
+                if have < repay_amt:
+                    use_flash = True
+        if use_flash:
+            return None
+
+        market = obl_market if _is_pubkey(obl_market) else KAMINO_MAIN_MARKET
+        auth = _kamino_market_authority(market)
+
+        def _refresh_ix(reserve: str, cfg: dict):
+            accs = [(reserve, False, True)]
+            for okey in ("pyth", "switchboard"):
+                opk = (cfg.get(okey) or "").strip()
+                if _is_pubkey(opk):
+                    accs.append((opk, False, False))
+            return _kamino_ix(KAMINO_IX_REFRESH_RESERVE, b"", accs)
+
+        ixs_refresh = [
+            _refresh_ix(repay_r, rcfg),
+            _refresh_ix(withdraw_r, wcfg),
+            _kamino_ix(
+                KAMINO_IX_REFRESH_OBLIGATION, b"",
+                [(obl, False, True), (repay_r, False, True),
+                 (withdraw_r, False, True)],
+            ),
+        ]
+        ixs_liq: list = []
+        if not _account_info(dest_c):
+            ixs_liq.append(_create_ata_ix(
+                bot_pk, bot_pk, ctoken, TOKEN_PROGRAM, dest_c))
+        if not _account_info(dest_liq):
+            ixs_liq.append(_create_ata_ix(
+                bot_pk, bot_pk, coll_mint, tok_coll, dest_liq))
+        liq_accounts = [
+            (src_ata, False, True),
+            (dest_c, False, True),
+            (dest_liq, False, True),
+            (repay_r, False, True),
+            (rcfg["liquidity_supply"], False, True),
+            (withdraw_r, False, True),
+            (wcfg["collateral_mint"], False, True),
+            (wcfg["collateral_supply"], False, True),
+            (wcfg["liquidity_supply"], False, True),
+            (wcfg["fee_receiver"], False, True),
+            (obl, False, True),
+            (market, False, False),
+            (auth, False, False),
+            (bot_pk, True, False),
+            (TOKEN_PROGRAM, False, False),
+        ]
+        ixs_liq.append(_kamino_ix(
+            KAMINO_IX_LIQUIDATE_AND_REDEEM,
+            int(repay_amt).to_bytes(8, "little"),
+            liq_accounts,
+        ))
+        bh = (latest_blockhash().get("blockhash") or "")
+        if not bh:
+            return None
+        from solders.compute_budget import (
+            set_compute_unit_limit, set_compute_unit_price)
+        prio_ixs = [
+            set_compute_unit_limit(int(plan.get("compute_units") or 400_000)),
+            set_compute_unit_price(int(plan.get("priority_fee_ul") or 1_000)),
+        ]
+        raw_refresh = _compile_v0(bot_kp, ixs_refresh, bh)
+        raw_liq = _compile_v0(bot_kp, prio_ixs + ixs_liq, bh)
+        sim_err = _sim_tx_err(raw_liq)
+        if sim_err:
+            return None
+        if obl:
+            _PRESIGN_MEMO[obk] = time.time()
+        try:
+            slot = int((fetch_epoch_and_slot() or {}).get("slot") or 0)
+        except Exception:
+            slot = 0
+        return {
+            "_raw_refresh_b64": base64.b64encode(bytes(raw_refresh)).decode(),
+            "_raw_liq_b64": base64.b64encode(bytes(raw_liq)).decode(),
+            "_bh": bh,
+            "_slot": slot,
+            "_repay_amt": repay_amt,
+            "_ts": time.time(),
+            "_payer": bot_pk,
+            "_repay_mint": repay_mint,
+            "_proto": "kamino",
+            "repay_amt": repay_amt,
+        }
+    except Exception as e:  # noqa: BLE001
+        log.warning("presign_kamino_plan failed: %s", e)
+        return None
+
+
+def presign_marginfi_plan(plan: dict) -> dict | None:
+    """Compile + sign the MarginFi liq tx ahead of the fire so the hot path
+    can skip liquidator/balance decode + blockhash + recompile + resim.
+
+    MarginFi has no flash path; any hard stop (no liquidator mfi account,
+    missing banks/balances) -> None (live path rebuilds).
+    """
+    if not plan or plan.get("kind") != "liq":
+        return None
+    if (plan.get("protocol_id") or "solend") != "marginfi":
+        return None
+    obl = (plan.get("obligation") or "").strip()
+    now = time.time()
+    obk = f"marginfi:{obl}"
+    if obl and (now - _PRESIGN_MEMO.get(obk, 0)) < 5.0:
+        return None
+    asset_b = (plan.get("asset_bank") or plan.get("coll_reserve") or "").strip()
+    liab_b = (plan.get("liab_bank") or plan.get("debt_reserve") or "").strip()
+    if not all(_is_pubkey(x) for x in (obl, asset_b, liab_b)):
+        return None
+    try:
+        from sol_lending import marginfi as _mfi
+        path = _bot_keypair_path()
+        if not path:
+            return None
+        bot_kp = _load_solders_keypair(path)
+        bot_pk = str(bot_kp.pubkey())
+
+        liq_acc = _mfi.find_liquidator_account(bot_pk)
+        if not liq_acc:
+            return None
+
+        banks = plan.get("_marginfi_banks")
+        if not isinstance(banks, dict) or not banks:
+            banks = _mfi.fetch_banks()
+        if asset_b not in banks or liab_b not in banks:
+            return None
+
+        obl_acc = _account_info(obl)
+        if not obl_acc:
+            return None
+        obl_raw = _acc_bytes(obl_acc)
+        liq_acc_info = _account_info(liq_acc)
+        if not liq_acc_info:
+            return None
+        liq_raw = _acc_bytes(liq_acc_info)
+
+        liq_balances = _mfi._parse_balances(liq_raw)
+        ee_balances = _mfi._parse_balances(obl_raw)
+        if not ee_balances:
+            return None
+
+        asset_bank = banks[asset_b]
+        liab_bank = banks[liab_b]
+        ee_asset = next((b for b in ee_balances if b["bank"] == asset_b), None)
+        asset_sh = float((ee_asset or {}).get("asset_shares") or 0)
+        asset_amt = int(max(
+            asset_sh * float(asset_bank.get("asset_share_value") or 0), 1))
+        if asset_amt <= 0:
+            return None
+
+        liq_remaining = _mfi.remaining_accounts_for_balances(liq_balances, banks)
+        ee_remaining = _mfi.remaining_accounts_for_balances(ee_balances, banks)
+        liq_n = len(liq_remaining)
+        ee_n = len(ee_remaining)
+
+        prefix: list[tuple[str, bool, bool]] = []
+        for bank_pk, is_asset in ((asset_b, True), (liab_b, False)):
+            row = banks.get(bank_pk) or {}
+            if int(row.get("oracle_setup") or 0) == _mfi._ORACLE_FIXED:
+                continue
+            keys = row.get("oracle_keys") or []
+            if keys:
+                prefix.append((keys[0], False, False))
+
+        remaining = prefix + liq_remaining + ee_remaining
+        vault_auth = _marginfi_pda(b"liquidity_vault_auth", liab_b)
+        liq_vault = _marginfi_pda(b"liquidity_vault", liab_b)
+        ins_vault = _marginfi_pda(b"insurance_vault", liab_b)
+
+        ix_data = _mfi.liquidate_ix_data(asset_amt, ee_n, liq_n)
+        accounts = [
+            (_mfi.MARGINFI_GROUP, False, False),
+            (asset_b, False, True),
+            (liab_b, False, True),
+            (liq_acc, False, True),
+            (bot_pk, True, False),
+            (obl, False, True),
+            (vault_auth, False, True),
+            (liq_vault, False, True),
+            (ins_vault, False, True),
+            (TOKEN_PROGRAM, False, False),
+        ] + remaining
+
+        from solders.compute_budget import (
+            set_compute_unit_limit, set_compute_unit_price)
+        cu = int(plan.get("compute_units") or 700_000)
+        prio_ixs = [
+            set_compute_unit_limit(cu),
+            set_compute_unit_price(int(plan.get("priority_fee_ul") or 1_000)),
+        ]
+
+        bh = (latest_blockhash().get("blockhash") or "")
+        if not bh:
+            return None
+        raw = _compile_v0(
+            bot_kp, prio_ixs + [_marginfi_ix(ix_data, accounts)], bh)
+        sim_err = _sim_tx_err(raw)
+        if sim_err:
+            return None
+        if obl:
+            _PRESIGN_MEMO[obk] = time.time()
+        try:
+            slot = int((fetch_epoch_and_slot() or {}).get("slot") or 0)
+        except Exception:
+            slot = 0
+        return {
+            "_raw_tx_b64": base64.b64encode(bytes(raw)).decode(),
+            "_bh": bh,
+            "_slot": slot,
+            "_asset_amt": asset_amt,
+            "_ts": time.time(),
+            "_payer": bot_pk,
+            "_proto": "marginfi",
+            "asset_amt": asset_amt,
+        }
+    except Exception as e:  # noqa: BLE001
+        log.warning("presign_marginfi_plan failed: %s", e)
+        return None
 
 
 def hydrate_kick_obligation(
@@ -6672,42 +7235,69 @@ def _live_send_liq(plan: dict, funds: dict | None, rec: dict) -> dict:
         int(repay_amt).to_bytes(8, "little"),
         liq_accounts,
     ))
-    bh = (latest_blockhash().get("blockhash") or "")
-    if not bh:
-        rec["stage"] = "blocked"
-        rec["detail"] = "no recent blockhash"
-        rec["reasons"] = ["blockhash"]
-        return rec
-    try:
-        from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
-        prio_ixs = [
-            set_compute_unit_limit(int(plan.get("compute_units") or 400_000)),
-            set_compute_unit_price(int(plan.get("priority_fee_ul") or 1_000)),
-        ]
-    except Exception as e:
-        log.warning("Live submit failed: %s", e)
-        prio_ixs = []
-    try:
-        raw_refresh = _compile_v0(bot_kp, ixs_refresh, bh)
-        raw_liq = _compile_v0(bot_kp, prio_ixs + ixs_liq, bh)
-    except Exception as e:  # noqa: BLE001
-        rec["stage"] = "blocked"
-        rec["detail"] = f"liq tx compile failed: {type(e).__name__}: {e}"
-        rec["reasons"] = [str(e)]
-        rec["leftover"] = ["may need address lookup tables for account count"]
-        return rec
-    sim_err = _sim_tx_err(raw_liq)
-    if sim_err:
-        log.warning("Live liq sim fail: %s", sim_err)
-        rec["stage"] = "blocked"
-        rec["detail"] = f"liq simulate failed: {sim_err}"
-        rec["reasons"] = [sim_err]
-        rec["leftover"] = [
-            "common: flash disabled on reserve / insufficient liquidity",
-            "common: liquidator whitelist",
-            "common: stale oracle / extra oracle meta",
-        ]
-        return rec
+    raw_refresh: bytes | None = None
+    raw_liq: bytes | None = None
+    bh = ""
+    presigned = plan.get("presigned") or {}
+    if (
+        presigned.get("_raw_liq_b64")
+        and (time.time() - float(presigned.get("_ts") or 0)) < 120
+        and int(presigned.get("_repay_amt") or 0) > 0
+    ):
+        try:
+            raw_refresh = base64.b64decode(presigned["_raw_refresh_b64"])
+            raw_liq = base64.b64decode(presigned["_raw_liq_b64"])
+            repay_amt = int(presigned.get("_repay_amt") or repay_amt)
+            bh = presigned.get("_bh") or ""
+            rec["pre_signed"] = True
+            rec["pre_signed_age_s"] = round(
+                time.time() - float(presigned.get("_ts") or 0), 1)
+            log.info(
+                "Live liq REUSE presigned bundle obl=%s repay=%d",
+                (plan.get("obligation") or "")[:6], repay_amt)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Presigned decode failed, live compile: %s", e)
+            raw_refresh = raw_liq = None
+            rec.pop("pre_signed", None)
+            rec.pop("pre_signed_age_s", None)
+    if not raw_refresh or not raw_liq:
+        bh = (latest_blockhash().get("blockhash") or "")
+        if not bh:
+            rec["stage"] = "blocked"
+            rec["detail"] = "no recent blockhash"
+            rec["reasons"] = ["blockhash"]
+            return rec
+        try:
+            from solders.compute_budget import (
+                set_compute_unit_limit, set_compute_unit_price)
+            prio_ixs = [
+                set_compute_unit_limit(int(plan.get("compute_units") or 400_000)),
+                set_compute_unit_price(int(plan.get("priority_fee_ul") or 1_000)),
+            ]
+        except Exception as e:
+            log.warning("Live submit failed: %s", e)
+            prio_ixs = []
+        try:
+            raw_refresh = _compile_v0(bot_kp, ixs_refresh, bh)
+            raw_liq = _compile_v0(bot_kp, prio_ixs + ixs_liq, bh)
+        except Exception as e:  # noqa: BLE001
+            rec["stage"] = "blocked"
+            rec["detail"] = f"liq tx compile failed: {type(e).__name__}: {e}"
+            rec["reasons"] = [str(e)]
+            rec["leftover"] = ["may need address lookup tables for account count"]
+            return rec
+        sim_err = _sim_tx_err(raw_liq)
+        if sim_err:
+            log.warning("Live liq sim fail: %s", sim_err)
+            rec["stage"] = "blocked"
+            rec["detail"] = f"liq simulate failed: {sim_err}"
+            rec["reasons"] = [sim_err]
+            rec["leftover"] = [
+                "common: flash disabled on reserve / insufficient liquidity",
+                "common: liquidator whitelist",
+                "common: stale oracle / extra oracle meta",
+            ]
+            return rec
     cu = int(plan.get("compute_units") or 400_000)
     log.info("Live liq sim pass: cu=%d", cu)
     sol_px = float(plan.get("sol_px") or fetch_sol_price() or 0)
@@ -7224,41 +7814,68 @@ def _live_send_kamino(plan: dict, funds: dict | None, rec: dict) -> dict:
         int(repay_amt).to_bytes(8, "little"),
         liq_accounts,
     ))
-    bh = (latest_blockhash().get("blockhash") or "")
-    if not bh:
-        rec["stage"] = "blocked"
-        rec["detail"] = "no recent blockhash"
-        rec["reasons"] = ["blockhash"]
-        return rec
-    try:
-        from solders.compute_budget import (
-            set_compute_unit_limit, set_compute_unit_price)
-        prio_ixs = [
-            set_compute_unit_limit(int(plan.get("compute_units") or 400_000)),
-            set_compute_unit_price(int(plan.get("priority_fee_ul") or 1_000)),
-        ]
-    except Exception:
-        prio_ixs = []
-    try:
-        raw_refresh = _compile_v0(bot_kp, ixs_refresh, bh)
-        raw_liq = _compile_v0(bot_kp, prio_ixs + ixs_liq, bh)
-    except Exception as e:  # noqa: BLE001
-        rec["stage"] = "blocked"
-        rec["detail"] = f"kamino tx compile failed: {type(e).__name__}: {e}"
-        rec["reasons"] = [str(e)]
-        return rec
-    sim_err = _sim_tx_err(raw_liq)
-    if sim_err:
-        log.warning("Kamino liq sim fail: %s", sim_err)
-        rec["stage"] = "blocked"
-        rec["detail"] = f"kamino simulate failed: {sim_err}"
-        rec["reasons"] = [sim_err]
-        rec["leftover"] = [
-            "fork layout may differ (oracles/whitelist/stale refresh)",
-            f"obligation={obl} debt_reserve={repay_r[:8]}… "
-            f"coll_reserve={withdraw_r[:8]}…",
-        ]
-        return rec
+    raw_refresh: bytes | None = None
+    raw_liq: bytes | None = None
+    bh = ""
+    presigned = plan.get("presigned") or {}
+    if (
+        presigned.get("_raw_liq_b64")
+        and presigned.get("_proto") == "kamino"
+        and (time.time() - float(presigned.get("_ts") or 0)) < 120
+        and int(presigned.get("_repay_amt") or 0) > 0
+    ):
+        try:
+            raw_refresh = base64.b64decode(presigned["_raw_refresh_b64"])
+            raw_liq = base64.b64decode(presigned["_raw_liq_b64"])
+            repay_amt = int(presigned.get("_repay_amt") or repay_amt)
+            bh = presigned.get("_bh") or ""
+            rec["pre_signed"] = True
+            rec["pre_signed_age_s"] = round(
+                time.time() - float(presigned.get("_ts") or 0), 1)
+            log.info(
+                "Kamino REUSE presigned bundle obl=%s repay=%d",
+                obl[:6], repay_amt)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Kamino presigned decode failed, live compile: %s", e)
+            raw_refresh = raw_liq = None
+            rec.pop("pre_signed", None)
+            rec.pop("pre_signed_age_s", None)
+    if not raw_refresh or not raw_liq:
+        bh = (latest_blockhash().get("blockhash") or "")
+        if not bh:
+            rec["stage"] = "blocked"
+            rec["detail"] = "no recent blockhash"
+            rec["reasons"] = ["blockhash"]
+            return rec
+        try:
+            from solders.compute_budget import (
+                set_compute_unit_limit, set_compute_unit_price)
+            prio_ixs = [
+                set_compute_unit_limit(int(plan.get("compute_units") or 400_000)),
+                set_compute_unit_price(int(plan.get("priority_fee_ul") or 1_000)),
+            ]
+        except Exception:
+            prio_ixs = []
+        try:
+            raw_refresh = _compile_v0(bot_kp, ixs_refresh, bh)
+            raw_liq = _compile_v0(bot_kp, prio_ixs + ixs_liq, bh)
+        except Exception as e:  # noqa: BLE001
+            rec["stage"] = "blocked"
+            rec["detail"] = f"kamino tx compile failed: {type(e).__name__}: {e}"
+            rec["reasons"] = [str(e)]
+            return rec
+        sim_err = _sim_tx_err(raw_liq)
+        if sim_err:
+            log.warning("Kamino liq sim fail: %s", sim_err)
+            rec["stage"] = "blocked"
+            rec["detail"] = f"kamino simulate failed: {sim_err}"
+            rec["reasons"] = [sim_err]
+            rec["leftover"] = [
+                "fork layout may differ (oracles/whitelist/stale refresh)",
+                f"obligation={obl} debt_reserve={repay_r[:8]}… "
+                f"coll_reserve={withdraw_r[:8]}…",
+            ]
+            return rec
     log.info("Kamino liq sim pass: repay=%d obl=%s", repay_amt, obl[:8])
 
     sol_px = float(plan.get("sol_px") or fetch_sol_price() or 0)
@@ -7470,29 +8087,51 @@ def _live_send_marginfi(plan: dict, funds: dict | None, rec: dict) -> dict:
     except Exception:
         prio_ixs = []
 
-    bh = (latest_blockhash().get("blockhash") or "")
-    if not bh:
-        rec["stage"] = "blocked"
-        rec["detail"] = "no recent blockhash"
-        return rec
-    try:
-        raw = _compile_v0(bot_kp, prio_ixs + [_marginfi_ix(ix_data, accounts)], bh)
-    except Exception as e:  # noqa: BLE001
-        rec["stage"] = "blocked"
-        rec["detail"] = f"marginfi compile: {type(e).__name__}: {e}"
-        return rec
+    raw: bytes | None = None
+    bh = ""
+    presigned = plan.get("presigned") or {}
+    if (
+        presigned.get("_raw_tx_b64")
+        and presigned.get("_proto") == "marginfi"
+        and (time.time() - float(presigned.get("_ts") or 0)) < 120
+    ):
+        try:
+            raw = base64.b64decode(presigned["_raw_tx_b64"])
+            bh = presigned.get("_bh") or ""
+            rec["pre_signed"] = True
+            rec["pre_signed_age_s"] = round(
+                time.time() - float(presigned.get("_ts") or 0), 1)
+            log.info(
+                "MarginFi REUSE presigned bundle obl=%s", obl[:6])
+        except Exception as e:  # noqa: BLE001
+            log.warning("MarginFi presigned decode failed, live compile: %s", e)
+            raw = None
+            rec.pop("pre_signed", None)
+            rec.pop("pre_signed_age_s", None)
+    if not raw:
+        bh = (latest_blockhash().get("blockhash") or "")
+        if not bh:
+            rec["stage"] = "blocked"
+            rec["detail"] = "no recent blockhash"
+            return rec
+        try:
+            raw = _compile_v0(bot_kp, prio_ixs + [_marginfi_ix(ix_data, accounts)], bh)
+        except Exception as e:  # noqa: BLE001
+            rec["stage"] = "blocked"
+            rec["detail"] = f"marginfi compile: {type(e).__name__}: {e}"
+            return rec
 
-    sim_err = _sim_tx_err(raw)
-    if sim_err:
-        rec["stage"] = "blocked"
-        rec["detail"] = f"marginfi simulate failed: {sim_err}"
-        rec["reasons"] = [sim_err]
-        _exec_metric_inc("sim_failed", "marginfi")
-        rec["leftover"] = [
-            "remaining accounts / liquidator account / oracle layout",
-            f"liquidator={liq_acc[:8]}… ee={obl[:8]}…",
-        ]
-        return rec
+        sim_err = _sim_tx_err(raw)
+        if sim_err:
+            rec["stage"] = "blocked"
+            rec["detail"] = f"marginfi simulate failed: {sim_err}"
+            rec["reasons"] = [sim_err]
+            _exec_metric_inc("sim_failed", "marginfi")
+            rec["leftover"] = [
+                "remaining accounts / liquidator account / oracle layout",
+                f"liquidator={liq_acc[:8]}… ee={obl[:8]}…",
+            ]
+            return rec
 
     sol_px = float(plan.get("sol_px") or fetch_sol_price() or 0)
     pre = float(plan.get("expected_profit_usd") or plan.get("net_usd") or 0)
@@ -7553,7 +8192,8 @@ def _live_send_alt_protocol(plan: dict, funds: dict | None, rec: dict,
 
 
 def submit_sol_plan(plan: dict, *, sim_only: bool, armed: bool,
-                    funds: dict | None = None) -> dict[str, Any]:
+                    funds: dict | None = None,
+                    current_slot: int | None = None) -> dict[str, Any]:
     """Sim by default. LIVE send = Solend ix + Jito bundle (Jupiter coll→debt
     only inside flash liq when mints differ).
 
@@ -7589,7 +8229,8 @@ def submit_sol_plan(plan: dict, *, sim_only: bool, armed: bool,
         return rec
 
     obl_key = (plan or {}).get("obligation") or ""
-    if kind == "liq" and is_contested_obligation(obl_key):
+    if kind == "liq" and is_contested_obligation(
+            obl_key, current_slot=current_slot):
         rec["stage"] = "skip"
         rec["detail"] = "skip — competitor liquidated this obligation recently"
         rec["reasons"] = ["contested"]

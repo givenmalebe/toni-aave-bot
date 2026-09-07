@@ -107,84 +107,6 @@
       },
     },
   });
-  const chartHours = mkChart("chart-hours", {
-    type: "bar",
-    data: {
-      labels: Array.from({ length: 24 }, (_, h) => String(h).padStart(2, "0")),
-      datasets: [{
-        data: Array(24).fill(0),
-        backgroundColor: Array(24).fill("#22d3ee66"),
-        borderColor: "#22d3ee",
-        borderWidth: 1,
-        borderRadius: 2,
-      }],
-    },
-    options: {
-      responsive: true, animation: false, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { font: { size: 8 }, color: "#64748b", maxRotation: 0, autoSkip: true, maxTicksLimit: 12 },
-          grid: { color: "#1e293b55" } },
-        y: { beginAtZero: true, ticks: { font: { size: 9 }, color: "#64748b", maxTicksLimit: 4 },
-          grid: { color: "#1e293b55" } },
-      },
-    },
-  });
-  const chartDows = mkChart("chart-dows", {
-    type: "bar",
-    data: {
-      labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-      datasets: [{
-        data: [0, 0, 0, 0, 0, 0, 0],
-        backgroundColor: Array(7).fill("#a78bfa66"),
-        borderColor: "#a78bfa",
-        borderWidth: 1,
-        borderRadius: 2,
-      }],
-    },
-    options: {
-      responsive: true, animation: false, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { ticks: { font: { size: 9 }, color: "#64748b" }, grid: { color: "#1e293b55" } },
-        y: { beginAtZero: true, ticks: { font: { size: 9 }, color: "#64748b", maxTicksLimit: 4 },
-          grid: { color: "#1e293b55" } },
-      },
-    },
-  });
-  const gauge = mkChart("gauge", {
-    type: "doughnut",
-    data: { datasets: [{ data: [0, 100], backgroundColor: ["#22c55e", "#1e293b"], borderWidth: 0 }] },
-    options: {
-      responsive: true, animation: false, maintainAspectRatio: false,
-      cutout: "78%", plugins: { legend: { display: false }, tooltip: { enabled: false } },
-    },
-  });
-  const chartIntelTrend = mkChart("chart-intel-trend", {
-    type: "line",
-    data: {
-      labels: [],
-      datasets: [{
-        data: [], borderColor: "#22d3ee", backgroundColor: "#22d3ee22",
-        pointRadius: 0, borderWidth: 2, tension: .35, fill: true,
-      }],
-    },
-    options: {
-      responsive: true, animation: false, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { display: false },
-        y: {
-          min: 0, max: 1,
-          ticks: { font: { size: 8 }, color: "#64748b", maxTicksLimit: 3,
-            callback: (v) => Math.round(v * 100) + "%" },
-          grid: { color: "#1e293b55" },
-        },
-      },
-    },
-  });
-  const intelTrendHist = [];
-
   const mkLiqVolumeChart = (id) => mkChart(id, {
     type: "line",
     data: {
@@ -209,83 +131,14 @@
   });
   const liqVolumeChart = mkLiqVolumeChart("liq-volume-chart");
   const solLiqVolumeChart = mkLiqVolumeChart("sol-liq-volume-chart");
+  const resizeLiqCharts = (prefix) => {
+    const chart = prefix === "sol" ? solLiqVolumeChart : liqVolumeChart;
+    if (chart) {
+      try { chart.resize(); } catch (_) { /* panel hidden */ }
+    }
+  };
 
   /* ======================== SOL twin renderers ======================== */
-  const solGauge = mkChart("sol-gauge", {
-    type: "doughnut",
-    data: { datasets: [{ data: [0, 100], backgroundColor: ["#22c55e", "#1e293b"], borderWidth: 0 }] },
-    options: {
-      responsive: true, animation: false, maintainAspectRatio: false,
-      cutout: "78%", plugins: { legend: { display: false }, tooltip: { enabled: false } },
-    },
-  });
-  const solChartHours = mkChart("sol-chart-hours", {
-    type: "bar",
-    data: {
-      labels: Array.from({ length: 24 }, (_, h) => String(h).padStart(2, "0")),
-      datasets: [{
-        data: Array(24).fill(0),
-        backgroundColor: Array(24).fill("#22d3ee66"),
-        borderColor: "#22d3ee",
-        borderWidth: 1,
-        borderRadius: 2,
-      }],
-    },
-    options: {
-      responsive: true, animation: false, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { display: false },
-        y: { beginAtZero: true, ticks: { font: { size: 8 }, color: "#64748b", maxTicksLimit: 4 },
-          grid: { color: "#1e293b55" } },
-      },
-    },
-  });
-  const solChartDows = mkChart("sol-chart-dows", {
-    type: "bar",
-    data: {
-      labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-      datasets: [{
-        data: [0, 0, 0, 0, 0, 0, 0],
-        backgroundColor: Array(7).fill("#a78bfa66"),
-        borderColor: "#a78bfa",
-        borderWidth: 1,
-        borderRadius: 2,
-      }],
-    },
-    options: {
-      responsive: true, animation: false, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { display: false },
-        y: { beginAtZero: true, ticks: { font: { size: 8 }, color: "#64748b", maxTicksLimit: 4 },
-          grid: { color: "#1e293b55" } },
-      },
-    },
-  });
-  const solChartIntelTrend = mkChart("sol-chart-intel-trend", {
-    type: "line",
-    data: {
-      labels: [],
-      datasets: [{
-        data: [], borderColor: "#22d3ee", backgroundColor: "#22d3ee22",
-        pointRadius: 0, borderWidth: 2, tension: .35, fill: true,
-      }],
-    },
-    options: {
-      responsive: true, animation: false, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { display: false },
-        y: {
-          min: 0, max: 1,
-          ticks: { font: { size: 8 }, color: "#64748b", maxTicksLimit: 3,
-            callback: (v) => (v * 100).toFixed(0) + "%" },
-          grid: { color: "#1e293b55" },
-        },
-      },
-    },
-  });
   const solChartTx = mkChart("sol-chart-tx", {
     type: "line",
     data: { labels: [], datasets: [
@@ -327,7 +180,6 @@
       },
     },
   });
-  const solIntelTrendHist = [];
   let solMpFilter = "all", solOpFilter = "all", solOpProto = "all", solBcFilter = "all", solCpFilter = "all", solCpProto = "all";
   let solMpLiveCache = [], solOpCache = [], solBcRowsCache = [], solCpCache = [];
   let solWatchCache = [];
@@ -580,6 +432,11 @@
     if (o.race || o.contested)
       bits.push(`<span class="pill warn">race</span>`);
     if (o.edge) bits.push(`<span class="pill accent">edge</span>`);
+    if (o.presigned) {
+      const pt = o.presigned_proto ? o.presigned_proto + " " : "";
+      const age = o.presigned_age_s != null ? ` (${o.presigned_age_s}s)` : "";
+      bits.push(`<span class="pill ok" title="pre-signed bundle ready for ${pt.trim()}${age}">${pt}PRESIGNED</span>`);
+    }
     if (o.source) bits.push(`<span class="pill">${o.source}</span>`);
     const user = o.obligation || o.user || "";
     if (user) {
@@ -613,6 +470,17 @@
       else bcastEl.textContent = "blocked";
       bcastEl.style.color = (!bc.enabled ? "var(--amber)"
         : ready.liq ? "var(--green)" : "var(--red)");
+    }
+    const race = sol.race || {};
+    const raceEl = $("p-race");
+    if (raceEl) {
+      if (race.mode) {
+        const spent = race.tuition_spent_sol || 0, cap = race.tuition_day_sol || 0;
+        const tm = race.tip_mult || {};
+        const c = tm.contested != null ? tm.contested : 1;
+        raceEl.textContent = `RACE ${spent.toFixed(4)}/${cap} SOL mult ${c.toFixed(2)}`;
+        raceEl.style.color = spent >= cap * 0.9 ? "var(--amber)" : "var(--green)";
+      } else raceEl.textContent = "race off";
     }
     renderFeedPills(s.feeds);
   };
@@ -1397,110 +1265,6 @@
     }
   };
 
-  const updateSolIntel = (sol) => {
-    const intel = sol.intel || {};
-    const set = (id, v, cls) => {
-      const e = $(id); if (!e) return;
-      e.textContent = v;
-      if (cls) e.className = "big " + cls;
-    };
-    set("sol-intel-act", intel.act_p != null ? fmt.num(intel.act_p, 2) : "--");
-    set("sol-intel-exp", intel.exp_net != null ? fmt.usd(intel.exp_net, 4) : "--", "amber");
-    set("sol-intel-steps", fmt.num(intel.steps, 0), "dim");
-    set("sol-intel-records", fmt.num(intel.records, 0));
-    const advice = $("sol-in-advice");
-    if (advice) advice.textContent = (intel.brain && intel.brain.advice) || "warming up";
-    const badge = $("sol-in-pressure");
-    if (badge) {
-      const p = intel.readiness >= 70 ? "elevated" : intel.readiness >= 30 ? "quiet" : "idle";
-      badge.textContent = p;
-      badge.className = "in-pressure-badge " + p;
-    }
-    const pct = $("sol-in-ready-pct");
-    if (pct) pct.textContent = String(intel.readiness != null ? intel.readiness : 0);
-    if (solGauge) {
-      const r = Math.max(0, Math.min(100, Number(intel.readiness) || 0));
-      solGauge.data.datasets[0].data = [r, 100 - r];
-      solGauge.update("none");
-    }
-    const hours = intel.hours || {};
-    if (solChartHours) {
-      solChartHours.data.datasets[0].data = Array.from({ length: 24 }, (_, h) => hours[String(h)] || 0);
-      solChartHours.update("none");
-    }
-    const dows = intel.dows || {};
-    if (solChartDows) {
-      solChartDows.data.datasets[0].data = Array.from({ length: 7 }, (_, d) => dows[String(d)] || 0);
-      solChartDows.update("none");
-    }
-    const brain = $("sol-intel-brain");
-    if (brain) {
-      const b = intel.brain || {};
-      brain.innerHTML =
-        `<span>protocol <b>${b.protocol || sol.protocol || "Solend"}</b></span>` +
-        `<span>liq× <b>${fmt.num(b.min_liq_mult, 2)}</b></span>` +
-        `<span>edge <b>${b.prefer_edge ? "on" : "off"}</b></span>`;
-    }
-    const mev = intel.mev || {};
-    const track = $("sol-in-mix-track");
-    const keys = $("sol-intel-mev");
-    const tot = Object.values(mev).reduce((a, b) => a + (Number(b) || 0), 0) || 1;
-    if (track) track.innerHTML = Object.entries(mev).map(([k, v]) =>
-      `<i style="width:${Math.max(4, 100 * (Number(v) || 0) / tot)}%;background:#a78bfa"></i>`
-    ).join("");
-    if (keys) keys.innerHTML = Object.entries(mev).map(([k, v]) =>
-      `<span>${k} <b>${v}</b></span>`
-    ).join("") || `<span class="dim">waiting…</span>`;
-    if (intel.act_p != null) {
-      solIntelTrendHist.push(intel.act_p);
-      if (solIntelTrendHist.length > 60) solIntelTrendHist.shift();
-      if (solChartIntelTrend) {
-        solChartIntelTrend.data.labels = solIntelTrendHist.map((_, i) => i);
-        solChartIntelTrend.data.datasets[0].data = solIntelTrendHist;
-        solChartIntelTrend.update("none");
-      }
-    }
-  };
-
-  const updateSolPrices = (sol) => {
-    const set = (id, v, cls) => {
-      const e = $(id); if (!e) return;
-      e.textContent = v;
-      if (cls) e.className = "big " + cls;
-    };
-    if (sol.sol_price_usd != null) set("sol-mc-price", fmt.usd(sol.sol_price_usd));
-    set("sol-mc-gas", sol.priority_fee != null ? fmt.num(sol.priority_fee, 0) + " µl" : "--", "amber");
-    set("sol-mc-updated", sastClock(), "dim");
-    const meta = $("sol-mc-meta");
-    if (meta) {
-      const tf = ($("sol-mc-tf") && $("sol-mc-tf").textContent) || "1H";
-      meta.innerHTML =
-        `<span>slot <b>${sol.slot != null ? fmt.num(sol.slot, 0) : "--"}</b></span>` +
-        `<span>epoch <b>${sol.epoch != null ? fmt.num(sol.epoch, 0) : "--"}</b></span>` +
-        `<span>tf <b>${tf}</b></span>` +
-        `<span>rpc <b>${(sol.rpc || "").replace(/^https?:\/\//, "").slice(0, 28) || "--"}</b></span>`;
-    }
-    const reserves = $("sol-reserves-list");
-    const res = (sol.prices && sol.prices.reserves) || {};
-    if (reserves) {
-      const keys = Object.keys(res);
-      reserves.innerHTML = keys.length
-        ? keys.map((k) => {
-            const r = res[k] || {};
-            const util = Number(r.util_pct);
-            const cls = util >= 80 ? "dn" : util >= 50 ? "up" : "";
-            return `<div class="mc-res-cell ${cls}">
-              <span class="mc-res-sym">${k}</span>
-              <span class="mc-res-px">util ${r.util_pct ?? "--"}%</span>
-              <span class="mc-res-d">borrow ${r.borrow_apy ?? "--"}%</span>
-            </div>`;
-          }).join("")
-        : `<div class="mc-res-empty">Solend reserves loading…</div>`;
-    }
-    const delta = $("sol-res-delta");
-    if (delta) delta.textContent = sol.protocol || "Solend";
-  };
-
   const updateSolLog = (s) => {
     const lines = (s.log || []).filter((l) => String(l.cat || "").startsWith("sol"));
     solLogLines = lines.slice(-200);
@@ -1537,107 +1301,6 @@
     if (solAlAutoscroll && feed) feed.scrollTop = feed.scrollHeight;
   };
 
-  const BAR_SEC = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400 };
-  const toBarTime = (ts, interval) => {
-    const n = Number(ts);
-    if (!n) return 0;
-    const sec = n > 1e12 ? Math.floor(n / 1000) : Math.floor(n);
-    const step = BAR_SEC[interval] || 3600;
-    return Math.floor(sec / step) * step;
-  };
-
-  const buildTradeMarkers = (trades, interval) => {
-    if (!trades || !trades.length) return [];
-    const bucket = new Map();
-    const put = (time, kind, t) => {
-      if (!time) return;
-      const key = time + ":" + kind;
-      const cur = bucket.get(key) || { time, kind, n: 0, t };
-      cur.n += 1;
-      cur.t = t;
-      bucket.set(key, cur);
-    };
-    trades.forEach((t) => {
-      const dir = String(t.direction || "long").toLowerCase();
-      put(toBarTime(t.entry_ts, interval), dir === "short" ? "short" : "long", t);
-      if (t.leg1_exit_ts) put(toBarTime(t.leg1_exit_ts, interval), "tp", t);
-      if (t.leg2_exit_ts) {
-        put(toBarTime(t.leg2_exit_ts, interval), t.exit_reason === "stop_loss" ? "sl" : "trail", t);
-      }
-    });
-    const spec = {
-      long:  { position: "belowBar", color: "#22c55e", shape: "arrowUp",   label: (b) => b.n > 1 ? "L×" + b.n : "L" },
-      short: { position: "aboveBar", color: "#f87171", shape: "arrowDown", label: (b) => b.n > 1 ? "S×" + b.n : "S" },
-      tp:    { position: "aboveBar", color: "#22d3ee", shape: "circle",    label: () => "TP" },
-      trail: { position: "aboveBar", color: "#f59e0b", shape: "square",    label: () => "T" },
-      sl:    { position: "aboveBar", color: "#ef4444", shape: "square",    label: () => "SL" },
-    };
-    return [...bucket.values()]
-      .sort((a, b) => a.time - b.time)
-      .slice(-14)
-      .map((b) => {
-        const s = spec[b.kind];
-        if (!s) return null;
-        return { time: b.time, position: s.position, color: s.color, shape: s.shape, text: s.label(b) };
-      })
-      .filter(Boolean);
-  };
-
-  const renderTradeTape = (id, trades) => {
-    const el = $(id);
-    if (!el) return;
-    const rows = (trades || []).slice(-8).reverse();
-    if (!rows.length) {
-      el.innerHTML = `<span class="mc-tape-empty">no paper fills yet</span>`;
-      return;
-    }
-    el.innerHTML = rows.map((t) => {
-      const dir = String(t.direction || "long").toLowerCase();
-      const pnl = Number(t.total_pnl != null ? t.total_pnl : t.leg2_pnl) || 0;
-      const why = t.exit_reason === "stop_loss" ? "SL" : t.exit_reason === "trail_stop" ? "TRAIL" : (t.exit_reason || "open");
-      const cls = pnl > 0 ? "win" : pnl < 0 ? "loss" : "flat";
-      return `<div class="mc-tape-row ${dir} ${cls}">
-        <span class="mc-tape-dir">${dir}</span>
-        <span class="mc-tape-px">$${fmt.num(t.entry_price, 2)}</span>
-        <span class="mc-tape-pnl">${pnl >= 0 ? "+" : ""}$${fmt.num(pnl, 2)}</span>
-        <span class="mc-tape-why">${why}</span>
-      </div>`;
-    }).join("");
-  };
-
-  const paperLines = { eth: {}, sol: {} };
-  const applyPaperLevels = (key, series, paper) => {
-    const store = paperLines[key];
-    const dash = (window.LightweightCharts && LightweightCharts.LineStyle)
-      ? LightweightCharts.LineStyle.Dashed : 2;
-    const clear = (name) => {
-      if (store[name] && series) {
-        try { series.removePriceLine(store[name]); } catch (e) { /* gone */ }
-        store[name] = null;
-      }
-    };
-    if (!series || !paper || !paper.position) {
-      ["entry", "sl", "trail", "tp"].forEach(clear);
-      return;
-    }
-    const p = paper.position;
-    const dir = p.direction === "short" ? "short" : "long";
-    const tp1 = Number(p.entry_price) + (dir === "long" ? 1 : -1) * Number(p.range_height || 0) * 1.5;
-    const sl = dir === "long" ? p.range_low : p.range_high;
-    [
-      { name: "entry", price: p.entry_price, color: dir === "long" ? "#22c55e" : "#f87171", title: dir === "long" ? "LONG" : "SHORT" },
-      { name: "tp", price: tp1, color: "#22d3ee", title: "TP1" },
-      { name: "trail", price: p.trail_stop, color: "#f59e0b", title: "TRAIL" },
-      { name: "sl", price: sl, color: "#ef4444", title: "SL" },
-    ].forEach(({ name, price, color, title }) => {
-      const px = Number(price);
-      if (!Number.isFinite(px) || px <= 0) { clear(name); return; }
-      const opts = { price: px, color, title, lineWidth: 1, lineStyle: dash, axisLabelVisible: true, lineVisible: true };
-      if (store[name]) store[name].applyOptions(opts);
-      else store[name] = series.createPriceLine(opts);
-    });
-  };
-
   const renderSol = (s) => {
     const sol = s.sol || {};
     window.__lastSolBcast = sol.broadcast || {};
@@ -1649,14 +1312,7 @@
     updateSolCompetitors(sol, s.hist);
     updateSolBroadcast(sol);
     updateLiqIntel(s, "sol");
-    updateTradingIntel(s, "sol");
-    updateSolPrices(sol);
     updateSolLog(s);
-    if (solSeries) solSeries.setMarkers(buildTradeMarkers(s.paper_sol && s.paper_sol.recent_trades, solInterval));
-    updateRangeLines(solChart, solRangeHigh, solRangeLow, s.paper_sol);
-    applyPaperLevels("sol", solSeries, s.paper_sol);
-    renderTradeTape("sol-mc-tape", s.paper_sol && s.paper_sol.recent_trades);
-    renderPaperPanel("sol", s.paper_sol);
   };
 
   const postSolControl = async (body) => {
@@ -1746,6 +1402,13 @@
     $("p-gas").textContent = (s.gas_gwei != null ? s.gas_gwei + " gwei" : "--");
     $("p-gas").style.color = s.gas_class === "hot" ? "var(--red)" : s.gas_class === "normal" ? "var(--amber)" : "var(--green)";
     $("p-eth").textContent = (s.eth_price_usd != null ? fmt.usd(s.eth_price_usd) : "--");
+    const ethBidEl = $("p-eth-bid-v");
+    if (ethBidEl) {
+      const er = s.eth_race || {};
+      const tm = er.bid_mult || {};
+      const c = tm.contested != null ? tm.contested : 1;
+      ethBidEl.textContent = c.toFixed(2);
+    }
     $("p-ready").textContent = (s.intel ? s.intel.readiness : 0) + "%";
     const bc = s.broadcast || {};
     const ready = bc.ready || {};
@@ -1757,6 +1420,8 @@
       bcastEl.style.color = (!bc.enabled ? "var(--amber)"
         : ready.liq ? "var(--green)" : "var(--red)");
     }
+    const raceEl = $("p-race");
+    if (raceEl) raceEl.textContent = "--";
     renderFeedPills(s.feeds);
     $("sys-info").textContent = "uptime " + fmt.age(s.started) + " | ws " + (s.now ? "live" : "--");
   };
@@ -2838,159 +2503,6 @@
     renderCompFeed();
   };
 
-  const binCount = (obj, key) => {
-    if (!obj) return 0;
-    const v = obj[key];
-    if (v != null && !Number.isNaN(+v)) return +v;
-    const s = obj[String(key)];
-    return (s != null && !Number.isNaN(+s)) ? +s : 0;
-  };
-
-  const updateTradingIntel = (s, prefix) => {
-    const intel = prefix === "sol" ? (s.sol && s.sol.intel) : s.intel;
-    const i = intel || {};
-    const b = i.brain || {};
-    const ready = Number(i.readiness) || 0;
-    const pressure = i.pressure || (ready >= 50 ? "hot" : ready >= 25 ? "busy" : ready >= 8 ? "quiet" : "idle");
-    const pfx = prefix ? prefix + "-" : "";
-
-    const setTxt = (id, v) => { const el = $(pfx + id); if (el) el.textContent = v; };
-    setTxt("intel-records", fmt.num(i.records, 0));
-    setTxt("intel-moves", fmt.num(i.moves, 0));
-    setTxt("intel-block", i.last ? (i.last.block || "--") : "--");
-    const actRaw = b.act_prob != null ? Number(b.act_prob) : (i.act_p != null ? Number(i.act_p) : null);
-    setTxt("intel-act", actRaw != null ? (actRaw <= 1 ? (actRaw * 100).toFixed(1) + "%" : actRaw.toFixed(1) + "%") : "--");
-    setTxt("intel-steps", fmt.num(b.steps != null ? b.steps : i.steps, 0));
-
-    const expEl = $(pfx + "intel-exp");
-    if (expEl) {
-      const exp = b.exp_net_usd != null ? b.exp_net_usd : i.exp_net;
-      expEl.textContent = fmt.usd(exp);
-      expEl.classList.toggle("green", (exp || 0) > 0);
-      expEl.classList.toggle("amber", !(exp > 0));
-    }
-
-    const badge = $(pfx + "in-pressure");
-    if (badge && !badge.classList.contains("liq-pressure-badge")) {
-      badge.textContent = pressure;
-      badge.className = "in-pressure-badge " + pressure;
-    }
-    setTxt("in-advice", b.advice || i.advice || "warming up");
-    setTxt("in-ready-pct", ready ? fmt.num(ready, 0) : "0");
-
-    const meta = $(pfx + "in-meta");
-    if (meta) {
-      const last = i.last || {};
-      meta.innerHTML =
-        `<span>moves <b>${fmt.num(i.moves, 0)}</b></span>` +
-        `<span>${last.slot != null ? "slot" : "block"} <b>${last.block != null ? last.block : (last.slot != null ? last.slot : "--")}</b></span>` +
-        `<span>gas <b>${last.gas != null ? fmt.num(last.gas, 1) : "--"}</b></span>` +
-        `<span>mempool <b>${fmt.num(last.mempool_txs, 0)}</b></span>` +
-        (i.hours_source ? `<span>hours <b>${i.hours_source}</b></span>` : "");
-    }
-
-    const gaugeChart = prefix === "sol" ? solGauge : gauge;
-    if (gaugeChart) {
-      const filled = Math.max(0, Math.min(100, ready));
-      const color = filled > 50 ? "#22c55e" : filled > 20 ? "#f59e0b" : "#ef4444";
-      gaugeChart.data.datasets[0].data = [filled, Math.max(0.001, 100 - filled)];
-      gaugeChart.data.datasets[0].backgroundColor = [color, "#1e293b"];
-      gaugeChart.update("none");
-    }
-
-    const hours = i.hours || {};
-    const hourVals = Array.from({ length: 24 }, (_, h) => binCount(hours, h));
-    const hourMax = Math.max(1, ...hourVals);
-    const hoursChart = prefix === "sol" ? solChartHours : chartHours;
-    if (hoursChart) {
-      hoursChart.data.labels = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, "0"));
-      hoursChart.data.datasets[0].data = hourVals;
-      hoursChart.data.datasets[0].backgroundColor = hourVals.map((v) => {
-        const t = v / hourMax;
-        return t > 0.66 ? "#22d3ee" : t > 0.33 ? "#22d3eebb" : "#22d3ee66";
-      });
-      hoursChart.update("none");
-    }
-    const hoursNote = $(pfx + "in-hours-note");
-    if (hoursNote) {
-      const sum = hourVals.reduce((a, c) => a + c, 0);
-      hoursNote.textContent = sum ? `Σ ${fmt.num(sum, 0)}` : "empty";
-    }
-
-    const dows = i.dows || {};
-    const dowVals = Array.from({ length: 7 }, (_, d) => binCount(dows, d));
-    const dowMax = Math.max(1, ...dowVals);
-    const dowsChart = prefix === "sol" ? solChartDows : chartDows;
-    if (dowsChart) {
-      dowsChart.data.datasets[0].data = dowVals;
-      dowsChart.data.datasets[0].backgroundColor = dowVals.map((v) => {
-        const t = v / dowMax;
-        return t > 0.66 ? "#a78bfa" : t > 0.33 ? "#a78bfabb" : "#a78bfa66";
-      });
-      dowsChart.update("none");
-    }
-
-    const mv = i.mev || {};
-    const mevKeys = ["liq", "router", "spoke", "aave", "create"];
-    const mevTotal = mevKeys.reduce((a, k) => a + (Number(mv[k]) || 0), 0) || 1;
-    const track = $(pfx + "in-mix-track");
-    if (track) {
-      track.innerHTML = mevKeys.map((k) => {
-        const n = Number(mv[k]) || 0;
-        const pct = Math.max(n ? 2 : 0, (n / mevTotal) * 100);
-        return n ? `<span class="${k}" style="width:${pct}%" title="${k}: ${n}"></span>` : "";
-      }).join("");
-    }
-    const mevEl = $(pfx + "intel-mev");
-    if (mevEl) {
-      mevEl.innerHTML = mevKeys.map((k) =>
-        `<span class="${k}">${k} <b>${fmt.num(mv[k], 0)}</b></span>`
-      ).join("");
-    }
-
-    const bp = $(pfx + "intel-brain");
-    if (bp) {
-      const confColor = (b.confidence || 0) > 0.4 ? "var(--green)" : "var(--amber)";
-      bp.innerHTML =
-        `<span>model <b>${(b.model || "DeepProfit").split(" ")[0]}</b></span>` +
-        `<span>conf <b style="color:${confColor}">${fmt.num((b.confidence || 0) * 100, 0)}%</b></span>` +
-        `<span>acc <b>${fmt.num((b.acc_ema || 0) * 100, 0)}%</b></span>` +
-        `<span>loss <b>${fmt.num(b.loss_ema, 3)}</b></span>` +
-        `<span>replay <b>${fmt.num(b.replay, 0)}</b></span>` +
-        `<span>liq× <b>${fmt.num(b.min_liq_mult, 2)}</b></span>` +
-        `<span>cadence× <b>${fmt.num(b.cadence_mult, 2)}</b></span>` +
-        `<span>edge <b style="color:${b.prefer_edge ? "var(--cyan)" : "var(--dim)"}">${b.prefer_edge ? "prefer" : "off"}</b></span>`;
-    }
-    const brainNote = $(pfx + "in-brain-note");
-    if (brainNote) brainNote.textContent = b.prefer_edge ? "edge on" : "policy";
-
-    const trendChart = prefix === "sol" ? solChartIntelTrend : chartIntelTrend;
-    const trendHist = prefix === "sol" ? solIntelTrendHist : intelTrendHist;
-    const trendVal = actRaw != null ? Math.max(0, Math.min(1, actRaw > 1 ? actRaw / 100 : actRaw)) : null;
-    if (trendChart && trendVal != null) {
-      trendHist.push(trendVal);
-      if (trendHist.length > 48) trendHist.shift();
-      trendChart.data.labels = trendHist.map((_, idx) => idx);
-      trendChart.data.datasets[0].data = trendHist.slice();
-      trendChart.update("none");
-    }
-
-    const paper = prefix === "sol" ? s.paper_sol : s.paper_eth;
-    if (paper) {
-      const st = paper.stats || {};
-      const pfxPaper = prefix === "sol" ? "sol" : "eth";
-      const setP = (id, v) => { const e = $(pfxPaper + "-intel-paper-" + id); if (e) e.textContent = v; };
-      setP("bal", "$" + fmt.num(paper.balance, 2));
-      const pnl = st.pnl || 0;
-      setP("pnl", `${pnl >= 0 ? "+" : ""}$${fmt.num(pnl, 2)}`);
-      setP("wl", `${st.wins || 0} / ${st.losses || 0}`);
-      setP("wr", st.win_rate ? st.win_rate + "%" : "--");
-      setP("count", String(st.total_trades || 0));
-      const pnlEl = $(pfxPaper + "-intel-paper-pnl");
-      if (pnlEl) pnlEl.style.color = pnl > 0 ? "var(--green)" : pnl < 0 ? "var(--red)" : "";
-    }
-  };
-
   const hfBucket = (hf) => {
     const n = Number(hf);
     if (n == null || Number.isNaN(n)) return null;
@@ -3006,7 +2518,57 @@
     if (p.includes("morpho")) return "morpho";
     if (p.includes("spark")) return "spark";
     if (p.includes("solend")) return "solend";
+    if (p.includes("kamino")) return "kamino";
+    if (p.includes("marginfi") || p.includes("margin fi")) return "marginfi";
+    if (p.includes("drift")) return "drift";
     return "aave_v3";
+  };
+  const LIQ_HF_BUCKETS = ["<1.0", "1.0-1.05", "1.05-1.1", ">1.1"];
+  const mergeHealthDist = (a, b) => {
+    const out = {};
+    let sumA = 0;
+    let sumB = 0;
+    LIQ_HF_BUCKETS.forEach((k) => {
+      const av = Number((a || {})[k]) || 0;
+      const bv = Number((b || {})[k]) || 0;
+      sumA += av;
+      sumB += bv;
+      out[k] = 0;
+    });
+    const src = sumB > 0 ? b : a;
+    LIQ_HF_BUCKETS.forEach((k) => { out[k] = Number((src || {})[k]) || 0; });
+    return out;
+  };
+  const mergeProtocols = (a, b) => {
+    const out = {};
+    const keys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+    keys.forEach((k) => {
+      const av = (a || {})[k] || {};
+      const bv = (b || {})[k] || {};
+      const count = Math.max(Number(av.count) || 0, Number(bv.count) || 0);
+      const volume = Math.max(Number(av.volume) || 0, Number(bv.volume) || 0);
+      if (count || volume) out[k] = { count, volume };
+    });
+    return out;
+  };
+  const mergeLiqIntel = (backend, live) => {
+    const b = backend || {};
+    const l = live || {};
+    const useLiveVol = (Number(l.count_24h) || 0) > 0;
+    const hist = (b.volume_history && b.volume_history.length)
+      ? b.volume_history
+      : (l.volume_history || []);
+    return {
+      volume_24h: useLiveVol ? l.volume_24h : (Number(b.volume_24h) || Number(l.volume_24h) || 0),
+      count_24h: useLiveVol ? l.count_24h : (Number(b.count_24h) || Number(l.count_24h) || 0),
+      avg_size: useLiveVol ? l.avg_size : (Number(b.avg_size) || Number(l.avg_size) || 0),
+      gas_per_liq: Number(l.gas_per_liq) || Number(b.gas_per_liq) || 0,
+      protocols: mergeProtocols(b.protocols, l.protocols),
+      health_dist: mergeHealthDist(b.health_dist, l.health_dist),
+      competitors: Object.assign({}, b.competitors || {}, l.competitors || {}),
+      volume_history: hist,
+      pressure: l.pressure || b.pressure || "idle",
+    };
   };
   const liveLiqIntel = (src, backend) => {
     const comps = src.competitors || [];
@@ -3021,6 +2583,9 @@
       morpho: { count: 0, volume: 0 },
       spark: { count: 0, volume: 0 },
       solend: { count: 0, volume: 0 },
+      kamino: { count: 0, volume: 0 },
+      marginfi: { count: 0, volume: 0 },
+      drift: { count: 0, volume: 0 },
     };
     const health = { "<1.0": 0, "1.0-1.05": 0, "1.05-1.1": 0, ">1.1": 0 };
     let volume = 0, count = 0, gasSum = 0, gasN = 0;
@@ -3055,8 +2620,7 @@
     else if (n1h >= 1) pressure = "quiet";
     const hist = (backend && backend.volume_history) || [];
     const volume_history = Object.keys(buckets).sort().map((t) => ({ ts: Number(t), volume: buckets[t] }));
-    if (count === 0 && backend && (backend.count_24h || 0) > 0) return backend;
-    return {
+    return mergeLiqIntel(backend, {
       volume_24h: volume,
       count_24h: count,
       avg_size: count ? volume / count : 0,
@@ -3070,7 +2634,7 @@
       },
       volume_history: volume_history.length ? volume_history : hist,
       pressure,
-    };
+    });
   };
 
   const updateLiqIntel = (s, prefix) => {
@@ -3096,8 +2660,14 @@
     const protoBar = el("liq-proto-bar");
     const protoLabels = el("liq-proto-labels");
     if (protoBar && li.protocols) {
-      const colors = { aave_v3: "#22d3ee", compound_v3: "#22c55e", morpho: "#a78bfa", spark: "#f59e0b", solend: "#c084fc" };
-      const names = { aave_v3: "Aave", compound_v3: "Compound", morpho: "Morpho", spark: "Spark", solend: "Solend" };
+      const colors = {
+        aave_v3: "#22d3ee", compound_v3: "#22c55e", morpho: "#a78bfa", spark: "#f59e0b",
+        solend: "#c084fc", kamino: "#38bdf8", marginfi: "#4ade80", drift: "#fb7185",
+      };
+      const names = {
+        aave_v3: "Aave", compound_v3: "Compound", morpho: "Morpho", spark: "Spark",
+        solend: "Solend", kamino: "Kamino", marginfi: "MarginFi", drift: "Drift",
+      };
       const entries = Object.entries(li.protocols).filter(([, v]) => (v && v.count) || 0);
       const total = entries.reduce((sum, [, p]) => sum + (p.count || 0), 0) || 1;
       if (!entries.length) {
@@ -3176,6 +2746,7 @@
       if (pcSolHits) pcSolHits.textContent = fmt.num(solPc.hits, 0);
       if (pcSolPos) pcSolPos.textContent = fmt.num(solPc.positions, 0);
     }
+    requestAnimationFrame(() => resizeLiqCharts(prefix === "sol" ? "sol" : "eth"));
   };
 
   let bcFilter = "all";
@@ -3425,63 +2996,6 @@
     } catch (e) {
       return null;
     }
-  };
-
-  const updatePrices = (s) => {
-    const gasEl = $("mc-gas");
-    if (gasEl) {
-      gasEl.textContent = s.gas_gwei != null ? fmt.num(s.gas_gwei, 2) + " gwei" : "--";
-      gasEl.className = "big " + (s.gas_class === "hot" ? "red" : s.gas_class === "normal" ? "amber" : "green");
-    }
-    if (s.eth_price_usd != null && $("mc-eth-price") && !window.__mcCandlePrice) {
-      $("mc-eth-price").textContent = fmt.usd(s.eth_price_usd);
-    }
-    const meta = $("mc-meta");
-    if (meta) {
-      const bits = [];
-      if (s.eth_price_usd != null) bits.push(`<span>oracle eth <b>${fmt.usd(s.eth_price_usd)}</b></span>`);
-      if (s.gas_gwei != null) bits.push(`<span>gas <b>${fmt.num(s.gas_gwei, 2)} gwei</b></span>`);
-      bits.push(`<span>tf <b>${(window.__mcInterval || "1h").toUpperCase()}</b></span>`);
-      bits.push(`<span>source <b>Binance</b></span>`);
-      meta.innerHTML = bits.join("");
-    }
-    const prices = s.prices || {};
-    const res = prices.reserves || {};
-    const deltaMap = {};
-    (prices.deltas || []).forEach(([rid, sym, pct]) => (deltaMap[rid] = pct));
-    const deltaEl = $("res-delta");
-    if (deltaEl) {
-      const movers = Object.entries(deltaMap).filter(([, p]) => p);
-      deltaEl.textContent = movers.length
-        ? movers.slice(0, 3).map(([r, p]) => `${RESERVE_SYMS[+r] || r} ${p > 0 ? "+" : ""}${p}%`).join(" · ")
-        : "stable";
-    }
-    const list = $("reserves-list");
-    if (list) {
-      const rows = Object.entries(res).slice(0, 14);
-      list.innerHTML = rows.length
-        ? rows.map(([rid, v]) => {
-            const sym = RESERVE_SYMS[+rid] || rid;
-            const d = deltaMap[rid];
-            const cls = d > 0 ? "up" : d < 0 ? "dn" : "";
-            const dTxt = d ? `${d > 0 ? "+" : ""}${d}%` : "flat";
-            return `<div class="mc-res-cell ${cls}">
-              <span class="mc-res-sym">${sym}</span>
-              <span class="mc-res-px">${fmt.num(v / 1e8, 2)}</span>
-              <span class="mc-res-d">${dTxt}</span>
-            </div>`;
-          }).join("")
-        : `<div class="mc-res-empty">Aave oracle reserves loading…</div>`;
-    }
-  };
-
-  const pushSeries = (chart, arr) => {
-    if (!chart || !Array.isArray(arr)) return;
-    const len = arr.length;
-    chart.data.labels = arr.map((p, i) => i);
-    chart.data.datasets[0].data = arr.map((p) => p[1]);
-    chart.update();
-    void len;
   };
 
   /* ------------------------------------------------ Activity Log (al-*) */
@@ -3763,531 +3277,402 @@
     }
   };
 
-  /* ------------------------------------------------ candlesticks (lightweight-charts) — ETH/USD only */
-  const MC_INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"];
-  const MC_LIMITS = { "1m": 240, "5m": 240, "15m": 200, "1h": 180, "4h": 180, "1d": 180 };
-  let ethChart = null, ethSeries = null;
-  let ethRangeHigh = null, ethRangeLow = null;
-  let mcInterval = "1h";
-  let mcLoadSeq = 0;
-  window.__mcInterval = mcInterval;
-  const candleStyle = {
-    upColor: "#22c55e", downColor: "#ef4444",
-    borderUpColor: "#22c55e", borderDownColor: "#ef4444",
-    wickUpColor: "#22c55e", wickDownColor: "#ef4444",
+/* ------------------------------------------------ AI Manager workspace */
+  let mgrReady = false;
+  let mgrPollTimer = null;
+  let mgrWinRateChart = null;
+  let mgrProfitChart = null;
+  let mgrEquityChart = null;
+
+  const mgrApi = async (url, opts) => {
+    const r = await fetch(url, opts);
+    const txt = await r.text();
+    let d = null;
+    try { d = JSON.parse(txt); } catch (e) {
+      if (!r.ok) {
+        return { error: true, status: r.status, body: txt };
+      }
+    }
+    return d;
   };
 
-  const setMcChg = (pct) => {
-    const el = $("mc-eth-chg");
-    if (!el || pct == null || isNaN(pct)) return;
-    const sign = pct > 0 ? "+" : "";
-    el.textContent = sign + pct.toFixed(2) + "%";
-    el.className = "big " + (pct > 0 ? "green" : pct < 0 ? "red" : "dim");
-  };
-
-  const initCandles = () => {
-    const el = $("eth-candles");
+  const mgrSrvHint = (d) => {
+    const el = $("mgr-srv-hint");
     if (!el) return;
-    el.querySelector(".lwc-msg")?.remove();
-    const h = el.clientHeight || 340;
-    ethChart = LightweightCharts.createChart(el, {
-      width: el.clientWidth || 600, height: h,
-      layout: { background: { type: "solid", color: "transparent" }, textColor: "#64748b", fontFamily: "JetBrains Mono, monospace" },
-      grid: { vertLines: { color: "#1e293b40" }, horzLines: { color: "#1e293b40" } },
-      rightPriceScale: { borderColor: "#334155", scaleMargins: { top: 0.08, bottom: 0.14 } },
-      timeScale: { borderColor: "#334155", timeVisible: true, secondsVisible: false, rightOffset: 4 },
-      crosshair: { mode: 1 },
-    });
-    ethSeries = ethChart.addCandlestickSeries(candleStyle);
-    ethRangeHigh = ethChart.addLineSeries({
-      color: "#22d3ee", lineWidth: 1, lineStyle: 2,
-      priceLineVisible: false, lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    ethRangeLow = ethChart.addLineSeries({
-      color: "#f59e0b", lineWidth: 1, lineStyle: 2,
-      priceLineVisible: false, lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    const resize = () => {
-      const box = $("eth-candles");
-      if (!box || !ethChart) return;
-      ethChart.applyOptions({ width: box.clientWidth || 600, height: box.clientHeight || 340 });
-    };
-    window.addEventListener("resize", resize);
-    requestAnimationFrame(resize);
+    if (d && d.status === 404) {
+      el.textContent = "AI Manager API not found — restart the dashboard (Stop, run dashboard.py again) so the new routes load.";
+      el.classList.add("show");
+    } else if (d && (d.error || d.status >= 400)) {
+      el.textContent = `Server error ${d.status || ""}: ${String(d.body || d.message || "?").slice(0, 160)}`;
+      el.classList.add("show");
+    } else {
+      el.classList.remove("show");
+    }
   };
 
-  const updateRangeLines = (chart, hiSeries, loSeries, paper) => {
-    if (!chart || !hiSeries || !loSeries || !paper || !paper.range_ready) {
-      if (hiSeries) hiSeries.setData([]);
-      if (loSeries) loSeries.setData([]);
+  const ensureManagerWorkspace = () => {
+    if (mgrReady) { refreshManager(); return; }
+    mgrReady = true;
+    $("mgr-chat-send")?.addEventListener("click", mgrSendChat);
+    $("mgr-chat-input")?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") mgrSendChat();
+    });
+    refreshManager();
+    mgrPollTimer = setInterval(refreshManager, 5000);
+  };
+
+  const refreshManager = async () => {
+    const s = await mgrApi("/api/manager/status");
+    const bi = await mgrApi("/api/manager/bi");
+    if (s && !s.error) {
+      renderMgrStatus(s);
+      renderMgrApprovals(s.pending_approvals || []);
+    }
+    if (bi && !bi.error) {
+      renderMgrBI(bi);
+      renderMgrChanges(bi.changes_count || 0);
+    }
+    mgrSrvHint(s && s.error ? s : bi && bi.error ? bi : null);
+  };
+
+  const fmtNum = (v, d = 2) => (v == null || isNaN(v) ? "--" : Number(v).toFixed(d));
+  const esc = (s) => String(s ?? "").replace(/</g, "&lt;").replace(/`/g, "&#96;").replace(/\$\{/g, "&#36;{");
+
+  const renderMgrStatus = (s) => {
+    const set = (id, v) => { const e = $(id); if (e) e.textContent = v; };
+    set("mgr-model", s.model || s.error || "--");
+    set("mgr-tools", s.tools_count ?? "--");
+    set("mgr-skills", s.skills_count ?? "--");
+    set("mgr-memory", s.memory_facts ?? "--");
+    set("mgr-agents-q", s.agents_count ?? "--");
+    set("mgr-pending", String((s.pending_approvals || []).length));
+    const tag = $("mgr-status-tag");
+    if (tag) tag.textContent = s.configured
+      ? (s.pending_approvals?.length ? `${s.pending_approvals.length} need approval` : "operational")
+      : "no API key in .env";
+  };
+
+  const renderMgrBI = (bi) => {
+    const el = $("mgr-bi-metrics");
+    if (!el) return;
+    const sol = bi.sol_race || {}, eth = bi.eth_race || {}, cm = bi.competitors || {};
+    const pf = bi.performance || {}, vit = bi.vitals || {}, f = bi.feeds || {};
+    const sl = bi.sol_race_live || {}, elv = bi.eth_race_live || {};
+    const models = bi.models || [];
+    const win = (m) => m.win_rate == null ? "--" : (m.win_rate * 100).toFixed(0) + "%";
+    const usd = (v, d = 0) => v == null || isNaN(v) ? "--" : "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+    const grade = pf.grade || "—";
+    const vitals = [
+      `${vit.chain || "?"} · block ${vit.block ?? "?"}`,
+      `gas ${fmtNum(vit.gas_gwei)} gwei`,
+      `ETH $${fmtNum(vit.eth_price_usd, 0)}`,
+      vit.broadcast_ready ? "broadcast READY" : "broadcast off",
+      vit.armed ? "armed" : vit.sim_only ? "sim-only" : "dry",
+    ].join(" · ");
+    el.innerHTML = `
+      <div class="mgr-kpi-grid">
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">grade</div><div class="mgr-bi-v mgr-grade">${grade}</div></div>
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">session P&L</div><div class="mgr-bi-v ${(pf.session_pnl_usd||0)<0?"red":""}">${usd(pf.session_pnl_usd, 2)}</div></div>
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">realized</div><div class="mgr-bi-v">${usd(pf.realized_usd, 2)}</div></div>
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">missed to comps</div><div class="mgr-bi-v ${(pf.missed_comp_usd||0)>0?"red":""}">${usd(pf.missed_comp_usd, 2)}</div></div>
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">equity</div><div class="mgr-bi-v">${usd(pf.equity_usd, 2)}</div></div>
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">hit rate</div><div class="mgr-bi-v">${pf.hit_rate_pct == null ? "--" : pf.hit_rate_pct + "%"} <span class="mgr-bi-l">(${pf.wins ?? 0}/${pf.submits ?? 0})</span></div></div>
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">ETH win rate</div><div class="mgr-bi-v">${win(eth)}</div></div>
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">SOL win rate</div><div class="mgr-bi-v">${win(sol)}</div></div>
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">races</div><div class="mgr-bi-v">${(eth.total??0)+(sol.total??0)} <span class="mgr-bi-l">(${eth.total??0}E / ${sol.total??0}S)</span></div></div>
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">comps 1h</div><div class="mgr-bi-v">${cm.count_1h ?? 0}</div></div>
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">missed 1h</div><div class="mgr-bi-v ${(cm.missed_by_us||0)>0?"red":""}">${cm.missed_by_us ?? 0}</div></div>
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">best opp</div><div class="mgr-bi-v">${usd(pf.best_opp_usd)}</div></div>
+      </div>
+      <div class="mgr-verdict">${pf.grade ? "Verdict: " + esc(pf.verdict || "—") : ""}</div>
+      <div class="mgr-vitals">${esc(vitals)}</div>
+      ${ elv.inflight > 0 || sl.inflight > 0 ? `<div class="mgr-vitals live">races in flight — ETH ${elv.inflight} · SOL ${sl.inflight}</div>` : "" }
+      <div class="mgr-models">
+        ${models.map(m => `<div class="mgr-model chip">
+          <b>${esc(m.name || "?")} brain</b>
+          <span>${m.status === "unavailable" ? "untrained" : `dim ${m.feat_dim ?? "?"} · v${m.feat_version ?? 0} · ${m.steps ?? 0} steps`}</span>
+          <span class="dim">${m.status === "unavailable" ? "no weights yet — learning when funded" : `loss ${m.loss_ema ?? "--"} · acc ${m.acc_ema ?? "--"}`}</span>
+        </div>`).join("")}
+      </div>
+      <div class="mgr-live-strip">
+        <span>sol race <b>${sl.mode ? "ON" : "OFF"}</b> · tuition ${sl.tuition_spent_sol ?? 0} / ${sl.tuition_day_sol ?? 0} SOL · tip cap ${sl.tip_cap_sol ?? 0} SOL · bandit mult ${fmtNum((sl.tip_stats||{}).mult)}</span>
+        <span>eth bid mult ${fmtNum((elv.bid_stats||{}).mult)} · last winner ${esc(elv.last_winner || "—")}</span>
+        <span>sol fee ${fmtNum(f.sol_fee_median === null ? 0 : f.sol_fee_median, 5)} median · tps ${fmtNum(f.sol_tps)} · comp ${f.sol_comp_1h ?? 0}/h</span>
+      </div>`;
+    renderMgrCharts(bi);
+  };
+
+  const renderMgrCharts = (bi) => {
+    const render = (id, ref, cfg) => {
+      const el = $(id);
+      if (!el) return ref;
+      if (ref) { ref.data = cfg.data; ref.options = cfg.options; ref.update("none"); return ref; }
+      return new Chart(el, cfg);
+    };
+    const t = (txt) => ({ display: true, text: txt, color: "#94a3b8", font: { size: 11 } });
+    mgrWinRateChart = render("mgr-chart-winrate", mgrWinRateChart, {
+      type: "doughnut",
+      data: {
+        labels: ["won", "lost", "nc"],
+        datasets: [{ data: [
+          (bi.eth_race?.won||0)+(bi.sol_race?.won||0),
+          (bi.eth_race?.lost||0)+(bi.sol_race?.lost||0),
+          (bi.eth_race?.no_contest||0)+(bi.sol_race?.no_contest||0),
+        ], backgroundColor: ["#10b981", "#ef4444", "#6b7280"], borderWidth: 0 }],
+      },
+      options: { responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: "bottom", labels: { color: "#cbd5e1", boxWidth: 10, font: { size: 10 } } },
+          title: t("Race outcomes (ETH+SOL)") } },
+    });
+    const pf = bi.performance || {};
+    mgrProfitChart = render("mgr-chart-profit", mgrProfitChart, {
+      type: "bar",
+      data: {
+        labels: ["Realized", "Simulated", "Missed to comps"],
+        datasets: [{ label: "USD",
+          data: [pf.realized_usd||0, pf.simulated_usd||0, pf.missed_comp_usd||0],
+          backgroundColor: ["#10b981", "#a855f7", "#ef4444"], borderRadius: 4 }],
+      },
+      options: { responsive: true, maintainAspectRatio: false,
+        scales: { x: { ticks: { color: "#94a3b8", font: { size: 10 } }, grid: { display: false } },
+          y: { ticks: { color: "#94a3b8" }, grid: { color: "#1e293b" } } },
+        plugins: { legend: { display: false }, title: t("Profit split (USD)") } },
+    });
+    const eh = (pf.equity_hist || []).map(p => p[1]);
+    mgrEquityChart = render("mgr-chart-equity", mgrEquityChart, {
+      type: "line",
+      data: {
+        labels: (pf.equity_hist || []).map((_, i) => i),
+        datasets: [{ label: "equity",
+          data: eh, borderColor: "#38bdf8", backgroundColor: "rgba(56,189,248,.12)",
+          fill: true, tension: .25, pointRadius: 0, borderWidth: 2 }],
+      },
+      options: { responsive: true, maintainAspectRatio: false,
+        scales: { x: { ticks: { display: false }, grid: { display: false } },
+          y: { ticks: { color: "#94a3b8" }, grid: { color: "#1e293b" } } },
+        plugins: { legend: { display: false }, title: t("Equity (USD)") } },
+    });
+  };
+
+  const renderMgrChanges = (count) => {
+    const el = $("mgr-bi-changes");
+    if (!el) return;
+    const c = $("mgr-bi-changes-count");
+    if (c) c.textContent = String(count);
+    el.textContent = count > 0 ? `changes journal: ${count} entries` : "no changes yet";
+  };
+
+  const mgrSendChat = async () => {
+    const input = $("mgr-chat-input");
+    const feed = $("mgr-chat-feed");
+    if (!input || !feed) return;
+    const msg = (input.value || "").trim();
+    if (!msg) return;
+    input.value = "";
+    feed.innerHTML += `<div class="mgr-msg user"><span class="mgr-avatar you">You</span><span class="mgr-bubble">${esc(msg)}</span></div>`;
+    feed.innerHTML += `<div class="mgr-msg system thinking" id="mgr-waiting"><span class="mgr-dot"></span><span class="mgr-dot"></span><span class="mgr-dot"></span></div>`;
+    feed.scrollTop = feed.scrollHeight;
+    const d = await mgrApi("/api/manager/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: msg }),
+    });
+    $("mgr-waiting")?.remove();
+    if (d && d.error) {
+      feed.innerHTML += `<div class="mgr-msg error"><span class="mgr-avatar">!</span><span class="mgr-bubble">Server error (${d.status || "?"}). ${esc(d.body || "").slice(0, 200)}</span></div>`;
+      mgrSrvHint(d);
       return;
     }
-    const rh = paper.range_high;
-    const rl = paper.range_low;
-    const start = paper.range_start_ts ? Math.floor(paper.range_start_ts / 1000) : 0;
-    const end = Math.floor(Date.now() / 1000);
-    const pts = [{ time: start, value: rh }, { time: end, value: rh }];
-    const loPts = [{ time: start, value: rl }, { time: end, value: rl }];
-    hiSeries.setData(pts);
-    loSeries.setData(loPts);
+    const reply = (d && d.reply) || (d ? JSON.stringify(d).slice(0, 300) : "No reply.");
+    feed.innerHTML += `<div class="mgr-msg assistant"><span class="mgr-avatar ai">AI</span><span class="mgr-bubble">${esc(reply)}</span></div>`;
+    const tools = (d && d.transcript || []).filter(t => t.tool).map(t => t.tool);
+    if (tools.length) {
+      feed.innerHTML += `<div class="mgr-tools">used: ${tools.map(t => `<span class="mgr-tool-chip">${esc(t)}</span>`).join("")}</div>`;
+    }
+    if (d.applied_changes?.length) {
+      feed.innerHTML += `<div class="mgr-msg approval"><span class="mgr-avatar">✓</span><span class="mgr-bubble">Applied: ${esc(d.applied_changes.join(", "))}</span></div>`;
+    }
+    if (d.needs_approval?.length) {
+      feed.innerHTML += `<div class="mgr-msg approval"><span class="mgr-avatar">⚠</span><span class="mgr-bubble">Needs approval in "Pending Approvals": ${d.needs_approval.join(", ")}</span></div>`;
+    }
+    feed.scrollTop = feed.scrollHeight;
+    refreshManager();
   };
 
-  const renderPaperPanel = (prefix, paper) => {
-    if (!paper) return;
-    const stats = paper.stats || {};
-    const bal = $(prefix + "-paper-bal");
-    const pnl = $(prefix + "-paper-pnl");
-    const wl = $(prefix + "-paper-wl");
-    const wr = $(prefix + "-paper-wr");
-    const count = $(prefix + "-paper-count");
-    const pos = $(prefix + "-paper-pos");
-    const open = $(prefix + "-paper-open");
-    const status = $(prefix + "-paper-status");
-
-    if (bal) bal.textContent = "$" + fmt.num(paper.balance, 2);
-    if (pnl) {
-      const v = stats.pnl || 0;
-      pnl.textContent = `${v >= 0 ? "+" : ""}$${fmt.num(v, 2)} (${fmt.num(stats.pnl_pct || 0, 1)}%)`;
-      pnl.style.color = v > 0 ? "var(--green)" : v < 0 ? "var(--red)" : "var(--dim)";
-    }
-    if (wl) wl.textContent = `${stats.wins || 0} / ${stats.losses || 0}`;
-    if (wr) wr.textContent = stats.win_rate ? stats.win_rate + "%" : "--";
-    if (count) count.textContent = stats.total_trades || 0;
-
-    if (paper.position) {
-      const p = paper.position;
-      const dir = p.direction === "long" ? "long" : "short";
-      const tp1 = p.entry_price + (dir === "long" ? 1 : -1) * p.range_height * 1.5;
-      const sl = dir === "long" ? p.range_low : p.range_high;
-      const dirEl = $(prefix + "-paper-dir");
-      if (dirEl) {
-        dirEl.textContent = dir.toUpperCase();
-        dirEl.className = "paper-dir-badge " + dir;
-      }
-      if (pos) pos.textContent = `${fmt.num(p.qty, 4)} ${paper.asset} @ $${fmt.num(p.entry_price, 2)}`;
-      const tpEl = $(prefix + "-paper-tp");
-      if (tpEl) tpEl.textContent = `$${fmt.num(tp1, 2)}`;
-      const trailEl = $(prefix + "-paper-trail");
-      if (trailEl) trailEl.textContent = p.trail_stop ? `$${fmt.num(p.trail_stop, 2)}` : "—";
-      const slEl = $(prefix + "-paper-sl");
-      if (slEl) slEl.textContent = `$${fmt.num(sl, 2)}`;
-      if (open) open.style.display = "flex";
-    } else {
-      if (open) open.style.display = "none";
-    }
-
-    if (status) {
-      status.textContent = paper.enabled ? (paper.range_ready ? "active" : "building range") : "paused";
-      status.style.color = paper.enabled ? "var(--green)" : "var(--dim)";
-    }
+  const renderMgrApprovals = (list) => {
+    const el = $("mgr-approvals-list");
+    if (!el) return;
+    if (!list.length) { el.innerHTML = '<div class="mgr-approval-empty">nothing pending — all changes auto-applied unless they gate funds</div>'; return; }
+    el.innerHTML = list.map(a => `
+      <div class="mgr-approval-row" data-cid="${esc(a.id || "")}">
+        <div class="mgr-approval-main">
+          <div class="mgr-approval-target">${esc(a.target || "?")} = ${esc(a.new || "?")}</div>
+          <div class="mgr-approval-reason">${esc(a.reason || a.message || "reason not given")}</div>
+          ${a.prev != null ? `<div class="mgr-approval-prev">prev: ${esc(String(a.prev))}</div>` : ""}
+        </div>
+        <div class="mgr-approval-actions">
+          <button class="mgr-approve-btn" onclick="mgrApprove('${esc(a.id)}',true)">Approve</button>
+          <button class="mgr-reject-btn" onclick="mgrApprove('${esc(a.id)}',false)">Reject</button>
+        </div>
+      </div>
+    `).join("");
   };
 
-  const postPaperControl = async (asset, body) => {
+  window.mgrApprove = async (cid, approve) => {
     try {
-      await fetch("/api/paper/control", {
+      const d = await mgrApi("/api/manager/approve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ asset, ...body }),
+        body: JSON.stringify({ change_id: cid, approve }),
       });
-    } catch (e) { console.error("paper control failed", e); }
+      mgrSrvHint(d);
+      refreshManager();
+    } catch (_) {}
   };
 
-  // ETH paper toggles
-  const ethRmOrb = $("eth-range-mode");
-  const ethRmPd = $("eth-range-mode-pd");
-  const ethPaperOn = $("eth-paper-on");
-  if (ethRmOrb) ethRmOrb.addEventListener("click", () => {
-    postPaperControl("ETH", { range_mode: "orb" });
-    ethRmOrb.classList.add("on");
-    ethRmPd && ethRmPd.classList.remove("on");
-  });
-  if (ethRmPd) ethRmPd.addEventListener("click", () => {
-    postPaperControl("ETH", { range_mode: "prev_day" });
-    ethRmPd.classList.add("on");
-    ethRmOrb && ethRmOrb.classList.remove("on");
-  });
-  if (ethPaperOn) ethPaperOn.addEventListener("click", () => {
-    const isOn = ethPaperOn.classList.contains("on");
-    postPaperControl("ETH", { enabled: !isOn });
-    ethPaperOn.classList.toggle("on");
-    ethPaperOn.textContent = isOn ? "Paper OFF" : "Paper ON";
-  });
-
-  // SOL paper toggles
-  const solRmOrb = $("sol-range-mode");
-  const solRmPd = $("sol-range-mode-pd");
-  const solPaperOn = $("sol-paper-on");
-  if (solRmOrb) solRmOrb.addEventListener("click", () => {
-    postPaperControl("SOL", { range_mode: "orb" });
-    solRmOrb.classList.add("on");
-    solRmPd && solRmPd.classList.remove("on");
-  });
-  if (solRmPd) solRmPd.addEventListener("click", () => {
-    postPaperControl("SOL", { range_mode: "prev_day" });
-    solRmPd.classList.add("on");
-    solRmOrb && solRmOrb.classList.remove("on");
-  });
-  if (solPaperOn) solPaperOn.addEventListener("click", () => {
-    const isOn = solPaperOn.classList.contains("on");
-    postPaperControl("SOL", { enabled: !isOn });
-    solPaperOn.classList.toggle("on");
-    solPaperOn.textContent = isOn ? "Paper OFF" : "Paper ON";
-  });
-
-  const loadEthChg24h = async () => {
-    try {
-      const r = await fetch("/api/klines?symbol=ETHUSDT&interval=1h&limit=25");
-      const kl = await r.json();
-      if (!Array.isArray(kl) || kl.length < 2) return;
-      const open = +kl[0][1];
-      const close = +kl[kl.length - 1][4];
-      if (!open) return;
-      setMcChg(((close - open) / open) * 100);
-    } catch (err) { /* keep last */ }
+  const clearMgrNotes = () => {
+    if (mgrPollTimer) clearInterval(mgrPollTimer);
+    mgrPollTimer = null;
   };
 
-  const loadKlines = async (interval) => {
-    if (!ethSeries) return;
-    const tf = MC_INTERVALS.includes(interval) ? interval : "1h";
-    const seq = ++mcLoadSeq;
-    const limit = MC_LIMITS[tf] || 180;
-    const msg = $("eth-candles")?.querySelector(".lwc-msg");
-    if (msg) msg.textContent = "loading " + tf + "…";
-    try {
-      const r = await fetch(`/api/klines?symbol=ETHUSDT&interval=${encodeURIComponent(tf)}&limit=${limit}`);
-      const kl = await r.json();
-      if (seq !== mcLoadSeq) return;
-      if (!Array.isArray(kl) || !kl.length) {
-        if (msg) msg.textContent = "no candle data";
-        return;
-      }
-      const candles = kl.map((k) => ({
-        time: Math.floor(k[0] / 1000),
-        open: +k[1], high: +k[2], low: +k[3], close: +k[4],
-      }));
-      ethSeries.setData(candles);
-      if (ethChart) ethChart.timeScale().fitContent();
-      const last = candles[candles.length - 1];
-      const priceEl = $("mc-eth-price");
-      if (priceEl && last) {
-        priceEl.textContent = "$" + last.close.toLocaleString(undefined, { maximumFractionDigits: 2 });
-        window.__mcCandlePrice = true;
-      }
-      const legacy = $("eth-last");
-      if (legacy && last) legacy.textContent = "$" + last.close.toFixed(2);
-      const upd = $("mc-updated");
-      if (upd) upd.textContent = new Date(Date.now() + SAST_OFFSET * 1000).toISOString().slice(11, 19);
-      msg?.remove();
-    } catch (err) {
-      if (seq === mcLoadSeq && msg) msg.textContent = "candle fetch failed";
+  /* ---------------- AI Manager popup briefing ---------------- */
+  const openMgrPopup = () => {
+    const ov = $("mgr-pop");
+    if (ov) {
+      ov.hidden = false;
+      ov.classList.add("show");
+    }
+    $("mgr-pop-input")?.focus();
+    refreshMgrPopup();
+  };
+
+  const closeMgrPopup = () => {
+    const ov = $("mgr-pop");
+    if (ov) {
+      ov.classList.remove("show");
+      ov.hidden = true;
     }
   };
 
-  const setMcInterval = (tf) => {
-    if (!MC_INTERVALS.includes(tf)) return;
-    mcInterval = tf;
-    window.__mcInterval = tf;
-    document.querySelectorAll("#mc-tf .mc-f").forEach((b) => {
-      b.classList.toggle("on", b.getAttribute("data-tf") === tf);
-    });
-    const note = $("mc-chart-note");
-    if (note) note.textContent = tf;
-    const tag = $("mc-tag");
-    if (tag) tag.textContent = "ETH/USD · " + tf;
-    loadKlines(tf);
+  const renderMgrPopupBrief = (b) => {
+    const body = $("mgr-pop-body");
+    const tag = $("mgr-pop-tag");
+    if (!body) return;
+    $("mgr-pop-loading")?.remove();
+    if (!b || b.error) {
+      body.innerHTML = `<div class="mgr-msg error"><span class="mgr-avatar">!</span><span class="mgr-bubble">Briefing unavailable${b?.status ? ` (${b.status})` : ""} — ${esc(String(b?.body || b?.message || "?")).slice(0, 160)}${b?.status === 404 ? " Restart the dashboard so the briefing route loads." : ""}</span></div>`;
+      if (tag) tag.textContent = "briefing failed";
+      return;
+    }
+    if (tag) tag.textContent = `updated ${new Date(b.ts * 1000).toLocaleTimeString()} · ${b.verdict || "no verdict"}`;
+    const m = b.metrics || {};
+    const winS = m.win_rate_sol == null ? "--" : Math.round(m.win_rate_sol * 100) + "%";
+    const usd = (v) => v == null ? "--" : "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const grade = b.grade || "—";
+    body.innerHTML = `
+      <div class="mgr-kpi-grid">
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">grade</div><div class="mgr-bi-v mgr-grade">${grade}</div></div>
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">equity</div><div class="mgr-bi-v">${usd(m.equity_usd)}</div></div>
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">realized</div><div class="mgr-bi-v">${usd(m.realized_usd)}</div></div>
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">SOL win rate</div><div class="mgr-bi-v">${winS}</div></div>
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">races</div><div class="mgr-bi-v">${m.races ?? 0}</div></div>
+        <div class="mgr-bi-cell"><div class="mgr-bi-l">comps 1h</div><div class="mgr-bi-v">${m.comps_1h ?? 0}</div></div>
+      </div>
+      <div class="mgr-pop-sec"><div class="mgr-pop-sec-title">What's happening</div>
+        ${(b.happening || []).map(t => `<div class="mgr-pop-line"><span class="mgr-pop-bullet">●</span>${esc(t)}</div>`).join("") || '<div class="mgr-pop-line"><span class="mgr-pop-bullet">●</span>quiet — nothing notable yet.</div>'}
+      </div>
+      <div class="mgr-pop-sec"><div class="mgr-pop-sec-title">What needs to be done</div>
+        ${(b.todo || []).map((t, i) => `<div class="mgr-pop-line todo"><span class="mgr-pop-bullet">${i + 1}</span>${esc(t)}</div>`).join("") || '<div class="mgr-pop-line">all clear.</div>'}
+      </div>`;
   };
 
-  const bindMcTf = () => {
-    const root = $("mc-tf");
-    if (!root || root.__bound) return;
-    root.__bound = true;
-    root.addEventListener("click", (ev) => {
-      const btn = ev.target.closest(".mc-f");
-      if (!btn) return;
-      setMcInterval(btn.getAttribute("data-tf"));
+  const refreshMgrPopup = async () => {
+    const body = $("mgr-pop-body");
+    if (!body) return;
+    $("mgr-pop-loading")?.remove();
+    body.insertAdjacentHTML("afterbegin", `<div class="mgr-pop-loading" id="mgr-pop-loading">loading briefing…</div>`);
+    const d = await mgrApi("/api/manager/briefing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
     });
+    $("mgr-pop-loading")?.remove();
+    renderMgrPopupBrief(d);
   };
+
+  const mgrPopSend = async () => {
+    const input = $("mgr-pop-input");
+    const popFeed = $("mgr-pop-feed");
+    if (!input || !popFeed) return;
+    const msg = (input.value || "").trim();
+    if (!msg) return;
+    input.value = "";
+    popFeed.innerHTML += `<div class="mgr-msg user"><span class="mgr-avatar you">You</span><span class="mgr-bubble">${esc(msg)}</span></div>`;
+    popFeed.innerHTML += `<div class="mgr-msg system thinking" id="mgr-pop-waiting"><span class="mgr-dot"></span><span class="mgr-dot"></span><span class="mgr-dot"></span></div>`;
+    popFeed.scrollTop = popFeed.scrollHeight;
+    const d = await mgrApi("/api/manager/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: msg }),
+    });
+    $("mgr-pop-waiting")?.remove();
+    if (d && d.error) {
+      popFeed.innerHTML += `<div class="mgr-msg error"><span class="mgr-avatar">!</span><span class="mgr-bubble">Server error (${d.status || "?"}). ${esc(d.body || "").slice(0, 200)}</span></div>`;
+      mgrSrvHint(d);
+      return;
+    }
+    const reply = (d && d.reply) || "No reply.";
+    popFeed.innerHTML += `<div class="mgr-msg assistant"><span class="mgr-avatar ai">AI</span><span class="mgr-bubble">${esc(reply)}</span></div>`;
+    const tools = (d && d.transcript || []).filter(t => t.tool).map(t => t.tool);
+    if (tools.length) {
+      popFeed.innerHTML += `<div class="mgr-tools">used: ${tools.map(t => `<span class="mgr-tool-chip">${esc(t)}</span>`).join("")}</div>`;
+    }
+    if (d.applied_changes?.length) {
+      popFeed.innerHTML += `<div class="mgr-msg approval"><span class="mgr-avatar">✓</span><span class="mgr-bubble">Applied: ${esc(d.applied_changes.join(", "))}</span></div>`;
+    }
+    if (d.needs_approval?.length) {
+      popFeed.innerHTML += `<div class="mgr-msg approval"><span class="mgr-avatar">⚠</span><span class="mgr-bubble">Needs approval in "Pending Approvals": ${d.needs_approval.join(", ")}</span></div>`;
+    }
+    popFeed.scrollTop = popFeed.scrollHeight;
+    const mainFeed = $("mgr-chat-feed");
+    if (mainFeed) mainFeed.innerHTML += `<div class="mgr-msg user"><span class="mgr-avatar you">You</span><span class="mgr-bubble">${esc(msg)}</span></div><div class="mgr-msg assistant"><span class="mgr-avatar ai">AI</span><span class="mgr-bubble">${esc(reply)}</span></div>`;
+    refreshManager();
+  };
+
+  document.addEventListener("click", (e) => {
+    if (e.target && e.target.id === "mgr-pop") closeMgrPopup();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && $("mgr-pop") && !$("mgr-pop").hidden) closeMgrPopup();
+  });
+  $("mgr-pop-close")?.addEventListener("click", closeMgrPopup);
+  $("mgr-pop-send")?.addEventListener("click", mgrPopSend);
+  $("mgr-pop-input")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") mgrPopSend();
+  });
 
   /* ------------------------------------------------ chain tabs ETH | SOL */
   const TAB_KEY = "toni-chain-tab";
-  const CHAIN_TABS = ["eth", "sol"];
+  const CHAIN_TABS = ["eth", "sol", "manager"];
   const TAB_HINT = {
     eth: "Ethereum workspace · multi-protocol lending + Aave flash",
     sol: "Solana workspace · Solend liquidations + flash",
+    manager: "AI manager · autonomous performance optimizer",
   };
   let activeTab = "eth";
-  let solChart = null, solSeries = null;
-  let solRangeHigh = null, solRangeLow = null;
-  let solInterval = "1h";
-  let solLoadSeq = 0;
   let solWorkspaceReady = false;
-  let solRefreshTimer = null;
-
-  const resizeEthChart = () => {
-    const box = $("eth-candles");
-    if (!box || !ethChart) return;
-    ethChart.applyOptions({ width: box.clientWidth || 600, height: box.clientHeight || 340 });
-  };
-
-  const resizeSolChart = () => {
-    const box = $("sol-candles");
-    if (!box || !solChart) return;
-    solChart.applyOptions({ width: box.clientWidth || 600, height: box.clientHeight || 340 });
-  };
-
-  const setSolChg = (pct) => {
-    const apply = (el) => {
-      if (!el || pct == null || isNaN(pct)) return;
-      const sign = pct > 0 ? "+" : "";
-      el.textContent = sign + pct.toFixed(2) + "%";
-      el.className = "big " + (pct > 0 ? "green" : pct < 0 ? "red" : "dim");
-    };
-    apply($("sol-mc-chg"));
-    apply($("sol-chg"));
-  };
-
-  const sastClock = () => new Date(Date.now() + SAST_OFFSET * 1000).toISOString().slice(11, 19);
-
-  const pushSolAct = (msg) => {
-    const feed = $("sol-activity");
-    if (!feed) return;
-    $("sol-act-empty")?.remove();
-    const row = document.createElement("div");
-    row.className = "ln";
-    row.innerHTML = `<span class="t">${sastClock()}</span><span class="m"></span>`;
-    row.querySelector(".m").textContent = msg;
-    feed.prepend(row);
-    while (feed.children.length > 40) feed.lastElementChild.remove();
-  };
-
-  const initSolCandles = () => {
-    const el = $("sol-candles");
-    if (!el || solChart || !window.LightweightCharts) return;
-    el.querySelector(".lwc-msg")?.remove();
-    const h = el.clientHeight || 340;
-    solChart = LightweightCharts.createChart(el, {
-      width: el.clientWidth || 600, height: h,
-      layout: { background: { type: "solid", color: "transparent" }, textColor: "#64748b", fontFamily: "JetBrains Mono, monospace" },
-      grid: { vertLines: { color: "#1e293b40" }, horzLines: { color: "#1e293b40" } },
-      rightPriceScale: { borderColor: "#334155", scaleMargins: { top: 0.08, bottom: 0.14 } },
-      timeScale: { borderColor: "#334155", timeVisible: true, secondsVisible: false, rightOffset: 4 },
-      crosshair: { mode: 1 },
-    });
-    solSeries = solChart.addCandlestickSeries(candleStyle);
-    solRangeHigh = solChart.addLineSeries({
-      color: "#22d3ee", lineWidth: 1, lineStyle: 2,
-      priceLineVisible: false, lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    solRangeLow = solChart.addLineSeries({
-      color: "#f59e0b", lineWidth: 1, lineStyle: 2,
-      priceLineVisible: false, lastValueVisible: false,
-      crosshairMarkerVisible: false,
-    });
-    window.addEventListener("resize", resizeSolChart);
-    requestAnimationFrame(resizeSolChart);
-  };
-
-  const loadSolChg24h = async () => {
-    try {
-      const r = await fetch("/api/klines?symbol=SOLUSDT&interval=1h&limit=25");
-      const kl = await r.json();
-      if (!Array.isArray(kl) || kl.length < 2) return;
-      const open = +kl[0][1];
-      const close = +kl[kl.length - 1][4];
-      if (!open) return;
-      setSolChg(((close - open) / open) * 100);
-    } catch (err) { /* keep last */ }
-  };
-
-  const loadSolKlines = async (interval) => {
-    if (!solSeries) return;
-    const tf = MC_INTERVALS.includes(interval) ? interval : "1h";
-    const seq = ++solLoadSeq;
-    const limit = MC_LIMITS[tf] || 180;
-    const box = $("sol-candles");
-    let msg = box?.querySelector(".lwc-msg");
-    if (box && !msg) {
-      msg = document.createElement("span");
-      msg.className = "lwc-msg";
-      box.appendChild(msg);
-    }
-    if (msg) msg.textContent = "loading " + tf + "…";
-    try {
-      const r = await fetch(`/api/klines?symbol=SOLUSDT&interval=${encodeURIComponent(tf)}&limit=${limit}`);
-      const kl = await r.json();
-      if (seq !== solLoadSeq) return;
-      if (!Array.isArray(kl) || !kl.length) {
-        if (msg) msg.textContent = "no candle data";
-        return;
-      }
-      const candles = kl.map((k) => ({
-        time: Math.floor(k[0] / 1000),
-        open: +k[1], high: +k[2], low: +k[3], close: +k[4],
-      }));
-      solSeries.setData(candles);
-      if (solChart) solChart.timeScale().fitContent();
-      const last = candles[candles.length - 1];
-      if (last) {
-        const px = "$" + last.close.toLocaleString(undefined, { maximumFractionDigits: 4 });
-        const mcPx = $("sol-mc-price");
-        const heroPx = $("sol-price");
-        if (mcPx) mcPx.textContent = px;
-        if (heroPx) heroPx.textContent = px;
-      }
-      const upd = $("sol-mc-updated");
-      if (upd) upd.textContent = sastClock();
-      const heroUpd = $("sol-updated");
-      if (heroUpd) heroUpd.textContent = sastClock();
-      const heroMeta = $("sol-meta");
-      if (heroMeta) heroMeta.innerHTML = `<span>source <b>Binance</b></span><span>pair <b>SOL/USD</b></span><span>network <b>Solana mainnet</b></span>`;
-      msg?.remove();
-    } catch (err) {
-      if (seq === solLoadSeq && msg) msg.textContent = "candle fetch failed";
-    }
-  };
-
-  const setSolInterval = (tf) => {
-    if (!MC_INTERVALS.includes(tf)) return;
-    solInterval = tf;
-    const label = $("sol-mc-tf");
-    if (label) label.textContent = tf === "1d" ? "1D" : tf.toUpperCase();
-    const note = $("sol-mc-chart-note");
-    if (note) note.textContent = tf;
-    const tag = $("sol-mc-tag");
-    if (tag) tag.textContent = "SOL/USD · " + tf;
-    document.querySelectorAll("#sol-mc-tf-btns .mc-f").forEach((b) => {
-      b.classList.toggle("on", b.getAttribute("data-tf") === tf);
-    });
-    loadSolKlines(tf);
-  };
-
-  const bindSolTf = () => {
-    const root = $("sol-mc-tf-btns");
-    if (!root || root.__bound) return;
-    root.__bound = true;
-    root.addEventListener("click", (ev) => {
-      const btn = ev.target.closest(".mc-f");
-      if (!btn) return;
-      setSolInterval(btn.getAttribute("data-tf"));
-    });
-  };
-
-  const bindSolNotes = () => {
-    const add = $("sol-note-add");
-    const clear = $("sol-note-clear");
-    const input = $("sol-note-input");
-    if (add && !add.__bound) {
-      add.__bound = true;
-      add.addEventListener("click", () => {
-        const t = (input?.value || "").trim();
-        if (!t) return;
-        pushSolAct(t);
-        if (input) input.value = "";
-      });
-    }
-    if (input && !input.__bound) {
-      input.__bound = true;
-      input.addEventListener("keydown", (ev) => {
-        if (ev.key === "Enter") $("sol-note-add")?.click();
-      });
-    }
-    if (clear && !clear.__bound) {
-      clear.__bound = true;
-      clear.addEventListener("click", () => {
-        const feed = $("sol-activity");
-        if (!feed) return;
-        feed.innerHTML = `<div class="empty" id="sol-act-empty">No SOL notes yet — candles + RPC status will log here</div>`;
-      });
-    }
-  };
-
-  const refreshSolStatus = async () => {
-    const badge = $("sol-net-pressure");
-    const empty = $("sol-net-empty");
-    try {
-      const ctrl = new AbortController();
-      const to = setTimeout(() => ctrl.abort(), 6000);
-      const r = await fetch("/api/sol/status", { signal: ctrl.signal });
-      clearTimeout(to);
-      const d = await r.json();
-      const slotTxt = d.slot != null ? fmt.num(d.slot, 0) : "--";
-      if ($("sol-slot")) $("sol-slot").textContent = slotTxt;
-      if ($("sol-net-slot")) $("sol-net-slot").textContent = slotTxt;
-      if ($("sol-net-epoch")) $("sol-net-epoch").textContent = d.epoch != null ? fmt.num(d.epoch, 0) : "--";
-      if ($("sol-net-slot-idx")) $("sol-net-slot-idx").textContent = d.slot_index != null ? fmt.num(d.slot_index, 0) : "--";
-      if (d.sol_price_usd != null && !solSeries) {
-        const p = fmt.usd(d.sol_price_usd);
-        if ($("sol-price")) $("sol-price").textContent = p;
-        if ($("sol-mc-price")) $("sol-mc-price").textContent = p;
-      }
-      const rpcHost = d.rpc ? String(d.rpc).replace(/^https?:\/\//, "").slice(0, 32) : "--";
-      const netMeta = $("sol-net-meta");
-      if (netMeta) {
-        const bits = [];
-        bits.push(`<span>rpc <b>${rpcHost}</b></span>`);
-        if (d.slots_in_epoch != null) bits.push(`<span>epoch len <b>${fmt.num(d.slots_in_epoch, 0)}</b></span>`);
-        if (d.absolute_slot != null) bits.push(`<span>abs <b>${fmt.num(d.absolute_slot, 0)}</b></span>`);
-        if (!d.ok && d.error) bits.push(`<span>err <b>${String(d.error).slice(0, 24)}</b></span>`);
-        netMeta.innerHTML = bits.join("");
-      }
-      if (badge) {
-        badge.textContent = d.ok ? "live" : "rpc down";
-        badge.className = "sol-pressure-badge " + (d.ok ? "ok" : "err");
-      }
-      if (empty) {
-        empty.hidden = !!d.ok;
-        if (!d.ok) empty.textContent = "RPC unreachable — will retry quietly";
-      }
-      if ($("sol-updated")) $("sol-updated").textContent = sastClock();
-      pushSolAct(d.ok
-        ? `RPC ok · slot ${slotTxt} · epoch ${d.epoch != null ? d.epoch : "--"}`
-        : `RPC fail · ${d.error || "timeout"}`);
-    } catch (err) {
-      if (badge) {
-        badge.textContent = "rpc down";
-        badge.className = "sol-pressure-badge err";
-      }
-      if (empty) {
-        empty.hidden = false;
-        empty.textContent = "RPC unreachable — will retry quietly";
-      }
-    }
-  };
 
   const ensureSolWorkspace = () => {
     if (!solWorkspaceReady) {
       solWorkspaceReady = true;
-      bindSolTf();
       bindSolFilters();
-      if (window.LightweightCharts) {
-        initSolCandles();
-        setSolInterval(solInterval);
-        loadSolChg24h();
-      } else {
-        const el = $("sol-candles");
-        const msg = el?.querySelector(".lwc-msg");
-        if (msg) msg.textContent = "chart lib unavailable";
-      }
       if (window.__lastState) renderSol(window.__lastState);
     }
     requestAnimationFrame(() => {
-      resizeSolChart();
-      if (solChart) solChart.timeScale().fitContent();
       try { solChartTx?.resize?.(); } catch (_) {}
       try { solChartComp?.resize?.(); } catch (_) {}
+      resizeLiqCharts("sol");
     });
-    if (!solRefreshTimer) {
-      solRefreshTimer = setInterval(() => {
-        if (activeTab !== "sol") return;
-        if (solSeries) {
-          loadSolKlines(solInterval);
-          loadSolChg24h();
-        }
-      }, 30000);
-    }
   };
 
   const setChainTab = (tab) => {
@@ -4315,23 +3700,27 @@
     const chainLabel = $("p-chain-label");
     if (hint) hint.textContent = TAB_HINT[activeTab] || TAB_HINT.eth;
     if (chainLabel) {
-      chainLabel.textContent = activeTab === "eth" ? "ETH mainnet" : "SOL mainnet";
+      chainLabel.textContent = activeTab === "eth" ? "ETH mainnet"
+        : activeTab === "sol" ? "SOL mainnet" : "TONI AI";
     }
 
     if (activeTab === "sol") {
       ensureSolWorkspace();
       if (window.__lastState) renderSol(window.__lastState);
+    } else if (activeTab === "manager") {
+      ensureManagerWorkspace();
+      openMgrPopup();
     } else {
       if (window.__lastState) {
         const s = window.__lastState;
         updateHeader(s);
         updateBots(s); updateFunds(s); updateMempool(s);
-        updateOpps(s); updateCompetitors(s); updateTradingIntel(s); updateLiqIntel(s); updateBroadcast(s); updatePrices(s); updateHybrid(s);
+        updateOpps(s); updateCompetitors(s); updateLiqIntel(s); updateBroadcast(s); updateHybrid(s);
       }
       requestAnimationFrame(() => {
-        resizeEthChart();
         try { chartTx?.resize?.(); } catch (_) {}
         try { chartComp?.resize?.(); } catch (_) {}
+        resizeLiqCharts("eth");
       });
     }
   };
@@ -4390,13 +3779,8 @@
     }
     /* Heavy ETH card DOM only while ETH tab is visible — WS stays connected */
     updateBots(s); updateFunds(s); updateMempool(s);
-    updateOpps(s); updateCompetitors(s); updateTradingIntel(s); updateLiqIntel(s); updateBroadcast(s); updatePrices(s); updateHybrid(s);
+    updateOpps(s); updateCompetitors(s); updateLiqIntel(s); updateBroadcast(s); updateHybrid(s);
     if (!window.__logInit) { updateLog(s, s.log); window.__logInit = true; }
-    if (ethSeries) ethSeries.setMarkers(buildTradeMarkers(s.paper_eth && s.paper_eth.recent_trades, mcInterval));
-    updateRangeLines(ethChart, ethRangeHigh, ethRangeLow, s.paper_eth);
-    applyPaperLevels("eth", ethSeries, s.paper_eth);
-    renderTradeTape("eth-mc-tape", s.paper_eth && s.paper_eth.recent_trades);
-    renderPaperPanel("eth", s.paper_eth);
   };
 
   /* ------------------------------------------------ web3 / wallet (ETH + SOL, independent) */
@@ -5267,23 +4651,6 @@
 
   bindAlControls();
   setInterval(() => { if (logLines.length) updateAlHero(); }, 5000);
-  bindMcTf();
-  if (window.LightweightCharts) {
-    initCandles();
-    setMcInterval(mcInterval);
-    loadEthChg24h();
-    setInterval(() => {
-      if (activeTab !== "eth") return;
-      loadKlines(mcInterval);
-      loadEthChg24h();
-    }, 15000);
-  } else {
-    const el = $("eth-candles");
-    if (el) {
-      const msg = el.querySelector(".lwc-msg");
-      if (msg) msg.textContent = "chart lib unavailable";
-    }
-  }
   bindChainTabs();
 
   connect();

@@ -56,3 +56,26 @@ def test_empty_rows_still_reports_meta():
     assert r["count_24h"] == 0
     assert r["competitors"]["searchers"] == 2
     assert r["watchlist_size"] == 1
+    assert r["health_dist"]["1.0-1.05"] == 1
+    assert r["pressure"] == "busy"
+
+
+def test_health_dist_from_watchlist_without_spoke_rows():
+    wl = [{"hf": 0.98}, {"hf": 1.03}, {"health_factor": 1.08}]
+    r = aggregate_liq_intel([], watchlist=wl)
+    assert r["health_dist"]["<1.0"] == 1
+    assert r["health_dist"]["1.0-1.05"] == 1
+    assert r["health_dist"]["1.05-1.1"] == 1
+
+
+def test_competitors_fallback_volume_when_no_spoke_rows():
+    comps = [
+        {"coll_usd": 100.0, "gas_usd": 2.5, "protocol": "solend"},
+        {"coll_usd": 50.0, "gas_usd": 1.5, "protocol": "kamino"},
+    ]
+    r = aggregate_liq_intel([], competitors=comps)
+    assert r["count_24h"] == 2
+    assert r["volume_24h"] == 150.0
+    assert r["gas_per_liq"] == 2.0
+    assert r["protocols"]["solend"]["count"] == 1
+    assert r["protocols"]["kamino"]["count"] == 1

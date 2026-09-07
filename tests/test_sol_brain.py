@@ -81,3 +81,37 @@ def test_policy_roundtrip_persistence(sol_brain):
     steps = sol_brain.steps
     reloaded = pb.load_sol()
     assert reloaded.steps == steps
+
+
+def test_features_with_rec_uses_position_fields(sol_brain):
+    st = _state()
+    rec = {
+        "hf": 0.85, "debt_usd": 5000.0, "coll_sym": "BONK",
+        "protocol_id": "kamino", "edge": True, "contested": True,
+        "comp_n": 2, "tip_lamports": 500_000,
+        "plan": {"jito_tip_lamports": 500_000, "hf": 0.85,
+                 "protocol_id": "kamino"},
+    }
+    x = pb.features_from_sol_state(st, rec=rec)
+    assert x.shape == (pb.SOL_FEAT_DIM,)
+    # index 18 is long-tail (BONK is long tail)
+    assert x[18] == 1.0
+    # index 17 is debt log1p(debt)/10 > 0
+    assert x[17] > 0
+
+
+def test_learn_sol_race_persists_and_increments(sol_brain, tmp_path, monkeypatch):
+    monkeypatch.setattr(pb, "RACE_OUTCOME_PATH",
+                        str(tmp_path / "race_outcomes.jsonl"))
+    st = _state()
+    rec = {"hf": 0.88, "protocol_id": "solend", "debt_usd": 1200,
+           "tip_lamports": 100_000, "contested": True, "edge": False}
+    before = sol_brain.steps
+    pb.learn_sol_race(st, rec, "won", profit=8.0)
+    assert sol_brain.steps == before + 1
+    assert os.path.exists(pb.RACE_OUTCOME_PATH)
+    line = open(pb.RACE_OUTCOME_PATH).readline()
+    row = json.loads(line)
+    assert row["outcome"] == "won"
+    assert row["profit"] == 8.0
+    assert row["protocol"] == "solend"

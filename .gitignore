@@ -18,4 +18,5 @@ contracts/out/
 contracts/cache/
 keystores/
 paper_trades.json
+copy_leaderboard_cache.json
 data/

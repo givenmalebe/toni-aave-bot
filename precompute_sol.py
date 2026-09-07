@@ -55,11 +55,7 @@ def get(obligation: str) -> Optional[dict]:
         return None
     with _lock:
         _cache_hits += 1
-    data = entry.get("data") or {}
-    plan = data.get("plan")
-    if plan:
-        return plan
-    return data
+    return entry.get("data") or {}
 
 
 def cache_stats() -> dict:
@@ -92,6 +88,7 @@ def build_entry(
     jupiter_route: dict | None,
     estimated_profit_usd: float,
     plan: dict | None = None,
+    presigned: dict | None = None,
 ) -> dict:
     """Build a cache entry for a single SOL obligation."""
     return {
@@ -112,6 +109,7 @@ def build_entry(
         "estimated_profit_usd": estimated_profit_usd,
         "updated_slot": _last_slot,
         "plan": plan,
+        "presigned": presigned,
     }
 
 
@@ -180,6 +178,7 @@ async def refresh(hot_obligations: list[dict], rpc_url: str,
                 jupiter_route=obl.get("jupiter_route"),
                 estimated_profit_usd=_num(obl.get("expected_profit_usd"), 0),
                 plan=plan,
+                presigned=obl.get("presigned"),
             )
             new_cache[addr] = {"ts": time.time(), "data": entry}
         except Exception as e:

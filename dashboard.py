@@ -26,7 +26,6 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from paper_trader import PaperTrader
 
 # Force IPv4 everywhere: publicnode (and several peers) advertise IPv6 AAAA
 # records that this host cannot route; Python tries IPv6 first and stalls for
@@ -146,6 +145,8 @@ import sol_lending as slend  # noqa: E402
 import eth_lending as elend  # noqa: E402
 from hybrid_executor import HybridExecutor
 from gas_bidder import GasBiddingEngine, CompetitorTx
+import gas_bidder as gb
+import ai_manager as aim
 from backrun import BackrunEngine
 from execution_tracker import ExecutionTracker
 from alchemy_relay import AlchemyRelay
@@ -224,6 +225,13 @@ EDGE_BIAS = os.environ.get("EDGE_BIAS", "1") != "0"
 SIM_ONLY_DEFAULT = os.environ.get("SIM_ONLY", "1") != "0"
 COLD_WALLET = os.environ.get("COLD_WALLET", "")  # optional profit sweep destination
 SOL_SIM_ONLY_DEFAULT = os.environ.get("SOL_SIM_ONLY", "1") != "0"
+SOL_RACE_MODE = os.environ.get("SOL_RACE_MODE", "0") != "0"
+SOL_RACE_TUITION_DAY_SOL = float(
+    os.environ.get("SOL_RACE_TUITION_DAY_SOL", "0.10") or 0.10)
+SOL_RACE_TIP_CAP_SOL = float(
+    os.environ.get("SOL_RACE_TIP_CAP_SOL", "0.002") or 0.002)
+SOL_RACE_MAX_FIRES_PER_CYCLE = int(
+    os.environ.get("SOL_RACE_MAX_FIRES_PER_CYCLE", "3") or 3)
 ARM_MINUTES_DEFAULT = int(os.environ.get("ARM_MINUTES", "15") or 15)
 _PREFS_PATH = os.path.join(HERE, "broadcast_prefs.json")
 
@@ -844,10 +852,6 @@ class Dashboard:
             "sol_mp_liq": deque(maxlen=MAXLEN),
             "sol_mp_mev": deque(maxlen=MAXLEN),
         }
-        self._paper_eth = PaperTrader.load("ETH")
-        self._paper_sol = PaperTrader.load("SOL")
-        self.state["paper_eth"] = self._paper_eth.state_dict()
-        self.state["paper_sol"] = self._paper_sol.state_dict()
         self.clients = set()
         self.tx_pool = ThreadPoolExecutor(max_workers=8)
         self._uni = None
@@ -864,6 +868,8 @@ class Dashboard:
         self.hybrid_enabled = False  # default off for safety
         self.hybrid_executor = None  # initialized in start_loops
         self._eth_hot_kick = None
+        self._eth_crossed_pending = set()
+        self._eth_fast_fires = set()
         self._liq_harvest_block = 0
         self._comp_last_scanned = 0
         self.broadcast_enabled = True
@@ -877,6 +883,17 @@ class Dashboard:
         self.sol_keep_live = False
         self.sol_sim_only = SOL_SIM_ONLY_DEFAULT
         self.sol_edge_bias = True
+        self.sol_race_mode = SOL_RACE_MODE
+        self.sol_race_tuition_day_sol = SOL_RACE_TUITION_DAY_SOL
+        self.sol_race_tip_cap_sol = SOL_RACE_TIP_CAP_SOL
+        self.sol_race_max_fires = SOL_RACE_MAX_FIRES_PER_CYCLE
+        self.sol_race_tuition_spent = 0.0
+        self._sol_race_day = time.strftime("%Y-%m-%d", time.gmtime())
+        self.sol_race_inflight: dict = {}
+        self.sol_race_last: dict = {}  # obl -> outcome row
+        self.eth_race_inflight: dict = {}  # user -> inflight entry
+        self.eth_race_last: dict = {}  # user -> outcome row
+        self._eth_race_ttl_blocks = 60
         self._eth_arm_gen = 0
         self._sol_arm_gen = 0
         self._eth_disarm_task = None
@@ -1304,6 +1321,150 @@ class Dashboard:
             return "live", "keep-live auto-renew"
         return "live", "solend+jito"
 
+    # ---- race-mode tuition ------------------------------------------------------------------
+    def _sol_race_day_key(self) -> str:
+        return time.strftime("%Y-%m-%d", time.gmtime())
+
+    def _sol_race_tuition_reset(self) -> None:
+        day = self._sol_race_day_key()
+        if day != self._sol_race_day:
+            self._sol_race_day = day
+            self.sol_race_tuition_spent = 0.0
+
+    def _sol_race_tuition_left_sol(self) -> float:
+        self._sol_race_tuition_reset()
+        return max(0.0, self.sol_race_tuition_day_sol - self.sol_race_tuition_spent)
+
+    def _sol_race_tip_cap_lamports(self) -> int:
+        return max(1, int(self.sol_race_tip_cap_sol * 1e9))
+
+    def _sol_race_spendable(self, tip_lam: int) -> bool:
+        """Race mode may spend if the per-race and daily tuition caps hold."""
+        cap_lam = self._sol_race_tip_cap_lamports()
+        if tip_lam > cap_lam:
+            return False
+        tip_sol = tip_lam / 1e9
+        return tip_sol <= self._sol_race_tuition_left_sol()
+
+    def _sol_race_enrich_rec(self, rec: dict, opp: dict, plan: dict) -> dict:
+        plan = plan or {}
+        rec.setdefault("hf", opp.get("hf") or plan.get("hf"))
+        rec.setdefault("debt_usd",
+                       opp.get("debt_usd") or plan.get("repay_usd"))
+        rec.setdefault("coll_sym", opp.get("coll_sym")
+                       or opp.get("collateral_sym"))
+        rec.setdefault("protocol_id", plan.get("protocol_id"))
+        rec.setdefault("edge", bool(opp.get("edge")))
+        rec.setdefault("contested", bool(opp.get("contested")
+                                         or plan.get("contested")))
+        rec.setdefault("tip_lamports", plan.get("jito_tip_lamports"))
+        rec.setdefault("comp_n", 0)
+        return rec
+
+    def _sol_race_register_inflight(self, obl: str, rec: dict) -> None:
+        tip_lam = int(rec.get("tip_lamports") or 0)
+        tip_sol = tip_lam / 1e9
+        self.sol_race_tuition_spent += tip_sol
+        self.sol_race_inflight[obl] = {
+            "ts": time.time(),
+            "tip_lam": tip_lam,
+            "tip_sol": tip_sol,
+            "rec": rec,
+            "outcome": None,
+        }
+        if rec.get("stage") == "confirmed":
+            self._sol_race_adjudicate(obl, "won")
+
+    def _sol_race_adjudicate(self, obl: str, outcome: str) -> None:
+        ent = self.sol_race_inflight.pop(obl, None)
+        if not ent or ent.get("outcome"):
+            return
+        ent["outcome"] = outcome
+        rec = ent.get("rec") or {}
+        profit = float(rec.get("expected_profit_usd")
+                       or rec.get("profit_usd") or 0)
+        self.sol_race_last[obl] = {
+            "ts": int(time.time()),
+            "outcome": outcome,
+            "profit": round(profit, 4),
+            "tip_sol": round(ent.get("tip_sol") or 0, 6),
+            "proto": rec.get("protocol_id") or "",
+            "hf": rec.get("hf"),
+            "debt_usd": rec.get("debt_usd"),
+            "contested": rec.get("contested"),
+        }
+        try:
+            import profit_brain as _brain
+            _brain.learn_sol_race(self.state, rec, outcome, profit=profit)
+        except Exception:
+            pass
+        # Adaptive outbidding: escalate when we under-bid (lost a contest),
+        # ease when we over-bid (won). Teaches the bot to beat competitors.
+        try:
+            import sol_scanner as _sols
+            contested = bool(rec.get("contested"))
+            won = outcome == "won"
+            _sols.update_tip_mult(contested, won, tip_lamports=ent.get("tip_lam") or 0)
+        except Exception:
+            pass
+
+    def _sol_race_reap_stale(self) -> None:
+        now = time.time()
+        for obl in list(self.sol_race_inflight.keys()):
+            ent = self.sol_race_inflight.get(obl) or {}
+            if now - float(ent.get("ts") or 0) > 120:
+                self._sol_race_adjudicate(obl, "no-contest")
+
+    # ---- ETH race / outbidding ---------------------------------------------
+    def _eth_race_register_inflight(self, user: str, block: int,
+                                    rec: dict) -> None:
+        """Track a real funded ETH fire so we can adjudicate win/loss later."""
+        key = (user or "").lower()
+        if not key or rec.get("sim_only") or rec.get("_sim_only"):
+            return
+        self.eth_race_inflight[key] = {
+            "ts": time.time(),
+            "block": int(block or 0),
+            "rec": rec,
+            "outcome": None,
+        }
+
+    def _eth_race_adjudicate(self, user: str, outcome: str) -> None:
+        ent = self.eth_race_inflight.pop((user or "").lower(), None)
+        if not ent or ent.get("outcome"):
+            return
+        ent["outcome"] = outcome
+        rec = ent.get("rec") or {}
+        profit = float(rec.get("profit_usd") or rec.get("net_usd") or 0)
+        self.eth_race_last[(user or "").lower()] = {
+            "ts": int(time.time()),
+            "block": ent.get("block"),
+            "outcome": outcome,
+            "profit": round(profit, 4),
+            "prio_mult": rec.get("prio_mult"),
+            "protocol": rec.get("protocol") or rec.get("protocol_id") or "",
+            "contested": bool(rec.get("contested")),
+        }
+        try:
+            import profit_brain as _brain
+            _brain.learn_eth_race(self.state, rec, outcome, profit=profit)
+        except Exception:
+            pass
+        try:
+            from gas_bidder import update_eth_bid_mult
+            contested = bool(rec.get("contested"))
+            if outcome in ("won", "lost"):
+                update_eth_bid_mult(contested, won=outcome == "won")
+        except Exception:
+            pass
+
+    def _eth_race_reap(self, block: int) -> None:
+        """Adjudicate stale inflight fires that never landed as no-contest."""
+        for user in list(self.eth_race_inflight.keys()):
+            ent = self.eth_race_inflight.get(user) or {}
+            if block - int(ent.get("block") or 0) > self._eth_race_ttl_blocks:
+                self._eth_race_adjudicate(user, "no-contest")
+
     def _sol_decorate_liq(self, o: dict) -> dict:
         submit, reason = self._sol_submit_gate("liq")
         o["submit"] = submit
@@ -1321,6 +1482,20 @@ class Dashboard:
         leftover = plan.get("leftover") or plan.get("account_gaps") or o.get(
             "account_gaps") or []
         o["leftover"] = leftover
+        if pk:
+            try:
+                import precompute_sol as _psol
+                cached = _psol.get(pk)
+                pre = (cached or {}).get("presigned") or {}
+                o["presigned"] = bool(pre) and bool(
+                    pre.get("_raw_liq_b64") or pre.get("_raw_tx_b64"))
+                if o.get("presigned"):
+                    o["presigned_proto"] = pre.get("_proto") or ""
+                    pts = pre.get("_ts") or 0
+                    o["presigned_age_s"] = (
+                        round(max(time.time() - pts, 0), 1) if pts else 0)
+            except Exception:
+                o["presigned"] = False
         return o
 
     def _sol_record(self, rec: dict, skip: bool = False):
@@ -1385,9 +1560,22 @@ class Dashboard:
             }
             self._sol_record(rec)
             return rec
+        obl = plan.get("obligation") or key
+        tip_lam = int(plan.get("jito_tip_lamports") or 0)
+        tip_usd = (tip_lam / 1e9) * max(px, 0.0)
+        cur_slot = plan.get("_slot") or (self.state.get("sol") or {}).get("slot")
+        contested_opp = bool(opp.get("contested") or plan.get("contested"))
+        contested_obl = sols.is_contested_obligation(
+            obl, current_slot=cur_slot)
+        race_candidate = (
+            kind == "liq"
+            and (contested_opp or contested_obl)
+            and self.sol_race_mode
+            and self._sol_race_spendable(tip_lam)
+        )
         if kind == "liq" and self.sol_edge_bias:
             contested = bool(opp.get("contested"))
-            if contested and not pe.sol_is_edge_opp(opp):
+            if contested and not pe.sol_is_edge_opp(opp) and not race_candidate:
                 rec = {
                     "ts": int(time.time()), "kind": "liq", "stage": "skip",
                     "why": "mempool-contested crowded name",
@@ -1395,8 +1583,7 @@ class Dashboard:
                 }
                 self._sol_record(rec, skip=True)
                 return rec
-        obl = plan.get("obligation") or key
-        if kind == "liq" and sols.is_contested_obligation(obl):
+        if kind == "liq" and contested_obl and not race_candidate:
             rec = {
                 "ts": int(time.time()), "kind": "liq", "stage": "skip",
                 "why": "competitor liq on obligation in recent slots — skip tip war",
@@ -1404,10 +1591,8 @@ class Dashboard:
             }
             self._sol_record(rec, skip=True)
             return rec
-        tip_lam = int(plan.get("jito_tip_lamports") or 0)
-        px = float((self.state.get("sol") or {}).get("sol_price_usd") or 0)
-        tip_usd = (tip_lam / 1e9) * max(px, 0.0)
-        if kind == "liq" and profit > 0 and tip_usd >= profit * 0.95:
+        if kind == "liq" and profit > 0 and tip_usd >= profit * 0.95 \
+                and not race_candidate:
             rec = {
                 "ts": int(time.time()), "kind": "liq", "stage": "skip",
                 "why": f"tip ${tip_usd:.4f} would erase net ${profit:.4f}",
@@ -1418,13 +1603,18 @@ class Dashboard:
         rec = sols.submit_sol_plan(
             plan, sim_only=self.sol_sim_only, armed=self.sol_armed,
             funds=(self.state.get("sol") or {}).get("funds"),
+            current_slot=cur_slot,
         )
         rec["kind"] = kind
+        rec = self._sol_race_enrich_rec(rec, opp, plan)
         if rec.get("stage") == "skip":
             self._sol_record(rec, skip=True)
         else:
+            rec["race"] = bool(race_candidate)
+            if race_candidate and rec.get("stage") in ("sent", "confirmed"):
+                self._sol_race_register_inflight(obl, rec)
             self._sol_record(rec)
-        lvl = "info" if rec.get("stage") == "sent" else "warn"
+        lvl = "info" if rec.get("stage") in ("sent", "confirmed") else "warn"
         self.log(
             "sol-broadcast",
             lvl,
@@ -1454,6 +1644,11 @@ class Dashboard:
             "opportunities_meta": s.get("opportunities_meta") or {},
             "competitors": s["competitors"],
             "competitors_meta": s["competitors_meta"],
+            "eth_race": {
+                "inflight": len(self.eth_race_inflight),
+                "last": dict(self.eth_race_last),
+                "bid_mult": gb.eth_bid_stats(),
+            },
             "intel": s["intel"],
             "bots": s["bots"],
             "broadcast": s["broadcast"],
@@ -1470,6 +1665,15 @@ class Dashboard:
                 "bots": sol.get("bots") or {},
                 "wallets": sols.current_wallets(),
                 "fund_guide": sols.fund_guide(),
+                "race": {
+                    "mode": bool(self.sol_race_mode),
+                    "tuition_spent_sol": round(self.sol_race_tuition_spent, 6),
+                    "tuition_day_sol": self.sol_race_tuition_day_sol,
+                    "tip_cap_sol": self.sol_race_tip_cap_sol,
+                    "inflight": len(self.sol_race_inflight),
+                    "last": dict(self.sol_race_last),
+                    "tip_mult": sols.tip_bandit_stats(),
+                },
             },
             "hist": {
                 "tx_count": list(self.hist["tx_count"]),
@@ -1488,8 +1692,6 @@ class Dashboard:
                 "sol_mp_mev": list(self.hist.get("sol_mp_mev") or []),
             },
         }
-        out["paper_eth"] = self._paper_eth.state_dict()
-        out["paper_sol"] = self._paper_sol.state_dict()
         out["hybrid_execution"] = {
             "enabled": self.hybrid_enabled,
             "phase": self.hybrid_executor.phase.value if self.hybrid_executor else "idle",
@@ -1505,6 +1707,12 @@ class Dashboard:
             }
         except ImportError:
             out["precompute"] = {"eth": {}, "sol": {}}
+        try:
+            m = getattr(self, "ai_manager", None)
+            if m is not None:
+                out["ai_manager"] = m.status_payload()
+        except Exception:
+            pass
         return out
 
     # ------------------------------------------------------------ broadcast
@@ -1826,7 +2034,14 @@ class Dashboard:
                 pass  # fall through to static formula
         if pid == "aave":
             out["contract"] = out.get("contract") or ml.CONTRACT or ""
+        contested = why in ("mempool-contested", "recent-competitor")
         prio_mult = pe.race_prio_mult(why)
+        try:
+            from gas_bidder import eth_bid_mult
+            prio_mult *= eth_bid_mult(contested)
+        except Exception:
+            pass
+        out["prio_mult"] = prio_mult
         do_sim_only = self.sim_only or not self.armed
         if not out.get("contract"):
             reason = (
@@ -1839,34 +2054,48 @@ class Dashboard:
 
         signed_hex = None
         signer = None
-        try:
-            signed_hex, signer, _ks = ll._sign_tx(
-                out, block + 1, "bot", prio_mult=prio_mult)
-        except Exception as e:
-            if not do_sim_only:
-                return {"stage": "error", "reason": f"sign: {e}"[:200],
-                        "user": user, "race": why, "cached_plan": cached,
-                        "protocol": pid}
-            # sim still records the attempt with economics
-            self._liq_alerted[key or uk] = block
-            return {
-                "stage": "simulated",
-                "reason": f"sim — sign skipped ({e})"[:200],
-                "user": user, "profit_usd": profit_usd,
-                "race": why, "prio_mult": prio_mult,
-                "cached_plan": cached, "sim_only": True, "protocol": pid,
-            }
+        pre_signed = False
+        if not do_sim_only:
+            prec = self._flash_plans.get(key)
+            if prec and prec.get("_raw_liq") \
+                    and prec.get("_presigned_block") == block:
+                signed_hex = prec["_raw_liq"]
+                signer = None
+                pre_signed = True
+        if signed_hex is None:
+            try:
+                signed_hex, signer, _ks = ll._sign_tx(
+                    out, block + 1, "bot", prio_mult=prio_mult)
+            except Exception as e:
+                if not do_sim_only:
+                    return {"stage": "error", "reason": f"sign: {e}"[:200],
+                            "user": user, "race": why, "cached_plan": cached,
+                            "protocol": pid}
+                # sim still records the attempt with economics
+                self._liq_alerted[key or uk] = block
+                return {
+                    "stage": "simulated",
+                    "reason": f"sim — sign skipped ({e})"[:200],
+                    "user": user, "profit_usd": profit_usd,
+                    "race": why, "prio_mult": prio_mult,
+                    "cached_plan": cached, "sim_only": True, "protocol": pid,
+                }
 
         sponsor_hex = None
-        bot_eth = float((self.state.get("funds") or {}).get("bot", {}).get("eth") or 0)
-        if (not do_sim_only and bot_eth < 0.008
-                and ll.SPONSOR_KEYSTORE and ll.SPONSOR_PW):
-            try:
-                ll.SPONSOR_AMOUNT_ETH = pe.sponsor_target_eth(
-                    self.state.get("gas_gwei"))
-                sponsor_hex, _sa = ll._sign_sponsor(block + 1)
-            except Exception:
-                sponsor_hex = None
+        if pre_signed and not do_sim_only:
+            prec = self._flash_plans.get(key)
+            if prec and prec.get("_raw_spon"):
+                sponsor_hex = prec["_raw_spon"]
+        if sponsor_hex is None:
+            bot_eth = float((self.state.get("funds") or {}).get("bot", {}).get("eth") or 0)
+            if (not do_sim_only and bot_eth < 0.008
+                    and ll.SPONSOR_KEYSTORE and ll.SPONSOR_PW):
+                try:
+                    ll.SPONSOR_AMOUNT_ETH = pe.sponsor_target_eth(
+                        self.state.get("gas_gwei"))
+                    sponsor_hex, _sa = ll._sign_sponsor(block + 1)
+                except Exception:
+                    sponsor_hex = None
         if sponsor_hex:
             body = broadcast.build_sponsored_bundle(
                 signed_hex, sponsor_hex, block + 1)
@@ -1874,6 +2103,7 @@ class Dashboard:
             body = ll.build_bundle_body(signed_hex, block + 1)
         result = ll._submit(None, body, block + 1, sim_only=do_sim_only,
                             sponsor_hex=sponsor_hex)
+        result["pre_signed"] = pre_signed
         result["user"] = user
         result["profit_usd"] = profit_usd if profit_usd is not None else net_f
         result["sim_only"] = do_sim_only
@@ -1886,6 +2116,18 @@ class Dashboard:
         stage = (result.get("stage") or "").lower()
         if stage in ("sent", "ok"):
             self._liq_landed[key or uk] = block
+            if not do_sim_only:
+                inflight_rec = {
+                    "race": why,
+                    "prio_mult": prio_mult,
+                    "profit_usd": result.get("profit_usd"),
+                    "sim_only": False,
+                    "_sim_only": False,
+                    "contested": contested,
+                    "protocol": pid,
+                    "gas_gwei": out.get("gas_gwei") or out.get("prio_gas_gwei"),
+                }
+                self._eth_race_register_inflight(user, block + 1, inflight_rec)
         return result
 
     def _cached_flash_plan(self, user, block, need_liquidatable=False, pid="aave"):
@@ -2022,6 +2264,16 @@ class Dashboard:
         eth = self.state.get("eth_price_usd")
         users = []
         seen = set()
+        crossed_prio = sorted(
+            str(u).lower() for u in (self._eth_crossed_pending or set())
+            if str(u).startswith("0x"))
+        for u in crossed_prio + [
+            u for u in self._pending_aave_users if u not in crossed_prio
+        ]:
+            a = str(u or "").lower()[:42]
+            if a.startswith("0x") and a not in seen:
+                seen.add(a)
+                users.append(a)
         for w in (self.state.get("watchlist") or [])[:16]:
             pid = str(w.get("protocol_id") or w.get("protocol") or "aave").lower()
             if pid not in ("aave", "v3", "v4", ""):
@@ -2030,7 +2282,7 @@ class Dashboard:
             if u.startswith("0x") and u not in seen:
                 seen.add(u)
                 users.append(u)
-        for u in list(self._pending_aave_users) + list(self._contested or []):
+        for u in list(self._contested or []):
             a = str(u or "").lower()[:42]
             if a.startswith("0x") and a not in seen:
                 seen.add(a)
@@ -2094,6 +2346,109 @@ class Dashboard:
                       or MIN_LIQ_PROFIT_USD)
         fired = []
         block = int(self.state.get("block") or 0)
+        crossed_now = {str(x).lower() for x in (self._eth_crossed_pending or set())}
+        for uk, rec in list(self._flash_plans.items()):
+            plan = rec.get("plan") or {}
+            pb = int(rec.get("block") or 0)
+            tuo = plan.get("user") or str(uk).split(":", 1)[-1]
+            if block and pb and (block - pb) > 1:
+                # Stale. Retain only for users with a pending crossing kick —
+                # the fast path fires them on the crossing block.
+                if str(tuo).lower() in crossed_now:
+                    self._flash_plans[uk] = rec
+                else:
+                    self._flash_plans.pop(uk, None)
+                continue
+            out = self._fire_cached_user(uk, user=tuo, plan=plan,
+                                         net=plan.get("net_usd"),
+                                         min_p=min_p, block=block)
+            if out:
+                fired.append(out)
+                st = (out.get("stage") or "").lower()
+                if st not in ("skip",):
+                    self._record_broadcast("liq", out)
+        return fired
+
+    def _fire_cached_user(self, uk, user=None, plan=None, net=None,
+                          min_p=0.0, block=0):
+        """Fire one cached plan if it is liquidatable and passes the gates.
+        Returns the broadcast record or None."""
+        plan = plan or {}
+        if not plan.get("liquidatable"):
+            return None
+        if not self._liq_live_ok(plan):
+            return None
+        band_skip, band_why = pe.liq_debt_band_skip(plan.get("debt_usd"))
+        if band_skip:
+            return None
+        if net is None:
+            net = plan.get("net_usd")
+        if net is None or float(net) < min_p:
+            return None
+        try:
+            u = user or ""
+            if not u and ":" in str(uk):
+                u = str(uk).split(":", 1)[-1]
+            elif not u:
+                u = uk
+            return self._broadcast_liquidation(u, float(net), plan)
+        except Exception as e:  # noqa: BLE001
+            return {"stage": "error", "reason": str(e)[:200], "user": uk}
+
+    def _fire_eth_crossed(self):
+        """Fast-path: fire only users whose oracle tick just crossed HF<1.
+        Skips the serial 16-user RPC precompute; cached-only."""
+        out = []
+        if not self.broadcast_enabled:
+            return out
+        min_p = float((self.state.get("broadcast") or {}).get("dyn_min_liq")
+                      or MIN_LIQ_PROFIT_USD)
+        block = int(self.state.get("block") or 0)
+        pending = self._eth_crossed_pending or set()
+        self._eth_crossed_pending = set()
+        self._eth_fast_fires.clear()
+        if not pending:
+            return out
+        self.log("eth-feed", "warn",
+                 f"fast-fire {len(pending)} crossed user(s): {list(pending)[:6]}")
+        for u in pending:
+            rec = (
+                self._flash_plans.get(self._plan_key("aave", u))
+                or self._flash_plans.get(u)
+            )
+            plan = (rec or {}).get("plan") or {}
+            net = plan.get("net_usd")
+            if not plan.get("liquidatable") or net is None \
+                    or float(net) < min_p:
+                self._eth_fast_fires.add(u)
+                continue
+            one = self._fire_cached_user(u, user=u, plan=plan, net=net,
+                                         min_p=min_p, block=block)
+            if one:
+                out.append(one)
+                st = (one.get("stage") or "").lower()
+                if st not in ("skip",):
+                    self._record_broadcast("liq", one)
+        return out
+
+    def _presign_cached_bundles(self):
+        """Pre-sign raw bot+sponsor txs for liquidatable cached plans so the
+        fire path skips signing (retain-and-send). Only in live mode — never
+        in sim_only, to avoid burning nonces on txs that won't be sent.
+
+        ALL plans in a given block share ONE reserved nonce, so the first to
+        land wins and the rest become invalid replacements (never a stuck
+        higher nonce).
+        """
+        if self.sim_only or not self.armed or not self.broadcast_enabled:
+            return 0
+        liq_ok, _ = self.refresh_broadcast_ready()
+        if not liq_ok:
+            return 0
+        block = int(self.state.get("block") or 0)
+        if not block:
+            return 0
+        liq_plans = []
         for uk, rec in list(self._flash_plans.items()):
             plan = rec.get("plan") or {}
             pb = int(rec.get("block") or 0)
@@ -2101,29 +2456,73 @@ class Dashboard:
                 continue
             if not plan.get("liquidatable"):
                 continue
-            if not self._liq_live_ok(plan):
+            if rec.get("_presigned_block") == block and rec.get("_raw_liq"):
                 continue
-            band_skip, band_why = pe.liq_debt_band_skip(plan.get("debt_usd"))
-            if band_skip:
-                continue
-            net = plan.get("net_usd")
-            if net is None or float(net) < min_p:
-                continue
+            liq_plans.append((uk, rec, plan))
+        if not liq_plans:
+            return 0
+        from nonce_manager import get_nonce_manager
+        try:
+            nm = get_nonce_manager()
+            _pk, bot_addr = ll._unlock("bot")
+            nonce = nm.reserve(bot_addr)
+        except Exception as e:
+            self.log("eth-feed", "warn", f"presign nonce: {e}")
+            return 0
+        n = 0
+        for uk, rec, plan in liq_plans:
             try:
-                user = (plan.get("user") or "")
-                if not user and ":" in str(uk):
-                    user = str(uk).split(":", 1)[-1]
-                elif not user:
-                    user = uk
-                out = self._broadcast_liquidation(user, float(net), plan)
-            except Exception as e:  # noqa: BLE001
-                out = {"stage": "error", "reason": str(e)[:200], "user": uk}
-            if out:
-                fired.append(out)
-                st = (out.get("stage") or "").lower()
-                if st not in ("skip",):
-                    self._record_broadcast("liq", out)
-        return fired
+                raw_liq, raw_spon = self._sign_cached_plan(plan, nonce)
+            except Exception as e:
+                self.log("eth-feed", "warn",
+                         f"presign skip {uk}: {str(e)[:120]}")
+                continue
+            rec["_raw_liq"] = raw_liq
+            rec["_raw_spon"] = raw_spon
+            rec["_presigned_block"] = block
+            rec.setdefault("_presigned_ts", time.time())
+            n += 1
+        return n
+
+    def _sign_cached_plan(self, plan, nonce=None):
+        """Sign bot + sponsor txs for a cached flash plan, in-memory, using the
+        given nonce (or none → let the signer resolve current). Returns
+        (bot_hex, sponsor_hex_or_None)."""
+        out = self._materialize_liq_plan(dict(plan), "aave")
+        if not out.get("contract"):
+            raise RuntimeError("no executor contract")
+        gas_gwei = float(out.get("gas_gwei")
+                         or self.state.get("gas_gwei") or 2.0)
+        try:
+            from eth_signer import get_signer
+            signer = get_signer()
+            if not signer.ready:
+                raise RuntimeError("eth_signer not ready")
+            to, sig, call_args = ll._plan_args(out)
+            data = ll._encode_calldata(sig, call_args)
+            prio = max(0.05, gas_gwei * 0.2)
+            max_fee = max(gas_gwei * 1.35, gas_gwei + prio) * 1.15
+            raw_hex = signer.sign_tx(
+                to, data, 0,
+                int(out.get("gas_limit") or 1_500_000),
+                max_fee, prio, nonce)
+            signed = "0x" + raw_hex if not raw_hex.startswith("0x") else raw_hex
+        except RuntimeError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"in-memory sign failed: {e}") from e
+        sponsor_hex = None
+        bot_eth = float((self.state.get("funds") or {}).get("bot", {}).get("eth") or 0)
+        if bot_eth < 0.008 and ll.SPONSOR_KEYSTORE and ll.SPONSOR_PW:
+            try:
+                # sponsor is a distinct wallet; sign with its own keystore.
+                # Excluded from the shared-nonce scheme (different address).
+                ll.SPONSOR_AMOUNT_ETH = pe.sponsor_target_eth(gas_gwei)
+                sponsor_hex, _ = ll._sign_sponsor(
+                    int(self.state.get("block") or 0) + 1)
+            except Exception:
+                sponsor_hex = None
+        return signed, sponsor_hex
 
     async def _run(self, fn, timeout, *a, **kw):
         """Run blocking RPC work in a thread with a hard per-cycle timeout so
@@ -2624,6 +3023,13 @@ class Dashboard:
                 except Exception:
                     pass
                 self.bot("sweep", "error", e)
+            try:
+                blk = int((self.state.get("_liq_sweep_extra") or {}).get("last_block")
+                          or 0)
+                if blk:
+                    self._eth_race_reap(blk)
+            except Exception:
+                pass
             moved = self._price_moved
             self._price_moved = False
             peak = pe.is_peak_hour(self.state.get("intel", {}).get("hours") or {})
@@ -2635,17 +3041,22 @@ class Dashboard:
         """Closest-10 liq plans. Does not block startup."""
         while True:
             try:
-                await self._run(self._poll_pending_aave, 12)
+                fired_fast = await self._run(self._fire_eth_crossed, 8)
+                n_fast = len(fired_fast or [])
+                n_run = await self._run(self._poll_pending_aave, 12)
                 n = await self._run(self._precompute_closest, 45)
+                n_pre = await self._run(self._presign_cached_bundles, 30)
                 fired = await self._run(self._fire_cached_liquidatable, 60)
                 n_fire = len(fired or [])
                 cached = len(self._flash_plans)
                 pend = len(self._pending_aave_users)
-                if n or n_fire or cached:
+                if n or n_fire or n_fast or cached:
                     self.bot(
-                        "broadcast", "ok" if not n_fire else "running",
+                        "broadcast", "ok" if not (n_fire or n_fast) else "running",
                         f"hot plans={cached} new={n or 0} pending={pend}"
+                        f" presigned={n_pre or 0}"
                         f" pend_ok={self._pending_aave_ok}"
+                        f"{f' fast_fired={n_fast}' if n_fast else ''}"
                         f"{f' fired={n_fire}' if n_fire else ''}")
             except Exception as e:
                 self.bot("broadcast", "error", f"hot: {e}")
@@ -2987,6 +3398,24 @@ class Dashboard:
             return
         user = (parsed.get("user") or "").lower()
         searcher = (parsed.get("searcher") or parsed.get("liquidator") or "").lower()
+        # Adjudicate an in-flight ETH race when a landing is observed for a user
+        # we are racing: landed on or before our target block = won; otherwise
+        # the position was taken by us or a competitor. Only judge from real
+        # (funded) fires and only once per inflight entry.
+        try:
+            inflight = self.eth_race_inflight.get(user)
+            if inflight and not inflight.get("outcome"):
+                landed_blk = int(parsed.get("block") or 0)
+                target = int(inflight.get("block") or 0)
+                # Landed on/at our target block => we won the race (either our
+                # bundle filled first or we tied at the front). Landed later =>
+                # we lost to whichever searcher front-ran the block.
+                if landed_blk <= target:
+                    self._eth_race_adjudicate(user, "won")
+                else:
+                    self._eth_race_adjudicate(user, "lost")
+        except Exception:
+            pass
         gas_used = None
         gas_price = None
         status = None
@@ -3413,6 +3842,8 @@ class Dashboard:
                     for pk in (h.get("obligation_keys") or []):
                         sols.register_obligation(pk, "landing")
                         sols.record_competitor_liq(pk, h.get("slot"))
+                        if pk in self.sol_race_inflight:
+                            self._sol_race_adjudicate(pk, "lost")
                 if landing.get("liq_n") or landing.get("opportunities"):
                     meta["pressure"] = "hot"
                 elif landing.get("refresh_n"):
@@ -3742,9 +4173,17 @@ class Dashboard:
                     }
                     for w in wl_res if w.get("symbol")
                 }
-                fire = next((o for o in opps if o.get("actionable")), None)
-                if fire:
-                    self._sol_maybe_submit("liq", fire, fire.get("plan") or {})
+                self._sol_race_reap_stale()
+                fired = 0
+                for o in opps:
+                    if not o.get("actionable"):
+                        continue
+                    if fired >= max(1, self.sol_race_max_fires):
+                        break
+                    rec = self._sol_maybe_submit(
+                        "liq", o, o.get("plan") or {})
+                    if rec.get("stage") != "skip":
+                        fired += 1
                 multi_n = sum(a.get("opps", 0) for a in (multi.get("adapters") or []))
                 msg = (f"watch={len(wl)} liq={len(opps)} "
                        f"solend_gpa={probe.get('probed')} "
@@ -4113,6 +4552,11 @@ class Dashboard:
             sh["eth_crossings"] += 1
             self.log("eth-feed", "warn",
                      f"oracle tick {feed_addr} -> crossed: {crossed}")
+            if not hasattr(self, "_eth_crossed_pending"):
+                self._eth_crossed_pending = set()
+            self._eth_crossed_pending.update(
+                u.lower()[:42] for u in crossed
+                if str(u).startswith("0x"))
             if self._eth_hot_kick:
                 self._eth_hot_kick.set()
 
@@ -4594,37 +5038,6 @@ class Dashboard:
                  f"sim_only={self.sim_only} edge_bias={self.edge_bias}")
         return aiohttp.web.json_response(self.state["broadcast"])
 
-    async def klines_api(self, request):
-        symbol = request.query.get("symbol", "ETHUSDT").upper()
-        if not symbol.isalnum() or len(symbol) > 20:
-            return aiohttp.web.json_response({"error": "bad symbol"}, status=400)
-        interval = (request.query.get("interval", "1h") or "1h").lower()
-        if interval not in _KLINES_INTERVALS:
-            return aiohttp.web.json_response(
-                {"error": "bad interval", "allowed": sorted(_KLINES_INTERVALS)},
-                status=400)
-        try:
-            limit = min(max(int(request.query.get("limit", "180")), 1), 500)
-        except ValueError:
-            limit = 180
-        key = (symbol, interval, limit)
-        now = time.time()
-        cached = _KLINES_CACHE.get(key)
-        if cached and now - cached[0] < _KLINES_TTL:
-            return aiohttp.web.json_response(cached[1])
-        try:
-            data = await asyncio.wait_for(
-                asyncio.to_thread(_fetch_klines, symbol, interval, limit),
-                timeout=15)
-            if data:
-                _KLINES_CACHE[key] = (now, data)
-                return aiohttp.web.json_response(data)
-        except Exception:
-            pass
-        if cached:
-            return aiohttp.web.json_response(cached[1])
-        return aiohttp.web.json_response([])
-
     async def sol_blockhash_api(self, request):
         """Recent blockhash for the SOL Funds card (browser wallet transfer)."""
         try:
@@ -4724,42 +5137,6 @@ class Dashboard:
                 except Exception:
                     pass
 
-    async def paper_candle_loop(self):
-        """Feed 5m candles to paper traders every 15 seconds."""
-        while True:
-            await asyncio.sleep(15)
-            for asset, symbol, trader in [
-                ("ETH", "ETHUSDT", self._paper_eth),
-                ("SOL", "SOLUSDT", self._paper_sol),
-            ]:
-                if not trader.enabled:
-                    continue
-                try:
-                    data = await asyncio.wait_for(
-                        asyncio.to_thread(_fetch_klines, symbol, "5m", 5),
-                        timeout=10)
-                    if data:
-                        for candle in data:
-                            trader.on_candle(candle)
-                except Exception:
-                    pass
-
-    async def paper_control(self, request):
-        """Handle paper bot control: range mode toggle, enable/disable."""
-        try:
-            body = await request.json()
-        except Exception:
-            return aiohttp.web.json_response({"error": "bad json"}, status=400)
-        asset = (body.get("asset") or "").upper()
-        trader = self._paper_eth if asset == "ETH" else self._paper_sol if asset == "SOL" else None
-        if not trader:
-            return aiohttp.web.json_response({"error": "bad asset"}, status=400)
-        if "range_mode" in body:
-            trader.set_range_mode(body["range_mode"])
-        if "enabled" in body:
-            trader.enabled = bool(body["enabled"])
-        return aiohttp.web.json_response(trader.state_dict())
-
     async def hybrid_toggle(self, request):
         """Ensure hybrid execution is always enabled."""
         if self.hybrid_executor:
@@ -4811,6 +5188,71 @@ def main():
     dash.broadcast_enabled = bool(args.broadcast)
     dash.state["broadcast"]["enabled"] = dash.broadcast_enabled
     dash.refresh_broadcast_ready()
+    try:
+        dash.ai_manager = aim.AIManager(snapshot_fn=lambda: dash.snapshot())
+    except Exception as exc:
+        print(f"[dash] AI manager disabled: {exc}", flush=True)
+        dash.ai_manager = None
+
+    async def manager_chat(request):
+        body = await request.json()
+        m = getattr(dash, "ai_manager", None)
+        if m is None:
+            return aiohttp.web.json_response({"error": "AI manager disabled"})
+        msg = (body or {}).get("message", "")
+        thread = (body or {}).get("thread_id", "default")
+        try:
+            out = await asyncio.to_thread(m.chat, msg, thread)
+        except Exception as exc:
+            return aiohttp.web.json_response({"error": str(exc)}, status=500)
+        return aiohttp.web.json_response(out)
+
+    async def manager_status(request):
+        m = getattr(dash, "ai_manager", None)
+        if m is None:
+            return aiohttp.web.json_response({"error": "AI manager disabled"})
+        return aiohttp.web.json_response(m.status_payload())
+
+    async def manager_bi(request):
+        m = getattr(dash, "ai_manager", None)
+        if m is None:
+            return aiohttp.web.json_response({"error": "AI manager disabled"})
+        return aiohttp.web.json_response(await asyncio.to_thread(m.bi_payload))
+
+    async def manager_agent(request):
+        body = await request.json()
+        m = getattr(dash, "ai_manager", None)
+        if m is None:
+            return aiohttp.web.json_response({"error": "AI manager disabled"})
+        try:
+            out = await asyncio.to_thread(m._tool_spawn_agent, body or {})
+        except Exception as exc:
+            return aiohttp.web.json_response({"error": str(exc)}, status=500)
+        return aiohttp.web.json_response(out)
+
+    async def manager_approve(request):
+        body = await request.json()
+        m = getattr(dash, "ai_manager", None)
+        if m is None:
+            return aiohttp.web.json_response({"error": "AI manager disabled"})
+        cid = (body or {}).get("change_id", "")
+        decision = bool((body or {}).get("approve"))
+        try:
+            out = await asyncio.to_thread(m.approve_change, cid, decision)
+        except Exception as exc:
+            return aiohttp.web.json_response({"error": str(exc)}, status=500)
+        return aiohttp.web.json_response(out)
+
+    async def manager_briefing(request):
+        m = getattr(dash, "ai_manager", None)
+        if m is None:
+            return aiohttp.web.json_response({"error": "AI manager disabled"})
+        try:
+            out = await asyncio.to_thread(m.briefing_payload)
+        except Exception as exc:
+            return aiohttp.web.json_response({"error": str(exc)}, status=500)
+        return aiohttp.web.json_response(out)
+
     app = aiohttp.web.Application()
     app.router.add_get("/", lambda r: aiohttp.web.FileResponse(
         os.path.join(HERE, "static", "index.html")))
@@ -4818,17 +5260,20 @@ def main():
     app.router.add_get("/api/state", dash.state_api)
     app.router.add_get("/api/health", dash.health_api)
     app.router.add_post("/api/control", dash.control_api)
-    app.router.add_get("/api/klines", dash.klines_api)
     app.router.add_get("/api/sol/status", dash.sol_status_api)
     app.router.add_get("/api/sol/blockhash", dash.sol_blockhash_api)
     app.router.add_get("/ws", dash.ws_handler)
-    app.router.add_post("/api/paper/control", dash.paper_control)
     app.router.add_post("/api/hybrid/toggle", dash.hybrid_toggle)
+    app.router.add_post("/api/manager/chat", manager_chat)
+    app.router.add_get("/api/manager/status", manager_status)
+    app.router.add_get("/api/manager/bi", manager_bi)
+    app.router.add_post("/api/manager/agent", manager_agent)
+    app.router.add_post("/api/manager/approve", manager_approve)
+    app.router.add_post("/api/manager/briefing", manager_briefing)
 
     async def startup(app_):
         await dash.start_loops()
         asyncio.create_task(dash.ticker())
-        asyncio.create_task(dash.paper_candle_loop())
         mode = "BROADCAST ON" if dash.broadcast_enabled else "monitor-only"
         print(f"[dash] listening on http://{args.host}:{args.port} "
               f"[{mode} sim_only={dash.sim_only} armed={dash.armed} "
