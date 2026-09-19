@@ -855,6 +855,25 @@ def liq_event_profit(ev: dict) -> tuple[float | None, float | None]:
     return None, None
 
 
+def liq_amount_usd(ev: dict) -> tuple[float | None, str | None]:
+    """USD principal liquidated: debt covered, collateral-seized fallback."""
+    debt_amt = ev.get("debt_to_cover") or ev.get("debt_restored") or 0
+    coll_amt = ev.get("coll_seized") or ev.get("coll_to_liq") or 0
+    debt_addr = ev.get("debt_addr") or ADDR_BY_SYM.get(
+        str(ev.get("debt_sym") or "").upper())
+    if debt_amt and debt_addr:
+        debt_usd = amount_usd(debt_addr, debt_amt)
+        if debt_usd > 0:
+            return round(debt_usd, 2), "debt"
+    coll_addr = ev.get("coll_addr") or ADDR_BY_SYM.get(
+        str(ev.get("coll_sym") or "").upper())
+    if coll_amt and coll_addr:
+        coll_usd = amount_usd(coll_addr, coll_amt)
+        if coll_usd > 0:
+            return round(coll_usd, 2), "coll"
+    return None, None
+
+
 def sweep_users(users, *, gas_gwei: float = 1.0, eth_usd: float = 0.0,
                 contested=None, recent_comp=None, max_users: int = 140) -> dict:
     """HF-check harvested borrowers. Live feed = HF<1, dust-filtered, +EV net."""
