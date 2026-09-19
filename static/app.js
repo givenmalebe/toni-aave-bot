@@ -2353,6 +2353,7 @@
         <td class="dim" title="blk ${c.block || "?"}">${fmt.age(c.ts)}</td>
         <td>${protoPill(c)}</td>
         <td><b>${pair}</b></td>
+        <td title="${c.amt_basis === "coll" ? "collateral-seized fallback" : "debt covered in USD"}">${c.amt_usd != null ? (c.amt_basis === "coll" ? "≈" : "") + fmt.usd(c.amt_usd) : `<span class="dim">—</span>`}</td>
         <td class="mono copy" data-addr="${searcher}" title="${searcher}">${sShort}</td>
         <td class="mono copy dim" data-addr="${user}" title="${user}">${uShort}</td>
         <td class="dim" title="on-chain gas × ETH price — not their profit">${c.gas_cost_usd != null ? fmt.usd(c.gas_cost_usd) : "—"}</td>
