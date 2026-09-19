@@ -3479,6 +3479,11 @@ class Dashboard:
         watched |= {w.get("user", "").lower() for w in self.state.get("watchlist") or []}
         missed = user in watched
         edge = pe.is_edge_opp({"coll_sym": coll_sym, "debt_sym": debt_sym})
+        amt, amt_basis = None, None
+        try:
+            amt, amt_basis = lb.liq_amount_usd(parsed)
+        except Exception:
+            amt, amt_basis = None, None
         rec = {
             "block": parsed.get("block"),
             "ts": ts or int(time.time()),
@@ -3491,6 +3496,9 @@ class Dashboard:
             "coll_sym": coll_sym,
             "debt_sym": debt_sym,
             "debt_to_cover": str(parsed.get("debt_to_cover") or 0),
+            "coll_seized": str(parsed.get("coll_seized") or 0),
+            "amt_usd": amt,
+            "amt_basis": amt_basis,
             "coll_usd": coll_usd,
             "gas_price_gwei": round(gas_price, 2) if gas_price is not None else None,
             "gas_used": gas_used,
