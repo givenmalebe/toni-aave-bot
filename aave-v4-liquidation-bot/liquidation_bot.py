@@ -862,15 +862,15 @@ def liq_amount_usd(ev: dict) -> tuple[float | None, str | None]:
     debt_addr = ev.get("debt_addr") or ADDR_BY_SYM.get(
         str(ev.get("debt_sym") or "").upper())
     if debt_amt and debt_addr:
-        debt_usd = amount_usd(debt_addr, debt_amt)
+        debt_usd = round(amount_usd(debt_addr, debt_amt), 2)
         if debt_usd > 0:
-            return round(debt_usd, 2), "debt"
+            return debt_usd, "debt"
     coll_addr = ev.get("coll_addr") or ADDR_BY_SYM.get(
         str(ev.get("coll_sym") or "").upper())
     if coll_amt and coll_addr:
-        coll_usd = amount_usd(coll_addr, coll_amt)
+        coll_usd = round(amount_usd(coll_addr, coll_amt), 2)
         if coll_usd > 0:
-            return round(coll_usd, 2), "coll"
+            return coll_usd, "coll"
     return None, None
 
 

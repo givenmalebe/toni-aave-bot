@@ -63,3 +63,8 @@ def test_nothing_priceable_returns_none():
     ev = {"coll_sym": "ZZZZ", "debt_sym": "XYZ9",
           "coll_to_liq": 123, "debt_to_cover": 456}
     assert lb.liq_amount_usd(ev) == (None, None)
+
+
+def test_sub_cent_dust_returns_none():
+    ev = {"debt_addr": USDC, "debt_to_cover": 4000}
+    assert lb.liq_amount_usd(ev) == (None, None)
