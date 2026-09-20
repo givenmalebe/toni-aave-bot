@@ -401,9 +401,21 @@ def sol_rpc(method: str, params: list | None = None, timeout: float = 6.0):
     body = {"jsonrpc": "2.0", "id": 1, "method": method,
             "params": params if params is not None else []}
     last = None
-    for url in _sol_rpcs():
-        if not _rpc_is_open(url):
+    attempted = 0
+    rpcs = _sol_rpcs()
+    if not rpcs:
+        raise RuntimeError(
+            f"sol rpc {method} failed: no RPC endpoints configured")
+    open_any = any(_rpc_is_open(u) for u in rpcs)
+    if not open_any:
+        # Every endpoint is circuit-broken. Soft-bypass the least-broken one
+        # so a single success resets the breakers instead of failing fast
+        # with a useless "failed: None" until every cooldown expires.
+        rpcs = sorted(rpcs, key=lambda u: (_RPC_CIRCUIT.get(u, (0, 0))[1] or 0))
+    for url in rpcs:
+        if not _rpc_is_open(url) and open_any:
             continue
+        attempted += 1
         try:
             r = _http_post(url, body, timeout=timeout)
             out = r.json()
@@ -423,7 +435,12 @@ def sol_rpc(method: str, params: list | None = None, timeout: float = 6.0):
             time.sleep(min(random.uniform(0.05, 0.15) * (2 ** min(fails, 4)), 2.0))
             continue
     log.error("All SOL RPCs failed for %s", method)
-    raise RuntimeError(f"sol rpc {method} failed: {last}")
+    if not attempted:
+        reason = (f"no endpoint available ({len(rpcs)}/{len(rpcs)} "
+                  f"circuit-broken)")
+    else:
+        reason = repr(last) if last is not None else "all endpoints returned no result"
+    raise RuntimeError(f"sol rpc {method} failed: {reason}")
 
 
 def sol_gpa(program_id: str, filters: list | None = None,
