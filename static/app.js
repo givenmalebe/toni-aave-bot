@@ -836,6 +836,7 @@
         <td>${solProtoPill(o)}</td>
         <td class="${solHfClass(hf)}">${hfCell}</td>
         <td><b>${pair}</b>${sizes}</td>
+        <td title="${o.seized_usd != null ? "collateral seized USD" : ""}">${o.seized_usd != null && Number(o.seized_usd) > 0 ? fmt.usd(o.seized_usd) : `<span class="dim">—</span>`}</td>
         <td style="color:var(--amber)">${o.liq_bonus_pct != null ? o.liq_bonus_pct + "%" : (o.bonus_usd != null ? fmt.usd(o.bonus_usd) : "--")}</td>
         <td style="color:${netColor}"><b>${net != null ? fmt.usd(net) : "--"}</b></td>
         <td>${solLiqFlagBits(o)}</td>
